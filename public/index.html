@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Campus Manager</title>
+  <link rel="icon" href="/logo.svg?v=70" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=70" />
+  <link rel="manifest" href="/manifest.json?v=70" />
+  <meta name="theme-color" content="#0B6E5F" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Campus Manager" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css?v=70" />
+</head>
+<body>
+  <!-- Login -->
+  <div id="login" class="login" hidden>
+    <div class="login-shell lg-up">
+      <!-- Bandeau marque mobile -->
+      <div class="lbp-mobile">
+        <img class="lbp-logo-sm" src="/logo-dark.svg?v=70" alt="" />
+        <span class="lbp-wordmark-sm">Campus Manager</span>
+      </div>
+      <!-- Panneau de marque (gauche) -->
+      <aside class="login-brandpanel">
+        <div class="lbp-motif" aria-hidden="true">
+          <svg viewBox="0 0 520 520" width="520" height="520">
+            <g transform="translate(260 260)" fill="none" stroke="#8FD8C9" stroke-width="8">
+              <circle r="200" /><circle r="135" />
+              <path d="M0,-250 V250 M-250,0 H250" stroke-width="5" />
+            </g>
+          </svg>
+        </div>
+        <div class="lbp-center">
+          <img class="lbp-logo" src="/logo-dark.svg?v=70" alt="" />
+          <div class="lbp-wordmark">Campus Manager</div>
+          <div class="lbp-tagline">PILOTAGE RÉSEAU DE CAMPUS</div>
+        </div>
+      </aside>
+      <!-- Colonne formulaire (droite) -->
+      <div class="login-formcol">
+        <main class="login-main">
+          <div class="login-card">
+            <div class="lg-greet">
+              <div class="lg-sun" aria-hidden="true"><span class="lg-rays"></span><span class="lg-disc"></span></div>
+              <div class="lg-greet-txt">
+                <div class="lg-hello" id="lg-hello">Bonjour</div>
+                <div class="lg-date" id="lg-date"></div>
+              </div>
+            </div>
+            <form id="login-form" autocomplete="off">
+              <label for="email" class="lg-label">Email</label>
+              <input id="email" type="email" autocomplete="username" required placeholder="prenom@exemple.fr" />
+              <label for="pw" class="lg-label" style="margin-top:14px;">Mot de passe</label>
+              <div class="pw-wrap">
+                <input id="pw" type="password" autocomplete="current-password" required placeholder="••••••••" />
+                <button type="button" id="pw-toggle" aria-label="Afficher le mot de passe">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </div>
+              <button type="submit" class="lg-cta">Entrer</button>
+              <button type="button" id="faceid-login" class="lg-faceid" hidden>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 10v1M15 10v1M12 9v4l-1 1M9.5 15.5a3.5 3.5 0 0 0 5 0"/></svg>
+                <span>Se connecter avec Face&nbsp;ID / Touch&nbsp;ID</span>
+              </button>
+              <button type="button" id="forgot-link" class="lg-forgot">Mot de passe oublié ?</button>
+              <p id="login-error" class="error" hidden></p>
+            </form>
+          </div>
+        </main>
+        <footer class="login-foot">© 2026 Campus Manager · Pilotage réseau de campus</footer>
+      </div>
+    </div>
+  </div>
+
+  <!-- App shell -->
+  <div id="app" class="shell" hidden>
+    <div id="nav-overlay" class="nav-overlay"></div>
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-mark" src="/logo.svg?v=70" alt="Campus Manager" />
+        <div class="brand-txt"><strong>Campus Manager</strong><span class="muted">Pilotage réseau</span></div>
+      </div>
+      <nav id="nav" class="nav"></nav>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="nav-toggle" class="nav-toggle" aria-label="Menu">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+        <h2 id="view-title">Accueil</h2>
+        <div class="topbar-right">
+          <div id="topbar-actions" class="topbar-actions"></div>
+          <button id="logout" class="btn-ghost btn-sm">Se déconnecter</button>
+        </div>
+      </header>
+      <div id="view" class="view"></div>
+    </main>
+  </div>
+
+  <script src="/vendor/marked.js?v=70"></script>
+  <script src="/vendor/purify.js?v=70"></script>
+  <script src="/vendor/webauthn.js?v=70"></script>
+  <script src="/app.js?v=70"></script>
+</body>
+</html>

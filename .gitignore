@@ -1,0 +1,15 @@
+# Dépendances
+node_modules/
+
+# Secrets & données (ne JAMAIS committer)
+.env
+.env.*
+!.env.example
+data/
+backups/
+*.bak
+
+# Système / logs
+.DS_Store
+*.log
+npm-debug.log*

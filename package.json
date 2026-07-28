@@ -1,0 +1,30 @@
+{
+  "name": "assistant-campus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Assistant personnel (campus ecoles post-bac) : triage email, ordres du jour, comptes rendus, analyse P&L -> plans d'action. Propulse par Claude.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test test/calc.test.mjs test/store.test.mjs test/security.test.mjs"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^9.0.1",
+    "@simplewebauthn/server": "^9.0.3",
+    "cookie-parser": "^1.4.7",
+    "dompurify": "^3.4.12",
+    "express": "^4.21.2",
+    "html-to-docx": "^1.8.0",
+    "imapflow": "^1.0.194",
+    "mailparser": "^3.7.2",
+    "marked": "^15.0.6",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^4.6.0",
+    "node-ical": "^0.27.1",
+    "nodemailer": "^9.0.3",
+    "openai": "^4.77.0",
+    "pdf-parse": "^1.1.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}
