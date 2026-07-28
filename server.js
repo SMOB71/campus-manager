@@ -1213,6 +1213,101 @@ app.get("/api/notifications", requireAuth, (req, res) => {
   res.json(notifs);
 });
 
+// ===== Heatmap réseau + alertes de dérive (tendances KPI) =====
+function kpiHistory(cid) {
+  return store.listKpi(cid).slice().sort((a, b) => (a.month || "").localeCompare(b.month || ""));
+}
+const marginPctOf = (k) => (k && k.revenue ? Math.round((marginOf(k) / k.revenue) * 100) : null);
+// tendance sur les 2 derniers points d'une série (seuil ~3 %)
+function seriesTrend(hist, fn) {
+  const pts = hist.map(fn).filter((v) => v != null && Number.isFinite(v));
+  if (pts.length < 2) return null;
+  const a = pts[pts.length - 2], b = pts[pts.length - 1];
+  const thr = Math.max(Math.abs(a) * 0.03, 0.5);
+  return b > a + thr ? "up" : b < a - thr ? "down" : "flat";
+}
+// nombre de baisses consécutives en fin de série
+function decliningStreak(hist, fn) {
+  const pts = hist.map(fn).filter((v) => v != null && Number.isFinite(v));
+  let n = 0;
+  for (let i = pts.length - 1; i > 0; i--) { if (pts[i] < pts[i - 1]) n++; else break; }
+  return n;
+}
+app.get("/api/heatmap", requireAuth, requireAdmin, (req, res) => {
+  const rows = buildNetworkRows(req);
+  const campById = Object.fromEntries(store.listCampuses().map((c) => [c.id, c]));
+  const cell = (status, value, trend) => ({ status, value, trend: trend || null });
+  const band = (v, good, warn) => (v == null ? "na" : v >= good ? "good" : v >= warn ? "warn" : "bad");
+  const out = rows.map((r) => {
+    const c = campById[r.id] || {};
+    const k = store.latestKpi(r.id) || {};
+    const hist = kpiHistory(r.id);
+    const mpct = marginPctOf(k);
+    const adPct = r.admissions?.objectif ? Math.round(((r.admissions.inscrits || 0) / r.admissions.objectif) * 100) : null;
+    const conf = c.directorReview?.confidence ?? null;
+    return {
+      campusId: r.id, campus: r.name, health: r.health,
+      cells: {
+        finance: cell(mpct == null ? "na" : mpct >= 5 ? "good" : mpct >= 0 ? "warn" : "bad", mpct == null ? "—" : mpct + "%", seriesTrend(hist, marginPctOf)),
+        remplissage: cell(band(r.occupancy, 80, 70), r.occupancy != null ? r.occupancy + "%" : "—", seriesTrend(hist, (x) => x.occupancy)),
+        admissions: cell(adPct == null ? "na" : adPct >= 90 ? "good" : adPct >= 75 ? "warn" : "bad", adPct == null ? "—" : adPct + "%"),
+        qualiopi: cell(band(r.qualiopi, 90, 70), r.qualiopi != null ? r.qualiopi + "%" : "—"),
+        actions: cell(!r.overdue ? "good" : r.overdue <= 2 ? "warn" : "bad", String(r.overdue || 0)),
+        incidents: cell(!r.openIncidents ? "good" : r.openIncidents <= 1 ? "warn" : "bad", String(r.openIncidents || 0)),
+        satisfaction: cell(band(r.satisfaction, 8, 7), r.satisfaction != null ? r.satisfaction + "/10" : "—", seriesTrend(hist, (x) => x.satisfaction)),
+        insertion: cell(band(r.insertionRate, 80, 60), r.insertionRate != null ? r.insertionRate + "%" : "—"),
+        visites: cell(r.visitDue ? "bad" : "good", r.visitDue ? "à planifier" : "à jour"),
+        direction: cell(conf == null ? "na" : conf >= 70 ? "good" : conf >= 40 ? "warn" : "bad", conf == null ? "—" : conf + "%"),
+      },
+    };
+  });
+  // Alertes de dérive (tendances) — au-delà des seuils fixes
+  const drifts = [];
+  for (const r of rows) {
+    const hist = kpiHistory(r.id);
+    const mStreak = decliningStreak(hist, marginPctOf);
+    if (mStreak >= 2) drifts.push({ campusId: r.id, campus: r.name, type: "marge", label: `Marge en baisse depuis ${mStreak} mois`, severity: "high" });
+    const oStreak = decliningStreak(hist, (x) => x.occupancy);
+    if (oStreak >= 2) drifts.push({ campusId: r.id, campus: r.name, type: "remplissage", label: `Remplissage en dégradation depuis ${oStreak} mois`, severity: "medium" });
+    const sStreak = decliningStreak(hist, (x) => x.satisfaction);
+    if (sStreak >= 2) drifts.push({ campusId: r.id, campus: r.name, type: "satisfaction", label: `Satisfaction en baisse depuis ${sStreak} mois`, severity: "medium" });
+    if (r.openIncidents >= 2) drifts.push({ campusId: r.id, campus: r.name, type: "incidents", label: `${r.openIncidents} incidents/réclamations ouverts (récurrence)`, severity: "high" });
+    const adPct = r.admissions?.objectif ? Math.round(((r.admissions.inscrits || 0) / r.admissions.objectif) * 100) : null;
+    if (adPct != null && adPct < 70) drifts.push({ campusId: r.id, campus: r.name, type: "admissions", label: `Admissions sous trajectoire (${adPct}% de l'objectif)`, severity: adPct < 50 ? "high" : "medium" });
+  }
+  const lastReview = store.lastReviewByCampus();
+  for (const c of store.listCampuses().filter((c) => canCampus(req, c.id))) {
+    const rv = lastReview[c.id];
+    const months = rv?.month ? Math.round((new Date() - new Date(rv.month + "-01")) / (30 * 864e5)) : null;
+    if (months == null || months >= 2) drifts.push({ campusId: c.id, campus: c.name, type: "revue", label: months == null ? "Aucune revue mensuelle réalisée" : `Pas de revue depuis ${months} mois`, severity: "low" });
+  }
+  const sev = { high: 0, medium: 1, low: 2 };
+  drifts.sort((a, b) => sev[a.severity] - sev[b.severity]);
+  res.json({ rows: out, drifts });
+});
+
+// ===== Priorisation automatique des actions =====
+app.get("/api/actions/prioritized", requireAuth, (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const healthById = Object.fromEntries(buildNetworkRows(req).map((r) => [r.id, r.health]));
+  const open = scopeByCampus(req, store.listActions()).filter((a) => a.status !== "done");
+  const scored = open.map((a) => {
+    let score = 10; const reasons = [];
+    if (a.dueDate && a.dueDate < today) { const days = Math.round((new Date(today) - new Date(a.dueDate)) / 864e5); score += Math.min(45, 15 + days); reasons.push(`en retard de ${days} j`); }
+    else if (a.dueDate) { const days = Math.round((new Date(a.dueDate) - new Date(today)) / 864e5); if (days <= 7) { score += 15; reasons.push(`échéance dans ${days} j`); } }
+    const h = healthById[a.campusId];
+    if (h != null && h < 50) { score += 25; reasons.push("campus à risque"); } else if (h != null && h < 70) { score += 12; reasons.push("campus fragile"); }
+    if (a.category === "qualiopi") { score += 15; reasons.push("enjeu Qualiopi"); }
+    if (/finance|marge|budget|\bca\b/i.test(`${a.category} ${a.title}`)) { score += 10; reasons.push("enjeu financier"); }
+    if (!a.owner) { score += 8; reasons.push("sans responsable"); }
+    const ageDays = a.createdAt ? Math.round((Date.now() - new Date(a.createdAt)) / 864e5) : 0;
+    if (ageDays > 30) { score += 10; reasons.push(`ouverte depuis ${ageDays} j`); }
+    if (a.priority === "critical" || a.priority === "high") { score += 10; reasons.push("priorité haute"); }
+    return { ...a, score: Math.min(100, score), reasons };
+  }).sort((a, b) => b.score - a.score);
+  res.json(scored);
+});
+
 // ===== Scénarios de prospective (EBIT) =====
 app.get("/api/scenarios", requireAuth, requireAdmin, (req, res) => res.json(store.listScenarios()));
 app.post("/api/scenarios", requireAuth, requireAdmin, (req, res) => {

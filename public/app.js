@@ -305,6 +305,8 @@ const NAV = [
   { id: "accueil", label: "Accueil", icon: I.home, group: "Pilotage" },
   { id: "assistant", label: "Assistant", icon: I.chat, group: "Pilotage" },
   { id: "notifications", label: "Notifications", icon: I.bell, group: "Pilotage" },
+  { id: "heatmap", label: "Heatmap réseau", icon: I.net, admin: true, group: "Pilotage" },
+  { id: "priorites", label: "Priorités du jour", icon: I.target, group: "Pilotage" },
   { id: "decisions", label: "Décisions (CODIR)", icon: I.gavel, admin: true, group: "Pilotage" },
   { id: "reseau", label: "Réseau", icon: I.net, admin: true, group: "Réseau" },
   { id: "campus", label: "Campus", icon: I.campus, group: "Réseau" },
@@ -374,7 +376,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1060,6 +1062,96 @@ async function renderRGPD() {
     const r = await api.post("/api/rgpd/purge", {});
     $("#rg-purge-msg").textContent = `${r.removed} entrée(s) purgée(s) (> ${r.months} mois).`; $("#rg-purge-msg").style.color = "var(--good)";
   };
+}
+
+// ---------- Vue : Heatmap réseau ----------
+const HEAT_DIMS = [["finance", "Finance"], ["remplissage", "Rempl."], ["admissions", "Admiss."], ["qualiopi", "Qualiopi"], ["actions", "Actions"], ["incidents", "Incid."], ["satisfaction", "Satisf."], ["insertion", "Insert."], ["visites", "Visites"], ["direction", "Direction"]];
+const DRIFT_ICON = { marge: "📉", remplissage: "🏫", satisfaction: "🙁", incidents: "⚠️", admissions: "🎯", revue: "🗓️" };
+function trendArrow(t) {
+  if (t === "up") return '<span class="heat-tr up">▲</span>';
+  if (t === "down") return '<span class="heat-tr down">▼</span>';
+  return "";
+}
+async function renderHeatmap() {
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const data = await api.get("/api/heatmap");
+  const rows = data.rows || [], drifts = data.drifts || [];
+  const hb = (v) => (v == null ? '<span class="muted">—</span>' : `<span class="sig-badge h-${v >= 75 ? "good" : v >= 50 ? "warn" : "bad"}">${v}</span>`);
+  const head = `<tr><th>Campus</th><th>Santé</th>${HEAT_DIMS.map(([, l]) => `<th class="c">${l}</th>`).join("")}</tr>`;
+  const body = rows.length ? rows.map((r) => `<tr>
+      <td><b class="lnk hm-campus" data-id="${r.campusId}">${esc(r.campus)}</b></td>
+      <td class="c">${hb(r.health)}</td>
+      ${HEAT_DIMS.map(([k]) => { const c = r.cells[k] || {}; return `<td class="c heat-cell heat-${c.status || "na"}" data-c="${r.campusId}" data-k="${k}" title="${esc(r.campus)} · ${c.value || "—"}"><span>${esc(c.value ?? "—")}</span>${trendArrow(c.trend)}</td>`; }).join("")}
+    </tr>`).join("") : `<tr><td colspan="${HEAT_DIMS.length + 2}"><p class="empty" style="padding:14px;">Aucun campus.</p></td></tr>`;
+  const driftHtml = drifts.length ? drifts.map((d) => `<div class="item drift-${d.severity}"><span style="font-size:16px;">${DRIFT_ICON[d.type] || "•"}</span><div class="grow"><div class="ttl">${esc(d.campus)}</div><div class="sub">${esc(d.label)}</div></div><button class="btn-ghost btn-sm drift-go" data-id="${d.campusId}">Ouvrir</button></div>`).join("") : `<div class="card card-pad"><p class="muted" style="margin:0;">Aucune dérive détectée. 👌</p></div>`;
+  view.innerHTML = `
+    <div class="section-title" style="margin-top:0;">Heatmap réseau <span class="muted" style="font-weight:400;font-size:12px;">— clique une cellule pour l'explication</span></div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table heat-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>
+    <div class="heat-legend"><span class="heat-swatch heat-good"></span>Bon <span class="heat-swatch heat-warn"></span>Vigilance <span class="heat-swatch heat-bad"></span>Risque <span class="heat-swatch heat-na"></span>Donnée absente · ▲▼ tendance vs mois précédent</div>
+    <div class="section-title">Signaux faibles & dérives <span class="muted" style="font-weight:400;font-size:12px;">— tendances, au-delà des seuils fixes</span></div>
+    <div class="list">${driftHtml}</div>`;
+  $$(".heat-cell").forEach((td) => td.addEventListener("click", () => { const r = rows.find((x) => x.campusId === td.dataset.c); openHeatCell(r, td.dataset.k); }));
+  $$(".hm-campus, .drift-go").forEach((b) => b.addEventListener("click", () => openCampus360(b.dataset.id)));
+}
+function openHeatCell(r, k) {
+  if (!r) return;
+  const label = (HEAT_DIMS.find(([kk]) => kk === k) || [k, k])[1];
+  const c = r.cells[k] || {};
+  const statusLbl = { good: "Bon", warn: "Vigilance", bad: "Risque", na: "Donnée absente" }[c.status] || c.status;
+  const trendLbl = c.trend === "up" ? "en amélioration" : c.trend === "down" ? "en dégradation" : c.trend === "flat" ? "stable" : "—";
+  const recos = {
+    finance: ["Revue des charges et de la masse salariale", "Plan de remplissage / mix alternance", "Renégociation fournisseurs"],
+    remplissage: ["JPO, salons, relance candidats", "Ouvrir une filière à forte demande", "Activer l'alternance"],
+    admissions: ["Relancer les candidats en attente", "Renforcer la conversion entretien→inscrit", "Actions Parcoursup / partenaires"],
+    qualiopi: ["Compléter les preuves manquantes", "Planifier l'audit de surveillance", "Plan de remédiation par indicateur"],
+    actions: ["Débloquer / réassigner les actions en retard", "Fixer des échéances et responsables"],
+    incidents: ["Traiter les réclamations ouvertes", "Analyser la récurrence (cause racine)"],
+    satisfaction: ["Enquête flash + plan d'amélioration", "Point pédagogique avec l'équipe"],
+    insertion: ["Renforcer le lien entreprises", "Suivi placement des diplômés"],
+    visites: ["Planifier une visite de campus", "Point avec le directeur"],
+    direction: ["Revue managériale", "Plan d'accompagnement du directeur"],
+  }[k] || [];
+  openModal(`${esc(r.campus)} — ${esc(label)}`, `
+    <div class="kpis" style="margin-bottom:12px;">
+      <div class="k"><div class="v">${esc(c.value ?? "—")}</div><div class="l">Valeur actuelle</div></div>
+      <div class="k"><div class="v" style="color:var(--${c.status === "good" ? "good" : c.status === "warn" ? "warn" : "danger"});">${statusLbl}</div><div class="l">Statut</div></div>
+      <div class="k"><div class="v">${trendLbl}</div><div class="l">Tendance</div></div>
+    </div>
+    ${recos.length ? `<div class="section-title" style="margin-top:0;">Leviers recommandés</div><ul>${recos.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="hc-open">Ouvrir la fiche campus</button></div>`);
+  $("#hc-open").onclick = () => { closeModals(); openCampus360(r.campusId); };
+}
+
+// ---------- Vue : Priorités du jour (actions priorisées) ----------
+async function renderPriorites() {
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const acts = await api.get("/api/actions/prioritized") || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const tone = (s) => (s >= 65 ? "bad" : s >= 40 ? "warn" : "good");
+  const row = (a) => {
+    const overdue = a.dueDate && a.dueDate < today;
+    return `<div class="item prio-item">
+      <div class="prio-score prio-${tone(a.score)}">${a.score}</div>
+      <div class="grow"><div class="ttl">${esc(a.title)}</div>
+        <div class="sub">${a.campusName ? esc(a.campusName) + " · " : ""}${a.owner ? "👤 " + esc(a.owner) : '<span class="pill warn">sans responsable</span>'}${a.dueDate ? ` · <span class="${overdue ? "pill overdue" : ""}">${overdue ? "⏰ " : "📅 "}${esc(a.dueDate)}</span>` : ""}</div>
+        ${a.reasons?.length ? `<div class="prio-why">${a.reasons.map((r) => `<span class="prio-tag">${esc(r)}</span>`).join("")}</div>` : ""}
+      </div>
+      <button class="btn-ghost btn-sm prio-ed" data-id="${a.id}">Traiter</button></div>`;
+  };
+  const noOwner = acts.filter((a) => !a.owner);
+  const overdue = acts.filter((a) => a.dueDate && a.dueDate < today);
+  view.innerHTML = `
+    <div class="kpis" style="margin-bottom:12px;">
+      <div class="k"><div class="v">${acts.length}</div><div class="l">actions ouvertes</div></div>
+      <div class="k k-bad"><div class="v">${overdue.length}</div><div class="l">en retard</div></div>
+      <div class="k k-bad"><div class="v">${noOwner.length}</div><div class="l">sans responsable</div></div>
+    </div>
+    <div class="section-title" style="margin-top:0;">Top priorités <span class="muted" style="font-weight:400;font-size:12px;">— score = urgence × impact × criticité campus</span></div>
+    <div class="list">${acts.length ? acts.slice(0, 12).map(row).join("") : `<p class="empty" style="padding:14px;">Aucune action ouverte. 👌</p>`}</div>
+    ${noOwner.length ? `<div class="section-title">Critiques sans responsable</div><div class="list">${noOwner.slice(0, 8).map(row).join("")}</div>` : ""}`;
+  $$(".prio-ed").forEach((b) => b.addEventListener("click", () => openActionForm(acts.find((a) => a.id === b.dataset.id))));
 }
 
 // ---------- Vue : Campus ----------

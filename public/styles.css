@@ -731,3 +731,29 @@ code { background: var(--line-2); padding: 1px 5px; border-radius: 4px; font-siz
 .mod-mixte { background: #ECEAF6; color: #5B4DA8; }
 .mix-line { margin-top: 8px; font-size: 12.5px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; }
 .mix-line b { font-variant-numeric: tabular-nums; }
+
+/* ---- Heatmap réseau ---- */
+.heat-table td, .heat-table th { text-align: center; }
+.heat-table td:first-child, .heat-table th:first-child { text-align: left; }
+.heat-cell { cursor: pointer; font-weight: 700; font-variant-numeric: tabular-nums; position: relative; transition: filter .1s; }
+.heat-cell:hover { filter: brightness(0.96); outline: 2px solid var(--marine); outline-offset: -2px; }
+.heat-good { background: #DBF0E9; color: #0B5C4E; }
+.heat-warn { background: #FBEBCF; color: #8A5A12; }
+.heat-bad { background: #F7D6CE; color: #A5341C; }
+.heat-na { background: var(--line-2); color: var(--muted-2); font-weight: 400; }
+.heat-tr { font-size: 10px; margin-left: 3px; vertical-align: middle; }
+.heat-tr.up { color: #0B7C4E; } .heat-tr.down { color: var(--danger); }
+.heat-legend { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 10px 2px 0; }
+.heat-swatch { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
+.heat-swatch.heat-good { background: #DBF0E9; } .heat-swatch.heat-warn { background: #FBEBCF; } .heat-swatch.heat-bad { background: #F7D6CE; } .heat-swatch.heat-na { background: var(--line-2); }
+.lnk { cursor: pointer; border-bottom: 1px dotted var(--muted); }
+.drift-high { border-left: 3px solid var(--danger); } .drift-medium { border-left: 3px solid var(--warn); } .drift-low { border-left: 3px solid var(--line); }
+
+/* ---- Priorités du jour ---- */
+.prio-item { align-items: center; gap: 12px; }
+.prio-score { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-weight: 800; font-size: 18px; font-variant-numeric: tabular-nums; }
+.prio-good { background: var(--good-bg); color: var(--marine); }
+.prio-warn { background: var(--warn-bg); color: #8A5A12; }
+.prio-bad { background: #F7D6CE; color: #A5341C; }
+.prio-why { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
+.prio-tag { font-size: 11px; background: var(--bg); border: 1px solid var(--line); border-radius: 20px; padding: 1px 9px; color: var(--muted); }
