@@ -1660,6 +1660,66 @@ app.delete("/api/decisions/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ===== Plans de redressement campus (30/60/90 jours) =====
+app.get("/api/recoveries", requireAuth, requireAdmin, (req, res) => {
+  res.json(store.listRecoveries().filter((r) => !r.campusId || canCampus(req, r.campusId)));
+});
+app.post("/api/recoveries", requireAuth, requireAdmin, (req, res) => {
+  const cid = req.body?.campusId;
+  if (!cid || !canCampus(req, cid)) return res.status(400).json({ error: "campus requis / hors périmètre" });
+  const campus = store.listCampuses().find((c) => c.id === cid);
+  const r = store.addRecovery({ ...req.body, campusName: campus?.name || null });
+  logAudit(req, "create", "recovery", campus?.name || cid);
+  res.json(r);
+});
+app.patch("/api/recoveries/:id", requireAuth, requireAdmin, (req, res) => {
+  const cur = store.listRecoveries().find((x) => x.id === req.params.id);
+  if (!cur) return res.status(404).json({ error: "introuvable" });
+  if (!canCampus(req, cur.campusId)) return res.status(403).json({ error: "hors périmètre" });
+  const r = store.updateRecovery(req.params.id, req.body || {});
+  logAudit(req, "update", "recovery", cur.campusName || cur.campusId);
+  res.json(r);
+});
+app.delete("/api/recoveries/:id", requireAuth, requireAdmin, (req, res) => {
+  const cur = store.listRecoveries().find((x) => x.id === req.params.id);
+  if (cur && !canCampus(req, cur.campusId)) return res.status(403).json({ error: "hors périmètre" });
+  store.deleteRecovery(req.params.id);
+  logAudit(req, "delete", "recovery", cur?.campusName || req.params.id);
+  res.json({ ok: true });
+});
+
+// ===== Prévision consolidée réseau (effectifs + finance vs objectifs) =====
+function admForecastSrv(a) {
+  const c = +a.candidatures || 0, e = +a.entretiens || 0, ad = +a.admis || 0, ins = +a.inscrits || 0, obj = +a.objectif || 0;
+  if (!c && !ad && !ins) return null;
+  const r1 = c ? e / c : 0.6, r2 = e ? ad / e : 0.5, r3 = ad ? ins / ad : 0.7;
+  let central = c ? Math.round(c * r1 * r2 * r3) : Math.max(ins, Math.round(ad * 0.7));
+  central = Math.max(central, ins);
+  return { central, prudent: Math.max(ins, Math.round(central * 0.85)), optimiste: Math.round(central * 1.15), obj, ins };
+}
+app.get("/api/forecast/consolidated", requireAuth, requireAdmin, (req, res) => {
+  const rows = buildNetworkRows(req);
+  const campById = Object.fromEntries(store.listCampuses().map((c) => [c.id, c]));
+  let effObj = 0, effCentral = 0, effPrudent = 0, effOpt = 0, effIns = 0, caObj = 0, caReal = 0, margeReal = 0;
+  const campuses = rows.map((r) => {
+    const c = campById[r.id] || {};
+    const k = store.latestKpi(r.id) || {};
+    const f = admForecastSrv(r.admissions || {});
+    const objRev = c.objectives?.revenue || null;
+    if (f) { effObj += f.obj || 0; effCentral += f.central; effPrudent += f.prudent; effOpt += f.optimiste; effIns += f.ins; }
+    if (objRev) caObj += objRev;
+    if (k.revenue != null) { caReal += k.revenue; margeReal += marginOf(k) || 0; }
+    const atRisk = !!((f && f.obj && f.central < f.obj * 0.85) || (k.revenue && marginOf(k) < 0) || (r.health != null && r.health < 50));
+    return { campusId: r.id, campus: r.name, health: r.health, adObj: f?.obj ?? null, adCentral: f?.central ?? null, adPrudent: f?.prudent ?? null, adOpt: f?.optimiste ?? null, objRevenue: objRev, revenue: k.revenue ?? null, margin: marginOf(k), atRisk };
+  });
+  res.json({
+    effectifs: { objectif: effObj, central: effCentral, prudent: effPrudent, optimiste: effOpt, acquis: effIns },
+    finance: { objectifCA: caObj || null, caReal: caReal || null, margeReal: margeReal || null },
+    campuses,
+    atRisk: campuses.filter((c) => c.atRisk),
+  });
+});
+
 // ===== Revues mensuelles par campus =====
 // Snapshot instantané d'un campus (KPI + finance + actions + incidents) pour figer une revue.
 function campusSnapshot(req, campusId) {

@@ -307,6 +307,7 @@ const NAV = [
   { id: "notifications", label: "Notifications", icon: I.bell, group: "Pilotage" },
   { id: "heatmap", label: "Heatmap réseau", icon: I.net, admin: true, group: "Pilotage" },
   { id: "priorites", label: "Priorités du jour", icon: I.target, group: "Pilotage" },
+  { id: "redressements", label: "Plans de redressement", icon: I.rocket, admin: true, group: "Pilotage" },
   { id: "decisions", label: "Décisions (CODIR)", icon: I.gavel, admin: true, group: "Pilotage" },
   { id: "reseau", label: "Réseau", icon: I.net, admin: true, group: "Réseau" },
   { id: "campus", label: "Campus", icon: I.campus, group: "Réseau" },
@@ -319,6 +320,7 @@ const NAV = [
   { id: "evenements", label: "JPO & événements", icon: I.mega, group: "Réseau" },
   { id: "documents", label: "Documents", icon: I.folder, group: "Réseau" },
   { id: "finance", label: "Finance", icon: I.euro, group: "Performance" },
+  { id: "prevision", label: "Prévision consolidée", icon: I.chart, admin: true, group: "Performance" },
   { id: "insertion", label: "Insertion & satisfaction", icon: I.heart, group: "Performance" },
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "indicateurs", label: "Indicateurs", icon: I.chart, group: "Performance" },
@@ -376,7 +378,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1154,6 +1156,101 @@ async function renderPriorites() {
   $$(".prio-ed").forEach((b) => b.addEventListener("click", () => openActionForm(acts.find((a) => a.id === b.dataset.id))));
 }
 
+// ---------- Vue : Plans de redressement (30/60/90 j) ----------
+const REC_HORIZONS = [["h30", "J+30 jours"], ["h60", "J+60 jours"], ["h90", "J+90 jours"]];
+function recItemRow(it) {
+  it = it || {};
+  return `<div class="rec-item"><input type="checkbox" class="ri-done" ${it.done ? "checked" : ""}><input class="txt ri-f" data-f="text" value="${esc(it.text || "")}" placeholder="Action / objectif" style="flex:1;min-width:120px;"><input class="txt ri-f" data-f="owner" value="${esc(it.owner || "")}" placeholder="Resp." style="width:88px;"><button type="button" class="btn-ghost btn-sm ri-del">✕</button></div>`;
+}
+async function renderRedressements() {
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="add-rec">${I.plus}<span>Plan</span></button>`;
+  $("#add-rec").addEventListener("click", openRecoveryForm);
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const recs = await api.get("/api/recoveries") || [];
+  const card = (r) => {
+    const items = REC_HORIZONS.flatMap(([h]) => r[h] || []);
+    const done = items.filter((x) => x.done).length;
+    const pct = items.length ? Math.round(done / items.length * 100) : 0;
+    return `<div class="card card-pad rec-card" data-id="${r.id}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <h3 style="margin:0;">${esc(r.campusName || "Campus")} <span class="pill ${r.status === "active" ? "doing" : "done"}">${r.status === "active" ? "En cours" : "Clôturé"}</span></h3>
+        <div style="display:flex;gap:6px;align-items:center;"><span class="muted" style="font-size:12px;">${done}/${items.length} · ${pct}%</span>
+          <button class="btn-ghost btn-sm rec-status" data-id="${r.id}" data-s="${r.status === "active" ? "closed" : "active"}">${r.status === "active" ? "Clôturer" : "Rouvrir"}</button>
+          <button class="btn-ghost btn-sm btn-danger rec-del" data-id="${r.id}">Suppr.</button></div>
+      </div>
+      <div class="field" style="margin-top:10px;"><label class="field-label">Diagnostic</label><textarea class="rec-diag" rows="2" placeholder="Pourquoi ce campus est en difficulté (cause racine)">${esc(r.diagnostic || "")}</textarea></div>
+      <div class="rec-grid">${REC_HORIZONS.map(([h, l]) => `<div class="rec-col" data-h="${h}"><div class="rec-col-h">${l}</div><div class="rec-items">${(r[h] || []).map(recItemRow).join("")}</div><button type="button" class="btn-ghost btn-sm rec-add" data-h="${h}">+ tâche</button></div>`).join("")}</div>
+      <div class="field" style="margin-top:10px;"><label class="field-label">Indicateurs de sortie <span class="muted">(quand considère-t-on le campus redressé ?)</span></label><textarea class="rec-exit" rows="2">${esc(r.exitCriteria || "")}</textarea></div>
+      <button class="btn-primary btn-sm rec-save" data-id="${r.id}">Enregistrer</button> <span class="status rec-msg"></span>
+    </div>`;
+  };
+  view.innerHTML = recs.length ? recs.map(card).join("") : `<p class="empty">Aucun plan de redressement. Crée-en un pour un campus en difficulté (diagnostic → objectifs 30/60/90 → indicateurs de sortie).</p>`;
+  const bindItems = () => { $$(".ri-del").forEach((b) => (b.onclick = () => b.closest(".rec-item").remove())); };
+  bindItems();
+  $$(".rec-add").forEach((b) => b.addEventListener("click", () => { b.closest(".rec-col").querySelector(".rec-items").insertAdjacentHTML("beforeend", recItemRow({})); bindItems(); }));
+  $$(".rec-del").forEach((b) => b.addEventListener("click", async () => { if (confirm("Supprimer ce plan ?")) { await api.del(`/api/recoveries/${b.dataset.id}`); renderRedressements(); } }));
+  $$(".rec-status").forEach((b) => b.addEventListener("click", async () => { await api.patch(`/api/recoveries/${b.dataset.id}`, { status: b.dataset.s }); renderRedressements(); }));
+  $$(".rec-save").forEach((b) => b.addEventListener("click", async () => {
+    const c = b.closest(".rec-card"); const patch = { diagnostic: c.querySelector(".rec-diag").value, exitCriteria: c.querySelector(".rec-exit").value };
+    REC_HORIZONS.forEach(([h]) => { patch[h] = [...c.querySelectorAll(`.rec-col[data-h="${h}"] .rec-item`)].map((it) => ({ text: it.querySelector('[data-f="text"]').value, owner: it.querySelector('[data-f="owner"]').value, done: it.querySelector(".ri-done").checked })).filter((x) => x.text.trim()); });
+    await api.patch(`/api/recoveries/${b.dataset.id}`, patch);
+    const m = c.querySelector(".rec-msg"); m.textContent = "✓ Enregistré"; m.classList.add("saved");
+  }));
+}
+function openRecoveryForm() {
+  openModal("Nouveau plan de redressement", `
+    <div class="field"><label class="field-label">Campus concerné</label><select class="rf" data-f="campusId">${campusOptions("")}</select></div>
+    <div class="field"><label class="field-label">Diagnostic initial</label><textarea class="rf" data-f="diagnostic" rows="3" placeholder="Cause racine de la difficulté (marge, remplissage, direction…)"></textarea></div>
+    <div class="actions"><button class="btn-primary" id="rf-save">Créer le plan</button></div>`);
+  $("#rf-save").onclick = async () => {
+    const patch = {}; $$(".rf").forEach((i) => (patch[i.dataset.f] = i.value));
+    if (!patch.campusId) { alert("Choisis un campus."); return; }
+    await api.post("/api/recoveries", patch);
+    closeModals(); renderRedressements();
+  };
+}
+
+// ---------- Vue : Prévision consolidée réseau ----------
+async function renderPrevision() {
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const d = await api.get("/api/forecast/consolidated");
+  const eur = (v) => (v == null ? "—" : Math.round(v).toLocaleString("fr-FR") + " €");
+  const e = d.effectifs || {}, f = d.finance || {};
+  const ecartEff = e.objectif ? e.central - e.objectif : null;
+  const kpi = (v, l, tone) => `<div class="k${tone ? " k-" + tone : ""}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  const campRow = (c) => `<tr class="${c.atRisk ? "row-risk" : ""}">
+    <td><b>${esc(c.campus)}</b></td>
+    <td class="c">${c.health ?? "—"}</td>
+    <td class="c">${c.adObj ?? "—"}</td>
+    <td class="c">${c.adCentral != null ? `${c.adCentral} <span class="muted">(${c.adPrudent}–${c.adOpt})</span>` : "—"}</td>
+    <td class="c num">${eur(c.objRevenue)}</td>
+    <td class="c num">${eur(c.revenue)}</td>
+    <td class="c num ${c.margin != null && c.margin < 0 ? "neg" : ""}">${eur(c.margin)}</td>
+    <td class="c">${c.atRisk ? '<span class="pill overdue">à risque</span>' : "✓"}</td></tr>`;
+  view.innerHTML = `
+    <div class="section-title" style="margin-top:0;">Trajectoire effectifs (fin d'année)</div>
+    <div class="kpis">
+      ${kpi(e.objectif || "—", "Objectif inscrits")}
+      ${kpi(e.prudent || "—", "Scénario prudent", "bad")}
+      ${kpi(e.central || "—", "Scénario central", ecartEff >= 0 ? "good" : "bad")}
+      ${kpi(e.optimiste || "—", "Scénario optimiste", "good")}
+    </div>
+    ${e.objectif ? `<p class="hint ${ecartEff >= 0 ? "" : "muted"}" style="margin-top:8px;color:${ecartEff >= 0 ? "var(--good)" : "var(--danger)"};">${ecartEff >= 0 ? "▲ +" + ecartEff + " inscrits vs objectif réseau (scénario central)" : "▼ " + ecartEff + " inscrits sous l'objectif réseau — manque " + Math.abs(ecartEff) + " inscriptions"}</p>` : ""}
+    <div class="section-title">Finance vs objectifs</div>
+    <div class="kpis">
+      ${kpi(eur(f.objectifCA), "Objectif CA (annuel)")}
+      ${kpi(eur(f.caReal), "CA constaté (dernier mois)")}
+      ${kpi(eur(f.margeReal), "Marge constatée", f.margeReal != null && f.margeReal < 0 ? "bad" : "good")}
+    </div>
+    <div class="section-title">Campus & trajectoire ${d.atRisk?.length ? `<span class="pill overdue">${d.atRisk.length} à risque</span>` : ""}</div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Campus</th><th class="c">Santé</th><th class="c">Obj. inscrits</th><th class="c">Projection (fourchette)</th><th class="c">Obj. CA</th><th class="c">CA</th><th class="c">Marge</th><th class="c">Statut</th></tr></thead>
+      <tbody>${(d.campuses || []).map(campRow).join("")}</tbody></table></div>
+    <p class="hint muted" style="margin-top:12px;">Projection effectifs = entonnoir admissions (candidatures→inscrits) par campus, agrégée ; fourchette prudente/optimiste ±15 %. Finance = objectifs annuels (fiche campus) vs dernier mois constaté. Estimation d'aide à la décision, pas un budget.</p>`;
+}
+
 // ---------- Vue : Campus ----------
 async function renderCampus() {
   $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="add-campus">${I.plus}<span>Campus</span></button>`;
@@ -1673,16 +1770,33 @@ function objCard(o) {
     <button type="button" class="btn-ghost btn-sm btn-danger del-obj">Supprimer l'objectif</button>
   </div>`;
 }
+function dirCategory(confidence, health) {
+  const c = confidence || 0, h = health == null ? 60 : health;
+  if (h < 50 || c === 1) return ["risk", "À risque"];
+  if (c >= 4 && h >= 70) return ["auto", "Autonome"];
+  if (c <= 2 || h < 65) return ["soutenir", "À soutenir"];
+  return ["challenger", "À challenger"];
+}
 async function renderDirecteurs() {
   $("#topbar-actions").innerHTML = "";
   const view = $("#view");
-  const dirs = await api.get("/api/directors") || [];
-  if (!dirs.length) { view.innerHTML = `<p class="empty">Ajoute des campus, et un interlocuteur catégorie « Direction » par campus (onglet Campus).</p>`; return; }
-  view.innerHTML = `<div class="grid grid-2">${dirs.map((d) => {
+  const [dirs, net] = await Promise.all([api.get("/api/directors"), api.get("/api/network").catch(() => [])]);
+  if (!dirs || !dirs.length) { view.innerHTML = `<p class="empty">Ajoute des campus, et un interlocuteur catégorie « Direction » par campus (onglet Campus).</p>`; return; }
+  const healthById = Object.fromEntries((net || []).map((r) => [r.id, r.health]));
+  const cats = dirs.map((d) => dirCategory(d.review?.confidence, healthById[d.campusId])[0]);
+  const count = (k) => cats.filter((x) => x === k).length;
+  const chip = (k, l) => `<span class="dir-chip dir-${k}">${count(k)} ${l}</span>`;
+  const summary = `<div class="dir-summary">${chip("risk", "à risque")}${chip("soutenir", "à soutenir")}${chip("challenger", "à challenger")}${chip("auto", "autonomes")}</div>`;
+  view.innerHTML = summary + `<div class="grid grid-2">${dirs.map((d) => {
     const r = d.review || {};
+    const health = healthById[d.campusId];
+    const [ck, cl] = dirCategory(r.confidence, health);
     return `<div class="card card-pad" data-cid="${d.campusId}">
-      <h3>${esc(d.director || "— directeur à renseigner —")}</h3>
-      <div class="sub muted">${esc(d.campusName)}${d.city ? " · " + esc(d.city) : ""}${d.email ? " · " + esc(d.email) : ""}</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+        <div><h3 style="margin:0;">${esc(d.director || "— directeur à renseigner —")}</h3>
+        <div class="sub muted">${esc(d.campusName)}${d.city ? " · " + esc(d.city) : ""}${d.email ? " · " + esc(d.email) : ""}</div></div>
+        <div style="text-align:right;flex:0 0 auto;"><span class="dir-chip dir-${ck}">${cl}</span><div class="sub muted" style="margin-top:4px;">Santé campus ${health ?? "—"}</div></div>
+      </div>
       <div class="section-title" style="margin:14px 0 8px;">Objectifs & résultats (avec jalons intermédiaires)</div>
       <div class="objs" data-cid="${d.campusId}">${(r.objectivesList || []).map(objCard).join("")}</div>
       <button type="button" class="btn-ghost btn-sm add-obj" data-cid="${d.campusId}">+ Objectif</button>

@@ -757,3 +757,22 @@ code { background: var(--line-2); padding: 1px 5px; border-radius: 4px; font-siz
 .prio-bad { background: #F7D6CE; color: #A5341C; }
 .prio-why { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
 .prio-tag { font-size: 11px; background: var(--bg); border: 1px solid var(--line); border-radius: 20px; padding: 1px 9px; color: var(--muted); }
+
+/* ---- Plans de redressement 30/60/90 ---- */
+.rec-card { margin-bottom: 16px; }
+.rec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+.rec-col { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+.rec-col-h { font-weight: 700; color: var(--marine); font-size: 13px; margin-bottom: 8px; }
+.rec-items { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.rec-item { display: flex; gap: 5px; align-items: center; }
+.rec-item .ri-done { flex: 0 0 auto; }
+@media (max-width: 720px) { .rec-grid { grid-template-columns: 1fr; } }
+
+/* ---- Catégories directeurs ---- */
+.dir-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.dir-chip { display: inline-block; padding: 2px 11px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+.dir-risk { background: #F7D6CE; color: #A5341C; }
+.dir-soutenir { background: var(--warn-bg); color: #8A5A12; }
+.dir-challenger { background: #ECEAF6; color: #5B4DA8; }
+.dir-auto { background: var(--good-bg); color: var(--marine); }
+.row-risk { background: #FBEDEA !important; }
