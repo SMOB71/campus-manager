@@ -309,6 +309,7 @@ const NAV = [
   { id: "priorites", label: "Priorités du jour", icon: I.target, group: "Pilotage" },
   { id: "redressements", label: "Plans de redressement", icon: I.rocket, admin: true, group: "Pilotage" },
   { id: "decisions", label: "Décisions (CODIR)", icon: I.gavel, admin: true, group: "Pilotage" },
+  { id: "arbitrages", label: "Arbitrages CODIR", icon: I.clip, admin: true, group: "Pilotage" },
   { id: "reseau", label: "Réseau", icon: I.net, admin: true, group: "Réseau" },
   { id: "campus", label: "Campus", icon: I.campus, group: "Réseau" },
   { id: "directeurs", label: "Directeurs", icon: I.users, admin: true, group: "Réseau" },
@@ -378,7 +379,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1249,6 +1250,65 @@ async function renderPrevision() {
       <thead><tr><th>Campus</th><th class="c">Santé</th><th class="c">Obj. inscrits</th><th class="c">Projection (fourchette)</th><th class="c">Obj. CA</th><th class="c">CA</th><th class="c">Marge</th><th class="c">Statut</th></tr></thead>
       <tbody>${(d.campuses || []).map(campRow).join("")}</tbody></table></div>
     <p class="hint muted" style="margin-top:12px;">Projection effectifs = entonnoir admissions (candidatures→inscrits) par campus, agrégée ; fourchette prudente/optimiste ±15 %. Finance = objectifs annuels (fiche campus) vs dernier mois constaté. Estimation d'aide à la décision, pas un budget.</p>`;
+}
+
+// ---------- Vue : Arbitrages CODIR ----------
+const ARB_STATUS = [["toprepare", "À préparer"], ["pending", "En attente CODIR"], ["decided", "Tranché"], ["executed", "Exécuté"]];
+const arbStatusLabel = (s) => (ARB_STATUS.find(([k]) => k === s) || [s, s])[1];
+async function renderArbitrages() {
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="arb-weekly">Revue hebdo PDF</button><button class="btn-primary btn-sm" id="add-arb">${I.plus}<span>Arbitrage</span></button>`;
+  $("#add-arb").addEventListener("click", () => openArbitrageForm(null));
+  $("#arb-weekly").addEventListener("click", () => window.open("/api/weekly-review", "_blank"));
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const arbs = await api.get("/api/arbitrages") || [];
+  const badge = (s) => `<span class="pill ${s === "decided" ? "done" : s === "executed" ? "" : s === "pending" ? "warn" : "doing"}">${arbStatusLabel(s)}</span>`;
+  const card = (a) => `<div class="card card-pad arb-card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+      <div><h3 style="margin:0;">${badge(a.status)} ${esc(a.title)}</h3><div class="sub muted">${a.campusName ? esc(a.campusName) + " · " : ""}${a.owner ? "Resp. " + esc(a.owner) : ""}${a.dueDate ? " · échéance " + esc(a.dueDate) : ""}</div></div>
+      <button class="btn-ghost btn-sm arb-ed" data-id="${a.id}">Éditer</button>
+    </div>
+    ${a.recommendation ? `<div class="arb-reco"><b>Reco DO :</b> ${esc(a.recommendation)}</div>` : ""}
+    <div class="arb-meta">${[a.impactFin && `💶 ${esc(a.impactFin)}`, a.impactOp && `⚙️ ${esc(a.impactOp)}`, a.riskNoDecision && `⚠️ si non-décision : ${esc(a.riskNoDecision)}`].filter(Boolean).join(" · ")}</div>
+    ${a.decision ? `<div class="arb-decision"><b>Décision :</b> ${esc(a.decision)}</div>` : ""}
+    <div class="arb-actions">${ARB_STATUS.filter(([k]) => k !== a.status).map(([k, l]) => `<button class="btn-ghost btn-sm arb-mv" data-id="${a.id}" data-s="${k}">→ ${l}</button>`).join("")}<button class="btn-ghost btn-sm btn-danger arb-del" data-id="${a.id}">Suppr.</button></div>
+  </div>`;
+  const groups = ARB_STATUS.map(([k, l]) => { const g = arbs.filter((a) => a.status === k); return g.length ? `<div class="section-title" style="${k === "toprepare" ? "margin-top:0;" : ""}">${l} <span class="muted" style="font-weight:400;font-size:12px;">${g.length}</span></div>${g.map(card).join("")}` : ""; }).join("");
+  view.innerHTML = groups || `<p class="empty">Aucun arbitrage. Transforme un sujet opérationnel en fiche de décision : contexte, options, reco DO, impacts, risque si non-décision.</p>`;
+  $$(".arb-ed").forEach((b) => b.addEventListener("click", () => openArbitrageForm(arbs.find((a) => a.id === b.dataset.id))));
+  $$(".arb-mv").forEach((b) => b.addEventListener("click", async () => { await api.patch(`/api/arbitrages/${b.dataset.id}`, { status: b.dataset.s }); renderArbitrages(); }));
+  $$(".arb-del").forEach((b) => b.addEventListener("click", async () => { if (confirm("Supprimer cet arbitrage ?")) { await api.del(`/api/arbitrages/${b.dataset.id}`); renderArbitrages(); } }));
+}
+function openArbitrageForm(a) {
+  a = a || {}; const isEdit = !!a.id;
+  const ta = (f, l, ph) => `<div class="field"><label class="field-label">${l}</label><textarea class="af" data-f="${f}" rows="2" placeholder="${ph || ""}">${esc(a[f] || "")}</textarea></div>`;
+  openModal(isEdit ? "Modifier l'arbitrage" : "Nouvel arbitrage CODIR", `
+    <div class="field"><label class="field-label">Sujet</label><input class="txt af" data-f="title" value="${esc(a.title || "")}" placeholder="Ex. Fermer la filière X à Lille"></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;">
+      <div><label class="field-label">Campus</label><select class="af" data-f="campusId">${campusOptions(a.campusId || "")}</select></div>
+      <div><label class="field-label">Statut</label><select class="af" data-f="status">${ARB_STATUS.map(([k, l]) => `<option value="${k}" ${a.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    </div>
+    ${ta("context", "Contexte", "Situation, historique")}
+    ${ta("problem", "Problème", "Ce qui doit être tranché")}
+    ${ta("options", "Options", "A) … B) … C) …")}
+    ${ta("recommendation", "Recommandation du DO", "Ce que tu préconises et pourquoi")}
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;">
+      <div><label class="field-label">Impact financier</label><input class="txt af" data-f="impactFin" value="${esc(a.impactFin || "")}"></div>
+      <div><label class="field-label">Impact opérationnel</label><input class="txt af" data-f="impactOp" value="${esc(a.impactOp || "")}"></div>
+    </div>
+    ${ta("riskNoDecision", "Risque si non-décision", "Ce qu'on risque à ne pas trancher")}
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;">
+      <div><label class="field-label">Responsable exécution</label><input class="txt af" data-f="owner" value="${esc(a.owner || "")}"></div>
+      <div><label class="field-label">Échéance</label><input class="txt af" data-f="dueDate" type="date" value="${esc(a.dueDate || "")}"></div>
+    </div>
+    ${ta("decision", "Décision prise", "Renseigner une fois tranché")}
+    <div class="actions" style="margin-top:14px;"><button class="btn-primary" id="af-save">${isEdit ? "Enregistrer" : "Créer l'arbitrage"}</button></div>`);
+  $("#af-save").onclick = async () => {
+    const patch = {}; $$(".af").forEach((i) => (patch[i.dataset.f] = i.value.trim ? i.value.trim() : i.value));
+    if (!patch.title) return;
+    if (isEdit) await api.patch(`/api/arbitrages/${a.id}`, patch); else await api.post("/api/arbitrages", patch);
+    closeModals(); renderArbitrages();
+  };
 }
 
 // ---------- Vue : Campus ----------
@@ -3252,38 +3312,6 @@ async function renderBackups() {
   }));
 }
 
-// ---------- Recherche rapide (Cmd/Ctrl-K) ----------
-function openPalette() {
-  if (document.querySelector(".palette-bg")) return;
-  const items = [
-    ...navItems().filter((n) => !n.action).map((n) => ({ label: n.label, hint: n.group, act: () => setView(n.id) })),
-    ...(state.campuses || []).map((c) => ({ label: c.name, hint: "Campus" + (c.city ? " · " + c.city : ""), act: () => openCampus360(c.id) })),
-  ];
-  const bg = document.createElement("div");
-  bg.className = "palette-bg";
-  bg.innerHTML = `<div class="palette"><input id="pal-in" placeholder="Aller à… (vue ou campus)" autocomplete="off"><div id="pal-list" class="pal-list"></div></div>`;
-  document.body.appendChild(bg);
-  const inp = $("#pal-in"); let sel = 0;
-  const render = () => {
-    const q = inp.value.trim().toLowerCase();
-    const res = items.filter((it) => !q || it.label.toLowerCase().includes(q) || (it.hint || "").toLowerCase().includes(q)).slice(0, 8);
-    sel = Math.min(sel, Math.max(0, res.length - 1));
-    $("#pal-list").innerHTML = res.length ? res.map((it, i) => `<div class="pal-item ${i === sel ? "active" : ""}" data-i="${i}"><span>${esc(it.label)}</span><span class="muted">${esc(it.hint || "")}</span></div>`).join("") : `<div class="pal-item muted">Aucun résultat</div>`;
-    bg._res = res;
-  };
-  const close = () => bg.remove();
-  const go = (i) => { const it = bg._res[i]; if (it) { close(); it.act(); } };
-  inp.addEventListener("input", () => { sel = 0; render(); });
-  inp.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown") { e.preventDefault(); sel++; render(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); render(); }
-    else if (e.key === "Enter") { e.preventDefault(); go(sel); }
-    else if (e.key === "Escape") { close(); }
-  });
-  bg.addEventListener("click", (e) => { if (e.target === bg) return close(); const it = e.target.closest(".pal-item"); if (it && it.dataset.i != null) go(+it.dataset.i); });
-  render(); inp.focus();
-}
-
 function openModal(title, bodyHtml, toolsHtml = "") {
   const bg = document.createElement("div");
   bg.className = "modal-bg";
@@ -3291,5 +3319,62 @@ function openModal(title, bodyHtml, toolsHtml = "") {
   bg.addEventListener("click", (e) => { if (e.target === bg || e.target.id === "modal-close") bg.remove(); });
   document.body.appendChild(bg);
 }
+
+// ---------- Command palette (Cmd/Ctrl+K) + recherche globale ----------
+const TYPE_ICON = { campus: "🏫", action: "✅", livrable: "📄", incident: "⚠️", "décision": "⚖️", arbitrage: "📋", contact: "👤" };
+function paletteActions() {
+  const A = [
+    { icon: "➕", label: "Créer une action", run: () => openActionForm(null) },
+    { icon: "⚖️", label: "Nouvelle décision CODIR", admin: true, run: () => { setView("decisions"); setTimeout(() => openDecisionForm(null), 60); } },
+    { icon: "📋", label: "Nouvel arbitrage CODIR", admin: true, run: () => { setView("arbitrages"); setTimeout(() => openArbitrageForm(null), 60); } },
+    { icon: "🧭", label: "Heatmap réseau", admin: true, run: () => setView("heatmap") },
+    { icon: "🎯", label: "Priorités du jour", run: () => setView("priorites") },
+    { icon: "📊", label: "Rapport board pack (PDF)", admin: true, run: () => window.open("/api/report", "_blank") },
+    { icon: "🗓️", label: "Revue hebdo (PDF)", admin: true, run: () => window.open("/api/weekly-review", "_blank") },
+    { icon: "💬", label: "Ouvrir l'assistant IA", run: () => setView("assistant") },
+  ];
+  return A.filter((a) => !a.admin || isAdmin());
+}
+function runGo(go) {
+  if (!go) return;
+  setView(go.view);
+  if (go.campus360) setTimeout(() => openCampus360(go.campus360), 80);
+  else if (go.deliverable) setTimeout(() => openDeliverable(go.deliverable), 80);
+}
+let palSel = 0, palItems = [], palTimer = null;
+function openPalette() {
+  if (!state.user || document.getElementById("palette")) return;
+  const bg = document.createElement("div");
+  bg.id = "palette"; bg.className = "pal-bg";
+  bg.innerHTML = `<div class="pal"><input id="pal-input" class="pal-input" placeholder="Rechercher un campus, une action, une décision… ou taper une commande" autocomplete="off"><div id="pal-list" class="pal-list"></div><div class="pal-hint">↑↓ naviguer · ↵ ouvrir · Échap fermer</div></div>`;
+  bg.addEventListener("click", (e) => { if (e.target === bg) closePalette(); });
+  document.body.appendChild(bg);
+  const input = $("#pal-input");
+  input.focus();
+  const render = () => {
+    const list = $("#pal-list");
+    list.innerHTML = palItems.length ? palItems.map((it, i) => `<div class="pal-item ${i === palSel ? "sel" : ""}" data-i="${i}"><span class="pal-ic">${it.icon}</span><span class="pal-lbl">${esc(it.label)}</span>${it.sub ? `<span class="pal-sub">${esc(it.sub)}</span>` : ""}${it.tag ? `<span class="pal-tag">${it.tag}</span>` : ""}</div>`).join("") : `<div class="pal-empty">Aucun résultat</div>`;
+    $$(".pal-item").forEach((el) => el.addEventListener("click", () => { palSel = +el.dataset.i; choose(); }));
+  };
+  const build = async (q) => {
+    const acts = paletteActions().filter((a) => a.label.toLowerCase().includes(q.toLowerCase())).map((a) => ({ icon: a.icon, label: a.label, tag: "commande", run: a.run }));
+    const navs = NAV.filter((n) => (!n.admin || isAdmin()) && n.label.toLowerCase().includes(q.toLowerCase())).slice(0, 5).map((n) => ({ icon: "→", label: n.label, tag: "aller à", run: () => setView(n.id) }));
+    let results = [];
+    if (q.length >= 2) { const r = await api.get("/api/search?q=" + encodeURIComponent(q)); results = (r || []).map((x) => ({ icon: TYPE_ICON[x.type] || "•", label: x.label, sub: x.sub, tag: x.type, run: () => runGo(x.go) })); }
+    palItems = q ? [...acts, ...navs, ...results] : paletteActions().map((a) => ({ icon: a.icon, label: a.label, tag: "commande", run: a.run }));
+    palSel = 0; render();
+  };
+  const choose = () => { const it = palItems[palSel]; closePalette(); if (it) it.run(); };
+  input.addEventListener("input", () => { clearTimeout(palTimer); palTimer = setTimeout(() => build(input.value.trim()), 160); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); palSel = Math.min(palSel + 1, palItems.length - 1); render(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); palSel = Math.max(palSel - 1, 0); render(); }
+    else if (e.key === "Enter") { e.preventDefault(); choose(); }
+    else if (e.key === "Escape") { closePalette(); }
+  });
+  build("");
+}
+function closePalette() { document.getElementById("palette")?.remove(); }
+document.getElementById("global-search")?.addEventListener("click", () => { if (state.user) openPalette(); });
 
 boot();

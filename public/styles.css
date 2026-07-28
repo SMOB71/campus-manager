@@ -776,3 +776,25 @@ code { background: var(--line-2); padding: 1px 5px; border-radius: 4px; font-siz
 .dir-challenger { background: #ECEAF6; color: #5B4DA8; }
 .dir-auto { background: var(--good-bg); color: var(--marine); }
 .row-risk { background: #FBEDEA !important; }
+
+/* ---- Command palette / recherche globale ---- */
+.kbd { font-size: 10px; background: var(--line-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; color: var(--muted); }
+.pal-bg { position: fixed; inset: 0; background: rgba(13,27,42,.35); backdrop-filter: blur(3px); z-index: 200; display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
+.pal { width: min(620px, 92vw); background: #fff; border-radius: 16px; box-shadow: 0 24px 70px rgba(13,27,42,.32); overflow: hidden; }
+.pal-input { width: 100%; border: none; border-bottom: 1px solid var(--line); padding: 18px 20px; font-size: 16px; outline: none; color: var(--ink); }
+.pal-list { max-height: 52vh; overflow-y: auto; padding: 6px; }
+.pal-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px; cursor: pointer; }
+.pal-item.sel, .pal-item:hover { background: var(--good-bg); }
+.pal-ic { width: 22px; text-align: center; flex: 0 0 auto; }
+.pal-lbl { flex: 1; color: var(--ink); font-weight: 500; }
+.pal-sub { color: var(--muted); font-size: 12.5px; }
+.pal-tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+.pal-empty { padding: 20px; text-align: center; color: var(--muted); }
+.pal-hint { padding: 8px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+
+/* ---- Arbitrages ---- */
+.arb-card { margin-bottom: 12px; }
+.arb-reco { margin-top: 8px; background: var(--good-bg); border-left: 3px solid var(--marine); border-radius: 0 8px 8px 0; padding: 7px 12px; font-size: 13.5px; }
+.arb-meta { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.arb-decision { margin-top: 6px; font-size: 13.5px; }
+.arb-actions { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }

@@ -1720,6 +1720,129 @@ app.get("/api/forecast/consolidated", requireAuth, requireAdmin, (req, res) => {
   });
 });
 
+// ===== Arbitrages CODIR (fiches de décision structurées) =====
+app.get("/api/arbitrages", requireAuth, requireAdmin, (req, res) => res.json(store.listArbitrages().filter((a) => !a.campusId || canCampus(req, a.campusId))));
+app.post("/api/arbitrages", requireAuth, requireAdmin, (req, res) => {
+  if (!req.body?.title || !String(req.body.title).trim()) return res.status(400).json({ error: "sujet requis" });
+  const campus = req.body.campusId ? store.listCampuses().find((c) => c.id === req.body.campusId) : null;
+  const a = store.addArbitrage({ ...req.body, campusName: campus?.name || "" });
+  logAudit(req, "create", "arbitrage", a.title);
+  res.json(a);
+});
+app.patch("/api/arbitrages/:id", requireAuth, requireAdmin, (req, res) => {
+  const a = store.updateArbitrage(req.params.id, req.body || {});
+  if (!a) return res.status(404).json({ error: "introuvable" });
+  logAudit(req, "update", "arbitrage", a.title);
+  res.json(a);
+});
+app.delete("/api/arbitrages/:id", requireAuth, requireAdmin, (req, res) => {
+  const a = store.listArbitrages().find((x) => x.id === req.params.id);
+  store.deleteArbitrage(req.params.id);
+  logAudit(req, "delete", "arbitrage", a?.title || req.params.id);
+  res.json({ ok: true });
+});
+
+// ===== Recherche globale (multi-objets, respecte le cloisonnement) =====
+app.get("/api/search", requireAuth, (req, res) => {
+  const q = String(req.query.q || "").toLowerCase().trim();
+  if (q.length < 2) return res.json([]);
+  const hit = (s) => String(s || "").toLowerCase().includes(q);
+  const out = [];
+  for (const c of store.listCampuses().filter((c) => canCampus(req, c.id))) if (hit(c.name) || hit(c.city)) out.push({ type: "campus", label: c.name, sub: c.city || "", go: { view: "campus", campus360: c.id } });
+  for (const a of scopeByCampus(req, store.listActions())) if (hit(a.title) || hit(a.owner)) out.push({ type: "action", label: a.title, sub: a.campusName || "", go: { view: "actions" } });
+  for (const d of scopeByCampus(req, store.listDeliverables({}))) if (hit(d.title)) out.push({ type: "livrable", label: d.title, sub: d.campusName || "", go: { view: "historique", deliverable: d.id } });
+  for (const i of scopeByCampus(req, store.listIncidents({}))) if (hit(i.title)) out.push({ type: "incident", label: i.title, sub: i.campusName || "", go: { view: "risques" } });
+  if (req.user?.role === "admin") {
+    for (const d of store.listDecisions()) if (hit(d.title) || hit(d.owner)) out.push({ type: "décision", label: d.title, sub: d.campusName || "", go: { view: "decisions" } });
+    for (const a of store.listArbitrages()) if (hit(a.title)) out.push({ type: "arbitrage", label: a.title, sub: a.campusName || "", go: { view: "arbitrages" } });
+  }
+  for (const c of store.listCampuses().filter((c) => canCampus(req, c.id))) for (const ct of (c.contacts || [])) if (hit([ct.firstName, ct.lastName].join(" ")) || hit(ct.email)) out.push({ type: "contact", label: [ct.firstName, ct.lastName].filter(Boolean).join(" "), sub: `${c.name}${ct.role ? " · " + ct.role : ""}`, go: { view: "campus", campus360: c.id } });
+  res.json(out.slice(0, 40));
+});
+
+// ===== Weekly Ops Review (support hebdo imprimable) =====
+function buildWeeklyHtml(req) {
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = buildNetworkRows(req);
+  const rouges = rows.filter((r) => r.health != null && r.health < 50).sort((a, b) => a.health - b.health);
+  // Dérives (mêmes règles que la heatmap)
+  const drifts = [];
+  for (const r of rows) {
+    const hist = kpiHistory(r.id);
+    if (decliningStreak(hist, marginPctOf) >= 2) drifts.push(`${r.name} — marge en baisse`);
+    if (decliningStreak(hist, (x) => x.occupancy) >= 2) drifts.push(`${r.name} — remplissage en dégradation`);
+    if (r.openIncidents >= 2) drifts.push(`${r.name} — incidents récurrents (${r.openIncidents})`);
+  }
+  // Actions prioritaires (top 8)
+  const healthById = Object.fromEntries(rows.map((r) => [r.id, r.health]));
+  const prio = scopeByCampus(req, store.listActions()).filter((a) => a.status !== "done").map((a) => {
+    let s = 10;
+    if (a.dueDate && a.dueDate < today) s += Math.min(45, 15 + Math.round((new Date(today) - new Date(a.dueDate)) / 864e5));
+    const h = healthById[a.campusId]; if (h != null && h < 50) s += 25; else if (h != null && h < 70) s += 12;
+    if (a.category === "qualiopi") s += 15; if (!a.owner) s += 8;
+    return { a, s };
+  }).sort((x, y) => y.s - x.s).slice(0, 8);
+  const decisions = store.listDecisions().filter((d) => d.status === "open");
+  const arbitrages = store.listArbitrages().filter((a) => ["toprepare", "pending"].includes(a.status));
+  // Risques 30 jours : échéances Qualiopi proches
+  const risks = [];
+  for (const c of store.listCampuses().filter((c) => canCampus(req, c.id))) {
+    const ctrl = c.qualiopi?.lastAudit ? computeControlDates(c.qualiopi.lastAudit) : null;
+    if (!ctrl) continue;
+    for (const [lbl, d] of [["surveillance", ctrl.surveillance], ["renouvellement", ctrl.renewal]]) {
+      if (!d) continue; const m = Math.round((new Date(d) - new Date()) / (30 * 864e5));
+      if (m <= 2) risks.push(`${c.name} — audit ${lbl} Qualiopi ${m < 0 ? "dépassé" : "dans " + m + " mois"}`);
+    }
+  }
+  const now = new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+  const ul = (arr, empty) => (arr.length ? `<ul>${arr.map((x) => `<li>${x}</li>`).join("")}</ul>` : `<p class="none">${empty}</p>`);
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Revue hebdo des opérations — ${now}</title>
+<style>
+  :root{--teal:#0B6E5F;--ink:#0D1B2A;--sand:#E2DACD;--muted:#5A6672;--coral:#FF6A4D;--danger:#C94B33;--paper:#FBF9F5;}
+  *{box-sizing:border-box} body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--ink);margin:0;background:var(--paper);font-size:14px;line-height:1.55;}
+  .toolbar{position:sticky;top:0;display:flex;justify-content:flex-end;max-width:820px;margin:0 auto;padding:16px 0 8px;}
+  .toolbar button{background:var(--teal);color:#fff;border:none;padding:10px 18px;border-radius:10px;font-weight:600;cursor:pointer;}
+  .sheet{max-width:820px;margin:0 auto 40px;background:#fff;padding:40px 48px 56px;box-shadow:0 1px 40px rgba(13,27,42,.08);}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand b{font-size:15px;} .brand span{font-size:10.5px;letter-spacing:2.5px;text-transform:uppercase;color:var(--teal);display:block;}
+  .rule{height:2px;background:linear-gradient(90deg,var(--teal) 0 64px,var(--sand) 64px);margin:16px 0 20px;}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--teal);font-weight:700;margin:0 0 6px;}
+  .eyebrow::before{content:"";width:22px;height:3px;background:var(--coral);border-radius:2px;}
+  h1{font-family:Georgia,serif;font-size:26px;margin:0 0 4px;} .sub{color:var(--muted);font-size:13px;margin-bottom:6px;}
+  h2{font-family:Georgia,serif;color:var(--teal);font-size:17px;margin:24px 0 8px;padding-bottom:5px;border-bottom:2px solid var(--sand);}
+  ul{margin:6px 0;padding-left:22px;} li{margin:4px 0;} li::marker{color:var(--teal);}
+  .none{color:var(--muted);font-style:italic;margin:6px 0;}
+  .rouge{color:var(--danger);font-weight:700;}
+  .foot{margin-top:30px;color:var(--muted);font-size:11px;border-top:1px solid var(--sand);padding-top:10px;}
+  @page{margin:14mm 12mm;} @media print{body{background:#fff;}.toolbar{display:none;}.sheet{box-shadow:none;max-width:none;margin:0;padding:0;}h2{break-after:avoid;}}
+</style></head><body>
+  <div class="toolbar"><button onclick="window.print()">Imprimer / Enregistrer en PDF</button></div>
+  <div class="sheet">
+    <div class="brand"><svg width="28" height="28" viewBox="0 0 64 64"><rect x="2" y="2" width="26" height="26" rx="7" fill="#0D1B2A"/><rect x="36" y="2" width="26" height="26" rx="7" fill="#0B6E5F"/><rect x="2" y="36" width="26" height="26" rx="7" fill="#0B6E5F"/><circle cx="49" cy="49" r="13" fill="#FF6A4D"/></svg><div><b>Campus Manager</b><span>Pilotage réseau</span></div></div>
+    <div class="rule"></div>
+    <div class="eyebrow">Revue hebdomadaire</div>
+    <h1>Revue des opérations réseau</h1>
+    <div class="sub">${now} · ${rows.length} campus</div>
+    <h2>Campus rouges</h2>
+    ${rouges.length ? `<ul>${rouges.map((r) => `<li><span class="rouge">${esc(r.name)} (santé ${r.health})</span>${r.healthDetail ? " — " + r.healthDetail.filter((d) => d.score < 60).slice(0, 2).map((d) => esc(d.label)).join(", ") : ""}</li>`).join("")}</ul>` : `<p class="none">Aucun campus en zone rouge cette semaine. 👌</p>`}
+    <h2>Signaux faibles & dérives</h2>
+    ${ul(drifts.map(esc), "Aucune dérive détectée.")}
+    <h2>Actions prioritaires</h2>
+    ${prio.length ? `<ul>${prio.map(({ a, s }) => `<li><b>[${s}]</b> ${esc(a.title)}${a.campusName ? " — " + esc(a.campusName) : ""}${a.dueDate && a.dueDate < today ? ' <span class="rouge">(en retard)</span>' : ""}${!a.owner ? " · sans responsable" : ""}</li>`).join("")}</ul>` : `<p class="none">Aucune action ouverte.</p>`}
+    <h2>Décisions & arbitrages en attente</h2>
+    ${ul([...decisions.map((d) => `Décision : ${esc(d.title)}${d.campusName ? " (" + esc(d.campusName) + ")" : ""}`), ...arbitrages.map((a) => `Arbitrage à ${a.status === "pending" ? "trancher" : "préparer"} : ${esc(a.title)}`)], "Rien en attente.")}
+    <h2>Risques 30 jours</h2>
+    ${ul(risks.map(esc), "Aucune échéance critique sous 30 jours.")}
+    <div class="foot">Campus Manager — support de revue hebdomadaire · confidentiel · généré le ${now}</div>
+  </div>
+</body></html>`;
+}
+app.get("/api/weekly-review", requireAuth, requireAdmin, (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(buildWeeklyHtml(req));
+});
+
 // ===== Revues mensuelles par campus =====
 // Snapshot instantané d'un campus (KPI + finance + actions + incidents) pour figer une revue.
 function campusSnapshot(req, campusId) {
