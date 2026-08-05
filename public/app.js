@@ -1625,6 +1625,7 @@ async function renderQualiopi() {
     ${(qualiopiRef.glossary && qualiopiRef.glossary.length) ? `<details class="card card-pad" style="margin-bottom:12px;">
       <summary style="cursor:pointer;font-weight:600;color:var(--marine);">📘 Glossaire — éléments clés de Qualiopi</summary>
       <dl style="margin:12px 0 0;display:flex;flex-direction:column;gap:10px;">${qualiopiRef.glossary.map((g) => `
+        ${g.sec ? `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;color:var(--marine);opacity:.7;margin-top:6px;border-top:1px solid var(--border);padding-top:10px;">${esc(g.sec)}</div>` : ""}
         <div><dt style="font-weight:600;color:var(--marine);">${esc(g.t)}</dt><dd style="margin:2px 0 0;color:var(--muted);line-height:1.5;">${esc(g.d)}</dd></div>`).join("")}</dl>
     </details>` : ""}
     <div class="actions" style="position:sticky;bottom:0;background:var(--bg);padding:10px 0;"><button id="q-save" class="btn-primary">Enregistrer Qualiopi</button> <span id="q-msg" class="status"></span></div>`;
