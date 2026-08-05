@@ -1622,6 +1622,11 @@ async function renderQualiopi() {
         </div>`;
       }).join("")}</div>
     </div>`).join("")}
+    ${(qualiopiRef.glossary && qualiopiRef.glossary.length) ? `<details class="card card-pad" style="margin-bottom:12px;">
+      <summary style="cursor:pointer;font-weight:600;color:var(--marine);">📘 Glossaire — éléments clés de Qualiopi</summary>
+      <dl style="margin:12px 0 0;display:flex;flex-direction:column;gap:10px;">${qualiopiRef.glossary.map((g) => `
+        <div><dt style="font-weight:600;color:var(--marine);">${esc(g.t)}</dt><dd style="margin:2px 0 0;color:var(--muted);line-height:1.5;">${esc(g.d)}</dd></div>`).join("")}</dl>
+    </details>` : ""}
     <div class="actions" style="position:sticky;bottom:0;background:var(--bg);padding:10px 0;"><button id="q-save" class="btn-primary">Enregistrer Qualiopi</button> <span id="q-msg" class="status"></span></div>`;
   $("#q-campus").addEventListener("change", (e) => { qCampus = e.target.value; renderQualiopi(); });
   $$(".q-proof").forEach((b) => b.addEventListener("click", () => openIndicatorProof(qCampus, b.dataset.n, qdocs.filter((d) => String(d.indicator) === String(b.dataset.n)))));

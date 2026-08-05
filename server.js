@@ -19,7 +19,7 @@ import { encryptionEnabled, encryptBuffer, decryptBuffer } from "./lib/crypto-st
 import { extractText } from "./lib/extract.js";
 import { toMarkdown, toHtml, toDocx } from "./lib/export.js";
 import * as store from "./lib/store.js";
-import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, conformityRate, computeControlDates } from "./lib/qualiopi.js";
+import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
@@ -579,7 +579,7 @@ app.delete("/api/actions/:id", requireAuth, (req, res) => {
 });
 
 // --- Qualiopi ---
-app.get("/api/qualiopi/reference", requireAuth, (req, res) => res.json({ reference: QUALIOPI_REFERENCE, statuses: QUALIOPI_STATUSES }));
+app.get("/api/qualiopi/reference", requireAuth, (req, res) => res.json({ reference: QUALIOPI_REFERENCE, statuses: QUALIOPI_STATUSES, glossary: QUALIOPI_GLOSSARY }));
 app.get("/api/campuses/:id/qualiopi", campusGuard, (req, res) => {
   const q = store.getQualiopi(req.params.id);
   if (!q) return res.status(404).json({ error: "campus introuvable" });
