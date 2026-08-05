@@ -183,20 +183,32 @@ function recordFail(ip) {
   if (f.count >= 5) { f.until = Date.now() + 30000; f.count = 0; }
   loginFails.set(ip, f);
 }
-const clientIp = (req) => req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || "?";
+// Derrière UN proxy de confiance (nginx APPEND l'IP réelle via $proxy_add_x_forwarded_for) :
+// l'entrée la plus à DROITE est celle ajoutée par nginx = vraie IP client. Le leftmost est
+// fourni par le client → spoofable : le lire annulerait le throttle anti-bruteforce.
+const clientIp = (req) => {
+  const xff = req.headers["x-forwarded-for"];
+  if (xff) {
+    const parts = String(xff).split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
+  }
+  return req.ip || "?";
+};
 const resetCodes = new Map(); // email -> { code, exp }
 
 app.post("/api/login", (req, res) => {
   const ip = clientIp(req);
-  if (throttled(ip)) return res.status(429).json({ error: "Trop de tentatives. Réessaie dans 30 secondes." });
   const { email, password } = req.body || {};
+  // Throttle par IP ET par email : bloque le bruteforce simple ET le distribué (rotation d'IP sur un compte).
+  const emailKey = email ? "e:" + String(email).toLowerCase() : null;
+  if (throttled(ip) || (emailKey && throttled(emailKey))) return res.status(429).json({ error: "Trop de tentatives. Réessaie dans 30 secondes." });
   const user = email ? userstore.getUserByEmail(email) : null;
   if (!user || !userstore.verifyUserPassword(user, password || "")) {
-    recordFail(ip);
+    recordFail(ip); if (emailKey) recordFail(emailKey);
     return res.status(401).json({ error: "Email ou mot de passe incorrect" });
   }
-  if (user.active === false) { recordFail(ip); return res.status(403).json({ error: "Compte désactivé. Contacte l'administrateur." }); }
-  loginFails.delete(ip);
+  if (user.active === false) { recordFail(ip); if (emailKey) recordFail(emailKey); return res.status(403).json({ error: "Compte désactivé. Contacte l'administrateur." }); }
+  loginFails.delete(ip); if (emailKey) loginFails.delete(emailKey);
   issueCookie(res, user.id);
   issueCsrf(req, res);
   res.json({ ok: true });
@@ -515,6 +527,7 @@ app.get("/api/deliverables/:id/export", requireAuth, async (req, res) => {
     }
     if (fmt === "print") {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Content-Security-Policy", CSP);   // défense-en-profondeur sur la route HTML dynamique
       return res.send(toHtml(d));
     }
     if (fmt === "docx") {
@@ -825,6 +838,10 @@ app.post("/api/generate", requireAuth, async (req, res) => {
 
   const isProposal = task === "ordre_du_jour" && variant && VISIT_VARIANTS[variant];
   if ((!input || !String(input).trim()) && !isProposal) return res.status(400).json({ error: "aucune donnee fournie" });
+  // Borne dure sur l'entrée envoyée au modèle (coût/contexte). Refus explicite plutôt que
+  // troncature silencieuse (qui perdrait des lignes de P&L → chiffres faux).
+  const MAX_INPUT = 200000;
+  if (input && String(input).length > MAX_INPUT) return res.status(400).json({ error: `Données trop volumineuses (${String(input).length} caractères, max ${MAX_INPUT}). Réduis ou découpe l'analyse.` });
 
   // Garde anti-régénération pour les P&L : si les mêmes données ont déjà été
   // analysées pour ce campus, on ne régénère pas (sauf force).
@@ -923,10 +940,17 @@ app.post("/api/generate", requireAuth, async (req, res) => {
         campusId: campus?.id || null, campusName: campus?.name || null, content: full, model: modelFor(task), signature: pnlSig,
       });
       res.write(`\n<!--deliverable:${d.id}-->`);
-      // Un P&L généré alimente automatiquement la ventilation finance du campus.
+      // Zéro-hallucination : un P&L généré NE seed PLUS automatiquement la finance.
+      // Les chiffres extraits par le modèle sont stockés en PROPOSITION à valider par le
+      // directeur (Valider/Ignorer côté UI) → ils n'entrent en finance/board pack qu'après
+      // confirmation humaine explicite. (Avant : auto-seed → chiffres non validés au conseil.)
       if (task === "pnl" && campus) {
         const postes = extractPnlPostes(full);
-        if (postes) { const r = seedFinanceFromPostes(campus.id, postes); logAudit(req, "seed", "finance", `P&L → ${campus.name} ${r.month} (${r.applied} poste(s))`); }
+        if (postes) {
+          const month = postes.month || new Date().toISOString().slice(0, 7);
+          store.setFinanceProposal(campus.id, { postes, month, deliverableId: d.id });
+          logAudit(req, "propose", "finance", `P&L → ${campus.name} ${month} : ventilation extraite, EN ATTENTE de validation`);
+        }
       }
     }
     res.end();
@@ -1006,6 +1030,37 @@ app.post("/api/campuses/:id/seed-finance-from-pnl", campusGuard, (req, res) => {
   const r = seedFinanceFromPostes(req.params.id, postes);
   logAudit(req, "seed", "finance", `P&L → ${store.listCampuses().find((c) => c.id === req.params.id)?.name || ""} ${r.month} (${r.applied} poste(s))`);
   res.json({ ok: true, ...r });
+});
+
+// --- Proposition de ventilation finance (chiffres extraits par l'IA, À VALIDER) ---
+// Flux zéro-hallucination : la génération d'un P&L crée une proposition ; ces endpoints
+// permettent de la relire, la VALIDER (→ intégrée en finance) ou l'IGNORER.
+app.get("/api/campuses/:id/finance-proposal", campusGuard, (req, res) => {
+  const p = store.getFinanceProposal(req.params.id);
+  if (!p) return res.json({ pending: false });
+  const sum = (arr) => (Array.isArray(arr) ? arr.reduce((s, l) => s + (Number(l.amount) || 0), 0) : 0);
+  const po = p.postes || {};
+  res.json({
+    pending: true, month: p.month, createdAt: p.createdAt, deliverableId: p.deliverableId,
+    summary: {
+      revenue: { n: (po.revenue || []).length, total: sum(po.revenue) },
+      payroll: { n: (po.payroll || []).length, total: sum(po.payroll) },
+      charges: { n: (po.charges || []).length, total: sum(po.charges) },
+    },
+  });
+});
+app.post("/api/campuses/:id/finance-proposal/confirm", campusGuard, (req, res) => {
+  const p = store.getFinanceProposal(req.params.id);
+  if (!p || !p.postes) return res.status(404).json({ error: "aucune proposition en attente" });
+  const r = seedFinanceFromPostes(req.params.id, p.postes);
+  store.clearFinanceProposal(req.params.id);
+  logAudit(req, "validate", "finance", `Ventilation P&L VALIDÉE → ${store.listCampuses().find((c) => c.id === req.params.id)?.name || ""} ${r.month} (${r.applied} poste(s))`);
+  res.json({ ok: true, ...r });
+});
+app.post("/api/campuses/:id/finance-proposal/discard", campusGuard, (req, res) => {
+  store.clearFinanceProposal(req.params.id);
+  logAudit(req, "discard", "finance", "Ventilation P&L IGNORÉE (chiffres IA non intégrés)");
+  res.json({ ok: true });
 });
 app.get("/api/finance", requireAuth, (req, res) => {
   const rows = buildNetworkRows(req).map((r) => {

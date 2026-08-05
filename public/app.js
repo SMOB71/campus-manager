@@ -583,6 +583,7 @@ async function run(force) {
         $("#res-tools").innerHTML = `<button class="btn-primary btn-sm" id="pnl-view">Voir l'analyse</button> <button class="btn-ghost btn-sm" id="pnl-force">Régénérer quand même</button>`;
         $("#pnl-view").onclick = () => openDeliverable(j.id);
         $("#pnl-force").onclick = () => run(true);
+        if (state.task === "pnl") showFinanceProposal(state.campus);   // proposition en attente éventuelle
         return;
       }
       out.innerHTML = `<p class="error">${esc(j.error || "Erreur")}</p>`;
@@ -600,6 +601,7 @@ async function run(force) {
     if (kpis || chart) kz.innerHTML = renderKpis(kpis) + renderChart(chart);
     out.innerHTML = mdSafe(md);
     renderResTools();
+    if (state.task === "pnl") showFinanceProposal(state.campus);   // chiffres IA à valider
     state.campuses = await api.get("/api/campuses") || state.campuses; // refresh count
   } catch (e) {
     if (e.name === "AbortError") $("#status").textContent = "Arrêté.";
@@ -607,6 +609,35 @@ async function run(force) {
   } finally { setBusy(false); controller = null; }
 }
 function setBusy(b) { state.busy = b; $("#run").disabled = b; $("#stop").hidden = !b; $("#status").textContent = b ? "Génération en cours…" : ($("#status").textContent === "Génération en cours…" ? "" : $("#status").textContent); if (b) $("#status").textContent = "Génération en cours…"; }
+
+// Chiffres extraits par l'IA d'un P&L : bannière À VALIDER (zéro-hallucination).
+// Rien n'entre en finance/board pack tant que le directeur n'a pas confirmé.
+async function showFinanceProposal(campusId) {
+  const old = document.getElementById("fin-proposal"); if (old) old.remove();
+  if (!campusId) return;
+  let p; try { p = await api.get(`/api/campuses/${campusId}/finance-proposal`); } catch { return; }
+  if (!p || !p.pending) return;
+  const fmt = (v) => Number(v || 0).toLocaleString("fr-FR");
+  const s = p.summary || {};
+  const banner = document.createElement("div");
+  banner.id = "fin-proposal";
+  banner.style.cssText = "border:1px solid #E2DACD;border-left:4px solid #FF6A4D;background:#FBF9F5;border-radius:10px;padding:12px 14px;margin:0 0 14px";
+  banner.innerHTML = `
+    <div style="font-weight:700;color:#0D1B2A;margin-bottom:6px">📊 Chiffres extraits par l'IA — <span style="color:#C94B33">à valider</span> <span style="color:#5A6672;font-weight:400">(${esc(p.month || "")})</span></div>
+    <div style="font-size:13px;color:#0D1B2A">Produit <b>${fmt(s.revenue && s.revenue.total)} €</b> · Masse salariale <b>${fmt(s.payroll && s.payroll.total)} €</b> · Charges <b>${fmt(s.charges && s.charges.total)} €</b></div>
+    <div style="font-size:12px;color:#5A6672;margin:6px 0 10px">Ces montants viennent du modèle. Rien n'est écrit en finance (ni au board pack) tant que tu n'as pas validé.</div>
+    <div style="display:flex;gap:8px"><button class="btn-primary btn-sm" id="fp-confirm">✓ Valider et intégrer</button><button class="btn-ghost btn-sm" id="fp-discard">Ignorer</button></div>`;
+  const out = $("#output"); out.parentNode.insertBefore(banner, out);
+  $("#fp-confirm").onclick = async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Intégration…";
+    try { await api.post(`/api/campuses/${campusId}/finance-proposal/confirm`, {}); banner.innerHTML = `<div style="font-weight:700;color:#0B6E5F">✓ Chiffres validés et intégrés à la finance.</div>`; }
+    catch { btn.disabled = false; btn.textContent = "✓ Valider et intégrer"; }
+  };
+  $("#fp-discard").onclick = async () => {
+    try { await api.post(`/api/campuses/${campusId}/finance-proposal/discard`, {}); } catch { /* ignore */ }
+    banner.remove();
+  };
+}
 
 function extractKpis(md) {
   const m = md.match(/```json\s*([\s\S]*?)```/);

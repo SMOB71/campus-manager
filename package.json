@@ -2,7 +2,7 @@
   "name": "assistant-campus",
   "version": "0.1.0",
   "private": true,
-  "description": "Assistant personnel (campus ecoles post-bac) : triage email, ordres du jour, comptes rendus, analyse P&L -> plans d'action. Propulse par Claude.",
+  "description": "Assistant personnel (campus ecoles post-bac) : triage email, ordres du jour, comptes rendus, analyse P&L -> plans d'action. Propulse par OpenAI (gpt-5.5).",
   "type": "module",
   "scripts": {
     "start": "node server.js",
@@ -17,6 +17,7 @@
     "dompurify": "^3.4.12",
     "express": "^4.21.2",
     "imapflow": "^1.0.194",
+    "jsdom": "^25.0.1",
     "mailparser": "^3.7.2",
     "marked": "^15.0.6",
     "multer": "^1.4.5-lts.1",
