@@ -596,12 +596,15 @@ async function run(force) {
     const idm = raw.match(/<!--deliverable:([a-f0-9]+)-->/);
     state.lastId = idm ? idm[1] : null;
     raw = raw.replace(/\n?<!--deliverable:[a-f0-9]+-->/, "");
+    const wasTruncated = /<!--truncated-->/.test(raw);   // livrable coupé sur la longueur
+    raw = raw.replace(/\n?<!--truncated-->/, "");
     const { md, kpis, chart, actions } = extractKpis(raw);
     state.lastMd = md; state.lastActions = actions || [];
     if (kpis || chart) kz.innerHTML = renderKpis(kpis) + renderChart(chart);
     out.innerHTML = mdSafe(md);
     renderResTools();
-    if (state.task === "pnl") showFinanceProposal(state.campus);   // chiffres IA à valider
+    // Livrable tronqué → le serveur n'a PAS créé de proposition finance (chiffres non fiables).
+    if (state.task === "pnl" && !wasTruncated) showFinanceProposal(state.campus);   // chiffres IA à valider
     state.campuses = await api.get("/api/campuses") || state.campuses; // refresh count
   } catch (e) {
     if (e.name === "AbortError") $("#status").textContent = "Arrêté.";

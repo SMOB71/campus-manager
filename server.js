@@ -738,7 +738,9 @@ app.post("/api/network/synthese", requireAuth, requireAdmin, async (req, res) =>
       model: PROMPTS.pnl.model, max_completion_tokens: 9000, stream: true,
       messages: [{ role: "system", content: SYNTHESE_RESEAU }, { role: "user", content: `Date : ${new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" })}\n\nDonnees consolidees :\n${dataBlock}` }],
     });
-    for await (const chunk of stream) { const d = chunk.choices?.[0]?.delta?.content; if (d) { full += d; res.write(d); } }
+    let finishReason = null;
+    for await (const chunk of stream) { const ch = chunk.choices?.[0]; if (ch?.delta?.content) { full += ch.delta.content; res.write(ch.delta.content); } if (ch?.finish_reason) finishReason = ch.finish_reason; }
+    if (finishReason === "length") res.write("\n\n⚠️ **[SYNTHÈSE TRONQUÉE]** — limite de longueur atteinte.");
     if (full.trim()) {
       const d = store.addDeliverable({ task: "synthese_reseau", title: `Synthèse réseau — ${new Date().toLocaleDateString("fr-FR")}`, content: full, model: PROMPTS.pnl.model, signature: sig });
       res.write(`\n<!--deliverable:${d.id}-->`);
@@ -807,7 +809,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         ...messages.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content || "").slice(0, 6000) })),
       ],
     });
-    for await (const chunk of stream) { const d = chunk.choices?.[0]?.delta?.content; if (d) res.write(d); }
+    let finishReason = null;
+    for await (const chunk of stream) { const ch = chunk.choices?.[0]; if (ch?.delta?.content) res.write(ch.delta.content); if (ch?.finish_reason) finishReason = ch.finish_reason; }
+    if (finishReason === "length") res.write("\n\n⚠️ _[réponse tronquée — pose une question plus ciblée]_");
     res.end();
   } catch (e) {
     console.error("[chat]", e?.message || e);
@@ -929,10 +933,17 @@ app.post("/api/generate", requireAuth, async (req, res) => {
       stream: true,
       messages: [{ role: "system", content: system }, { role: "user", content: userContent }],
     });
+    let finishReason = null;
     for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta?.content;
-      if (delta) { full += delta; res.write(delta); }
+      const ch = chunk.choices?.[0];
+      if (ch?.delta?.content) { full += ch.delta.content; res.write(ch.delta.content); }
+      if (ch?.finish_reason) finishReason = ch.finish_reason;
     }
+    // Garde anti-troncature : si le modèle a coupé sur la limite de longueur, le bloc
+    // chiffré final (JSON P&L) est justement ce qui saute → livrable NON fiable. On le
+    // signale et on REFUSE l'extraction finance (cf. plus bas).
+    const truncated = finishReason === "length";
+    if (truncated) res.write("\n\n⚠️ **[LIVRABLE TRONQUÉ]** — limite de longueur atteinte. Ne pas exploiter les chiffres tels quels ; relance en réduisant ou en découpant les données.\n<!--truncated-->");
     if (full.trim()) {
       const vlabel = isProposal ? ` (${VISIT_VARIANTS[variant].label})` : "";
       const d = store.addDeliverable({
@@ -944,7 +955,7 @@ app.post("/api/generate", requireAuth, async (req, res) => {
       // Les chiffres extraits par le modèle sont stockés en PROPOSITION à valider par le
       // directeur (Valider/Ignorer côté UI) → ils n'entrent en finance/board pack qu'après
       // confirmation humaine explicite. (Avant : auto-seed → chiffres non validés au conseil.)
-      if (task === "pnl" && campus) {
+      if (task === "pnl" && campus && !truncated) {
         const postes = extractPnlPostes(full);
         if (postes) {
           const month = postes.month || new Date().toISOString().slice(0, 7);
