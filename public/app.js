@@ -1198,8 +1198,9 @@ function recItemRow(it) {
   return `<div class="rec-item"><input type="checkbox" class="ri-done" ${it.done ? "checked" : ""}><input class="txt ri-f" data-f="text" value="${esc(it.text || "")}" placeholder="Action / objectif" style="flex:1;min-width:120px;"><input class="txt ri-f" data-f="owner" value="${esc(it.owner || "")}" placeholder="Resp." style="width:88px;"><button type="button" class="btn-ghost btn-sm ri-del">✕</button></div>`;
 }
 async function renderRedressements() {
-  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="add-rec">${I.plus}<span>Plan</span></button>`;
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="gen-rec">🚀 <span>Générer (IA)</span></button> <button class="btn-primary btn-sm" id="add-rec">${I.plus}<span>Plan</span></button>`;
   $("#add-rec").addEventListener("click", openRecoveryForm);
+  $("#gen-rec").addEventListener("click", openRecoveryAIForm);
   const view = $("#view");
   view.innerHTML = `<p class="muted">Chargement…</p>`;
   const recs = await api.get("/api/recoveries") || [];
@@ -1232,6 +1233,25 @@ async function renderRedressements() {
     await api.patch(`/api/recoveries/${b.dataset.id}`, patch);
     const m = c.querySelector(".rec-msg"); m.textContent = "✓ Enregistré"; m.classList.add("saved");
   }));
+}
+// Génération IA d'un plan de redressement pré-rempli depuis les signaux réels du campus.
+function openRecoveryAIForm() {
+  openModal("Générer un plan de redressement (IA)", `
+    <p class="muted" style="margin-top:0;font-size:13px;">L'IA pré-remplit le diagnostic et un plan 30/60/90 à partir des <strong>signaux réels</strong> du campus (dimensions dégradées, dérives de tendance, actions en retard). Tu relis et ajustes ensuite — rien n'est figé.</p>
+    <div class="field"><label class="field-label">Campus concerné</label><select id="gr-campus">${campusOptions("")}</select></div>
+    <div class="actions"><button class="btn-primary" id="gr-go">Générer le plan</button> <span id="gr-msg" class="status"></span></div>`);
+  $("#gr-go").onclick = async () => {
+    const cid = $("#gr-campus").value;
+    if (!cid) { alert("Choisis un campus."); return; }
+    const btn = $("#gr-go"); btn.disabled = true; $("#gr-msg").textContent = "Génération… (~15 s)";
+    try {
+      const draft = await api.post(`/api/campuses/${cid}/recovery-draft`, {});
+      if (!draft || draft.error) { $("#gr-msg").textContent = draft?.error || "Échec de la génération"; btn.disabled = false; return; }
+      const r = await api.post("/api/recoveries", { campusId: cid, diagnostic: draft.diagnostic, h30: draft.h30, h60: draft.h60, h90: draft.h90, exitCriteria: draft.exitCriteria });
+      if (!r || r.error) { $("#gr-msg").textContent = r?.error || "Échec de la création"; btn.disabled = false; return; }
+      closeModals(); renderRedressements();
+    } catch (e) { $("#gr-msg").textContent = "Erreur réseau"; btn.disabled = false; }
+  };
 }
 function openRecoveryForm() {
   openModal("Nouveau plan de redressement", `

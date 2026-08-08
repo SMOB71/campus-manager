@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import cron from "node-cron";
 import * as XLSX from "xlsx";
-import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT } from "./lib/prompts.js";
+import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN } from "./lib/prompts.js";
 import { issueCookie, clearCookie, sessionUserId, issueCsrf, csrfValid } from "./lib/auth.js";
 import * as userstore from "./lib/userstore.js";
 import { generateDailyBrief } from "./lib/brief.js";
@@ -1737,6 +1737,50 @@ app.post("/api/recoveries", requireAuth, requireAdmin, (req, res) => {
   const r = store.addRecovery({ ...req.body, campusName: campus?.name || null });
   logAudit(req, "create", "recovery", campus?.name || cid);
   res.json(r);
+});
+// Brouillon de plan de redressement PRÉ-REMPLI par l'IA depuis les signaux réels du campus
+// (dimensions dégradées + dérives + actions en retard). Ne sauvegarde RIEN : renvoie un
+// brouillon que le directeur relit/édite avant création. Transforme le cockpit de constat en décision.
+app.post("/api/campuses/:id/recovery-draft", campusGuard, async (req, res) => {
+  const campus = store.listCampuses().find((c) => c.id === req.params.id);
+  if (!campus) return res.status(404).json({ error: "campus introuvable" });
+  const row = buildNetworkRows(req).find((r) => r.id === campus.id) || {};
+  const today = new Date().toISOString().slice(0, 10);
+  const overdue = store.listActions({ campusId: campus.id }).filter((a) => a.status !== "done" && a.dueDate && a.dueDate < today);
+  const hist = kpiHistory(campus.id);
+  const drifts = [];
+  const mS = decliningStreak(hist, marginPctOf); if (mS >= 2) drifts.push(`marge en baisse depuis ${mS} mois`);
+  const oS = decliningStreak(hist, (x) => x.occupancy); if (oS >= 2) drifts.push(`remplissage en dégradation depuis ${oS} mois`);
+  const sS = decliningStreak(hist, (x) => x.satisfaction); if (sS >= 2) drifts.push(`satisfaction en baisse depuis ${sS} mois`);
+  const adPct = row.admissions?.objectif ? Math.round(((row.admissions.inscrits || 0) / row.admissions.objectif) * 100) : null;
+  if (adPct != null && adPct < 70) drifts.push(`admissions à ${adPct}% de l'objectif`);
+  const failing = (row.healthDetail || []).filter((d) => d.score < 60).map((d) => `${d.label} (${d.score}/100)`);
+  const val = (v, s) => (v != null ? v + s : "[DONNEE MANQUANTE]");
+  const signals = [
+    `Campus : ${campus.name}${campus.city ? " (" + campus.city + ")" : ""}`,
+    `Score de santé : ${val(row.health, "/100")}`,
+    failing.length ? `Dimensions dégradées : ${failing.join(", ")}` : "",
+    `Remplissage ${val(row.occupancy, "%")} · Qualiopi ${val(row.qualiopi, "%")} · satisfaction ${val(row.satisfaction, "/10")} · marge ${val(row.margin, "€")}`,
+    `Actions en retard : ${overdue.length}${overdue.length ? " — " + overdue.slice(0, 6).map((a) => a.title || a.mesures).join(" ; ") : ""}`,
+    `Incidents/réclamations ouverts : ${row.openIncidents || 0}`,
+    drifts.length ? `Dérives de tendance : ${drifts.join(" ; ")}` : "Aucune dérive de tendance détectée",
+  ].filter(Boolean).join("\n");
+  try {
+    const resp = await openai.chat.completions.create({
+      model: PROMPTS.pnl.model, max_completion_tokens: 2200,
+      messages: [{ role: "system", content: RECOVERY_PLAN }, { role: "user", content: `Date : ${today}\n\nSignaux du campus :\n${signals}` }],
+    });
+    if (resp.choices?.[0]?.finish_reason === "length") return res.status(502).json({ error: "brouillon tronqué, réessaie" });
+    const txt = resp.choices?.[0]?.message?.content || "";
+    const m = txt.match(/\{[\s\S]*\}/);
+    let d; try { d = JSON.parse(m ? m[0] : txt); } catch { return res.status(502).json({ error: "réponse IA non exploitable" }); }
+    const cleanH = (a) => (Array.isArray(a) ? a : []).filter((x) => x && String(x.text || "").trim()).map((x) => ({ text: String(x.text).trim(), owner: String(x.owner || "").trim() }));
+    res.json({ campusId: campus.id, campusName: campus.name, signals,
+      diagnostic: String(d.diagnostic || ""), h30: cleanH(d.h30), h60: cleanH(d.h60), h90: cleanH(d.h90), exitCriteria: String(d.exitCriteria || "") });
+  } catch (e) {
+    console.error("[recovery-draft]", e?.message || e);
+    res.status(500).json({ error: "génération impossible" });
+  }
 });
 app.patch("/api/recoveries/:id", requireAuth, requireAdmin, (req, res) => {
   const cur = store.listRecoveries().find((x) => x.id === req.params.id);
