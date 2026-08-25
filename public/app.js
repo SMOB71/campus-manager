@@ -2039,6 +2039,20 @@ async function loadBrief(send) {
 
 // ---------- Vue : Risques (incidents & réclamations) ----------
 let riskFilter = "all";
+// Brouillon de réponse à une réclamation (IA) — relire/éditer/copier avant envoi.
+async function draftReclamationReply(id) {
+  openModal("Brouillon de réponse (IA)", `
+    <p class="muted" id="rep-status" style="margin-top:0;font-size:13px;">Génération… (~10 s)</p>
+    <textarea id="rep-txt" rows="12" style="width:100%;display:none;"></textarea>
+    <div class="actions" id="rep-actions" style="display:none;"><button class="btn-primary" id="rep-copy">Copier</button></div>`);
+  try {
+    const r = await api.post(`/api/incidents/${id}/reply-draft`, {});
+    if (!r || r.error) { $("#rep-status").textContent = r?.error || "Échec de la génération"; return; }
+    $("#rep-status").textContent = r.truncated ? "⚠️ Brouillon tronqué — à compléter avant envoi." : "Brouillon — relis et ajuste avant d'envoyer.";
+    const ta = $("#rep-txt"); ta.style.display = ""; ta.value = r.draft || ""; $("#rep-actions").style.display = "";
+    $("#rep-copy").onclick = async () => { try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); document.execCommand("copy"); } $("#rep-copy").textContent = "✓ Copié"; };
+  } catch (e) { $("#rep-status").textContent = "Erreur réseau"; }
+}
 async function renderRisques() {
   $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="add-inc">${I.plus}<span>Signaler</span></button>`;
   $("#add-inc").addEventListener("click", () => openIncidentForm(null));
@@ -2068,11 +2082,13 @@ async function renderRisques() {
           ${i.status !== "in_progress" ? `<button class="btn-ghost btn-sm ist" data-id="${i.id}" data-s="in_progress">En cours</button>` : ""}
           ${i.status !== "closed" ? `<button class="btn-ghost btn-sm ist" data-id="${i.id}" data-s="closed">✓ Clôturer</button>` : ""}
           ${i.status !== "open" ? `<button class="btn-ghost btn-sm ist" data-id="${i.id}" data-s="open">Rouvrir</button>` : ""}
+          ${i.kind === "reclamation" ? `<button class="btn-ghost btn-sm irep" data-id="${i.id}">✍️ Réponse (IA)</button>` : ""}
           <button class="btn-ghost btn-sm ied" data-id="${i.id}">Éditer</button>
           <button class="btn-ghost btn-sm btn-danger idl" data-id="${i.id}">Suppr.</button>
         </div>
       </div>`).join("")}</div>` : `<p class="empty">Aucun élément. Clique « Signaler » pour enregistrer un incident ou une réclamation.</p>`;
   $$(".ist").forEach((b) => b.addEventListener("click", async () => { await api.patch(`/api/incidents/${b.dataset.id}`, { status: b.dataset.s }); renderRisques(); }));
+  $$(".irep").forEach((b) => b.addEventListener("click", () => draftReclamationReply(b.dataset.id)));
   $$(".ied").forEach((b) => b.addEventListener("click", () => openIncidentForm(items.find((x) => x.id === b.dataset.id))));
   $$(".idl").forEach((b) => b.addEventListener("click", async () => { if (confirm("Supprimer ?")) { await api.del(`/api/incidents/${b.dataset.id}`); renderRisques(); } }));
 }

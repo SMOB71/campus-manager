@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import cron from "node-cron";
 import * as XLSX from "xlsx";
-import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN } from "./lib/prompts.js";
+import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY } from "./lib/prompts.js";
 import { issueCookie, clearCookie, sessionUserId, issueCsrf, csrfValid } from "./lib/auth.js";
 import * as userstore from "./lib/userstore.js";
 import { generateDailyBrief } from "./lib/brief.js";
@@ -438,6 +438,28 @@ app.delete("/api/incidents/:id", requireAuth, (req, res) => {
   const cur = store.listIncidents().find((x) => x.id === req.params.id);
   if (cur && !assertCampus(req, res, cur.campusId)) return;
   store.deleteIncident(req.params.id); res.json({ ok: true });
+});
+// Brouillon de réponse à une réclamation (IA) — ne sauvegarde rien, renvoie le corps du message à relire/envoyer.
+app.post("/api/incidents/:id/reply-draft", requireAuth, async (req, res) => {
+  const inc = store.listIncidents().find((x) => x.id === req.params.id);
+  if (!inc) return res.status(404).json({ error: "réclamation introuvable" });
+  if (!assertCampus(req, res, inc.campusId)) return;
+  const ctx = [
+    `Campus : ${inc.campusName || "[À PRÉCISER]"}`,
+    `Objet : ${inc.title || ""}`,
+    `Catégorie : ${inc.category || "—"} · gravité : ${inc.severity || "—"}`,
+    inc.description ? `Détail : ${inc.description}` : "",
+  ].filter(Boolean).join("\n");
+  try {
+    const resp = await openai.chat.completions.create({
+      model: PROMPTS.pnl.model, max_completion_tokens: 1200,
+      messages: [{ role: "system", content: RECLAMATION_REPLY }, { role: "user", content: `Réclamation reçue :\n${ctx}` }],
+    });
+    res.json({ draft: resp.choices?.[0]?.message?.content || "", truncated: resp.choices?.[0]?.finish_reason === "length" });
+  } catch (e) {
+    console.error("[reply-draft]", e?.message || e);
+    res.status(500).json({ error: "génération impossible" });
+  }
 });
 
 // --- Cockpit : ce qui mérite l'attention aujourd'hui ---
