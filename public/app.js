@@ -303,9 +303,10 @@ async function registerPasskey(deviceName) {
 const NAV_GROUPS = ["Pilotage", "Décisions", "Réseau", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
 const NAV = [
   { id: "accueil", label: "Accueil", icon: I.home, group: "Pilotage" },
-  { id: "notifications", label: "Notifications", icon: I.bell, group: "Pilotage" },
   { id: "heatmap", label: "Heatmap réseau", icon: I.net, admin: true, group: "Pilotage" },
-  { id: "priorites", label: "Priorités du jour", icon: I.target, group: "Pilotage" },
+  // Nav #3 : « Notifications » fusionné dans « Priorités & alertes » (une seule file
+  // d'action au lieu de 3 vues redondantes Accueil/Notifications/Priorités).
+  { id: "priorites", label: "Priorités & alertes", icon: I.target, group: "Pilotage" },
   { id: "assistant", label: "Assistant", icon: I.chat, group: "Pilotage" },
   { id: "decisions", label: "Décisions (CODIR)", icon: I.gavel, admin: true, group: "Décisions" },
   { id: "arbitrages", label: "Arbitrages CODIR", icon: I.clip, admin: true, group: "Décisions" },
@@ -359,7 +360,7 @@ function renderNav() {
     const isOpen = open[g] !== false;
     return `<div class="nav-group${isOpen ? " open" : ""}">
       <button class="nav-group-label" data-group="${g}"><span>${g}</span>${NAV_CHEV}</button>
-      <div class="nav-group-items">${gi.map((n) => `<button data-view="${n.id}"${n.id === state.view ? ' class="active"' : ""}>${n.icon}<span>${n.label}</span>${n.id === "notifications" && notifCount ? `<span class="nav-badge">${notifCount}</span>` : ""}</button>`).join("")}</div>
+      <div class="nav-group-items">${gi.map((n) => `<button data-view="${n.id}"${n.id === state.view ? ' class="active"' : ""}>${n.icon}<span>${n.label}</span>${n.id === "priorites" && notifCount ? `<span class="nav-badge">${notifCount}</span>` : ""}</button>`).join("")}</div>
     </div>`;
   }).join("");
   $$("#nav .nav-group-label").forEach((b) => b.addEventListener("click", () => toggleNavGroup(b.dataset.group)));
@@ -419,12 +420,16 @@ async function renderAccueil() {
   const sig = (v, l, go, tone) => `<button class="signal${tone ? " sig-" + tone : ""}" data-go="${go}"><div class="sig-v">${v}</div><div class="sig-l">${l}</div></button>`;
   const hb = (v) => `<span class="sig-badge h-${v >= 75 ? "good" : v >= 50 ? "warn" : "bad"}">${v}</span>`;
   $("#signals").innerHTML = [
-    sig(notifCount, notifCount ? "notification" + (notifCount > 1 ? "s" : "") + " à traiter" : "tout est calme", "notifications", notifCount ? "warn" : ""),
+    sig(notifCount, notifCount ? "alerte" + (notifCount > 1 ? "s" : "") + " à traiter" : "tout est calme", "priorites:alertes", notifCount ? "warn" : ""),
     worst ? sig(`${esc(worst.name)} ${hb(worst.health)}`, "campus le plus à risque", "reseau", worst.health < 50 ? "bad" : "") : sig("—", "santé campus", "reseau"),
     ecart != null ? sig((ecart > 0 ? "+" : "") + ecart + " %", "écart budgétaire réseau", "finance", ecart < 0 ? "bad" : "good") : sig("—", "finance à renseigner", "finance"),
     sig(dueVisits, "visite" + (dueVisits > 1 ? "s" : "") + " à planifier", "tournee", dueVisits ? "warn" : ""),
   ].join("");
-  $$("#signals .signal").forEach((b) => b.addEventListener("click", () => setView(b.dataset.go)));
+  $$("#signals .signal").forEach((b) => b.addEventListener("click", () => {
+    let go = b.dataset.go;
+    if (go === "priorites:alertes") { prioTab = "alertes"; go = "priorites"; }
+    setView(go);
+  }));
   renderAttention(att);
   // Checklist de complétude des fiches
   const todo = [];
@@ -455,7 +460,8 @@ function renderAttention(a) {
   const nOver = a.overdueActions?.length || 0, nRisk = a.atRisk?.length || 0, nSoon = a.dueSoon?.length || 0, nInc = a.openIncidents || 0;
   if (!nOver && !nRisk && !nSoon && !nInc) { el.innerHTML = `<div class="card card-pad"><p class="muted" style="margin:0;">Rien d'urgent aujourd'hui. 👍 Tout est sous contrôle.</p></div>`; return; }
   const card = (n, l, alert) => `<div class="stat ${alert && n ? "alert" : ""}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const actList = (arr) => arr.map((x) => `<div class="item"><div class="grow"><div class="ttl">${esc(x.title)}</div><div class="sub">${x.campus ? esc(x.campus) + " · " : ""}📅 ${esc(x.dueDate)}${x.owner ? " · " + esc(x.owner) : ""}</div></div></div>`).join("");
+  // Nav #3 : l'accueil ne duplique plus les listes détaillées (elles vivent dans la
+  // file unique « Priorités & alertes ») — il donne le pouls + un accès direct.
   el.innerHTML = `
     <div class="stats">
       ${card(nOver, "Actions en retard", true)}
@@ -463,10 +469,9 @@ function renderAttention(a) {
       ${card(nRisk, "Campus à surveiller", true)}
       ${card(nInc, "Incidents ouverts", true)}
     </div>
-    <div class="grid grid-2" style="margin-top:14px;">
-      ${nRisk ? `<div class="card card-pad"><div class="section-title" style="margin-top:0;">Campus à surveiller</div><div class="list">${a.atRisk.map((r) => `<div class="item"><div class="grow"><div class="ttl c360" data-id="">${esc(r.name)}${r.city ? ` <span class="muted">· ${esc(r.city)}</span>` : ""}</div><div class="sub">${r.reasons.map((x) => `<span class="pill overdue" style="margin-right:4px;">${esc(x)}</span>`).join("")}</div></div></div>`).join("")}</div></div>` : ""}
-      ${nOver ? `<div class="card card-pad"><div class="section-title" style="margin-top:0;">Actions en retard</div><div class="list">${actList(a.overdueActions)}</div></div>` : ""}
-    </div>`;
+    <div class="actions" style="margin-top:10px;"><button class="btn-primary btn-sm" id="att-go">🎯 Traiter dans Priorités &amp; alertes</button></div>`;
+  const go = $("#att-go");
+  if (go) go.onclick = () => setView("priorites");
 }
 
 // ---------- Vue : Atelier ----------
@@ -1174,9 +1179,22 @@ function openHeatCell(r, k) {
 }
 
 // ---------- Vue : Priorités du jour (actions priorisées) ----------
+let prioTab = "actions";   // onglet courant de la file unique (actions scorées / alertes)
 async function renderPriorites() {
+  $("#topbar-actions").innerHTML = "";
   const view = $("#view");
-  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  view.innerHTML = `
+    <div class="chips" style="margin-bottom:14px;" id="prio-tabs">
+      <button type="button" class="chip ${prioTab === "actions" ? "active" : ""}" data-t="actions">🎯 À traiter</button>
+      <button type="button" class="chip ${prioTab === "alertes" ? "active" : ""}" data-t="alertes">🔔 Alertes${notifCount ? ` (${notifCount})` : ""}</button>
+    </div>
+    <div id="prio-body"><p class="muted">Chargement…</p></div>`;
+  $$("#prio-tabs .chip").forEach((c) => c.addEventListener("click", () => { prioTab = c.dataset.t; renderPriorites(); }));
+  if (prioTab === "alertes") return renderAlertesInto($("#prio-body"));
+  return renderActionsPrioriseesInto($("#prio-body"));
+}
+
+async function renderActionsPrioriseesInto(view) {
   const acts = await api.get("/api/actions/prioritized") || [];
   const today = new Date().toISOString().slice(0, 10);
   const tone = (s) => (s >= 65 ? "bad" : s >= 40 ? "warn" : "good");
@@ -2292,10 +2310,10 @@ function deltaArrow(v, unit, dec) {
 }
 
 // ---------- Vue : Notifications ----------
-async function renderNotifications() {
-  $("#topbar-actions").innerHTML = "";
-  const view = $("#view");
-  view.innerHTML = `<p class="muted">Chargement…</p>`;
+// Redirection héritée : la vue « notifications » vit désormais dans Priorités & alertes.
+function renderNotifications() { prioTab = "alertes"; setView("priorites"); }
+
+async function renderAlertesInto(view) {
   const n = await api.get("/api/notifications") || [];
   notifCount = n.length; renderNav();
   if (!n.length) { view.innerHTML = `<p class="empty">Rien à signaler — tout est à jour 👌</p>`; return; }
