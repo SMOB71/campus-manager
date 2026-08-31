@@ -41,7 +41,7 @@ before(async () => {
     cwd: ROOT, stdio: "ignore",
     env: { ...process.env, DATA_DIR: dir, DATA_KEY: "test_key_throwaway_0123456789", SESSION_SECRET: "test_secret", OPENAI_API_KEY: "sk-test", ADMIN_EMAIL: "admin@test.co", APP_PASSWORD: "pw12345678", PORT: String(PORT), NODE_ENV: "test" },
   });
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + 25000;   // marge démarrage à froid (jsdom/scrypt lents au 1er run sur certaines machines)
   for (;;) {
     try { const r = await fetch(BASE + "/health"); if (r.ok) break; } catch { /* pas encore prêt */ }
     if (Date.now() > deadline) throw new Error("serveur non démarré");
