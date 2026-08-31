@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import cron from "node-cron";
 import * as XLSX from "xlsx";
-import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY } from "./lib/prompts.js";
+import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY, REVIEW_NOTES, CODIR_AGENDA } from "./lib/prompts.js";
 import { issueCookie, clearCookie, sessionUserId, issueCsrf, csrfValid } from "./lib/auth.js";
 import * as userstore from "./lib/userstore.js";
 import { generateDailyBrief } from "./lib/brief.js";
@@ -1854,6 +1854,48 @@ app.get("/api/forecast/consolidated", requireAuth, requireAdmin, (req, res) => {
 
 // ===== Arbitrages CODIR (fiches de décision structurées) =====
 app.get("/api/arbitrages", requireAuth, requireAdmin, (req, res) => res.json(store.listArbitrages().filter((a) => !a.campusId || canCampus(req, a.campusId))));
+// Ordre du jour CODIR (IA) : généré depuis les DONNÉES RÉELLES du réseau (dérives,
+// arbitrages en attente, décisions, retards), sauvé comme livrable exportable Word/PDF.
+app.post("/api/codir/agenda-draft", requireAuth, requireAdmin, async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = buildNetworkRows(req);
+  const netLine = rows.map((r) => `- ${r.name} : santé ${r.health ?? "?"}/100 · remplissage ${r.occupancy ?? "?"}% · Qualiopi ${r.qualiopi ?? "?"}% · marge ${r.margin ?? "?"}€ · ${r.overdue || 0} action(s) en retard${r.openIncidents ? ` · ${r.openIncidents} incident(s)` : ""}`).join("\n");
+  const drifts = [];
+  for (const r of rows) {
+    const hist = kpiHistory(r.id);
+    const mS = decliningStreak(hist, marginPctOf); if (mS >= 2) drifts.push(`${r.name} : marge en baisse depuis ${mS} mois`);
+    const oS = decliningStreak(hist, (x) => x.occupancy); if (oS >= 2) drifts.push(`${r.name} : remplissage en dégradation depuis ${oS} mois`);
+    const sS = decliningStreak(hist, (x) => x.satisfaction); if (sS >= 2) drifts.push(`${r.name} : satisfaction en baisse depuis ${sS} mois`);
+    if (r.openIncidents >= 2) drifts.push(`${r.name} : incidents récurrents (${r.openIncidents} ouverts)`);
+  }
+  const arbs = store.listArbitrages().filter((a) => (!a.campusId || canCampus(req, a.campusId)) && ["toprepare", "pending"].includes(a.status));
+  const arbLine = arbs.map((a) => `- [${a.status === "toprepare" ? "à préparer" : "en attente"}] ${a.title}${a.campusName ? " (" + a.campusName + ")" : ""}${a.recommendation ? " — reco : " + String(a.recommendation).slice(0, 200) : ""}${a.dueDate ? " — échéance " + a.dueDate : ""}`).join("\n");
+  const decs = store.listDecisions().slice(0, 5).map((d) => `- ${d.decidedAt ? d.decidedAt.slice(0, 10) : ""} : ${d.title || d.decision || ""}`).join("\n");
+  const overdue = scopeByCampus(req, store.listActions()).filter((a) => a.status !== "done" && a.dueDate && a.dueDate < today);
+  const ctx = [
+    `Date : ${today} · Réseau : ${rows.length} campus`,
+    `=== Synthèse par campus ===\n${netLine || "(aucun campus)"}`,
+    `=== Dérives détectées ===\n${drifts.length ? drifts.map((d) => "- " + d).join("\n") : "(aucune)"}`,
+    `=== Arbitrages à trancher (${arbs.length}) ===\n${arbLine || "(aucun)"}`,
+    `=== Décisions récentes (suivi) ===\n${decs || "(aucune)"}`,
+    `=== Actions en retard : ${overdue.length} ===\n${overdue.slice(0, 8).map((a) => `- ${a.title || a.mesures} (${a.campusName || "réseau"}, échéance ${a.dueDate})`).join("\n")}`,
+  ].join("\n\n");
+  try {
+    const resp = await openai.chat.completions.create({
+      model: PROMPTS.pnl.model, max_completion_tokens: 3000,
+      messages: [{ role: "system", content: CODIR_AGENDA }, { role: "user", content: ctx }],
+    });
+    if (resp.choices?.[0]?.finish_reason === "length") return res.status(502).json({ error: "ordre du jour tronqué, réessaie" });
+    const md = resp.choices?.[0]?.message?.content || "";
+    if (!md.trim()) return res.status(502).json({ error: "génération vide" });
+    const d = store.addDeliverable({ task: "ordre_du_jour", title: `Ordre du jour CODIR — ${new Date().toLocaleDateString("fr-FR")}`, campusId: null, campusName: null, content: md, model: PROMPTS.pnl.model });
+    logAudit(req, "create", "deliverable", d.title);
+    res.json({ id: d.id, title: d.title });
+  } catch (e) {
+    console.error("[codir-agenda]", e?.message || e);
+    res.status(500).json({ error: "génération impossible" });
+  }
+});
 app.post("/api/arbitrages", requireAuth, requireAdmin, (req, res) => {
   if (!req.body?.title || !String(req.body.title).trim()) return res.status(400).json({ error: "sujet requis" });
   const campus = req.body.campusId ? store.listCampuses().find((c) => c.id === req.body.campusId) : null;
@@ -1992,6 +2034,31 @@ function campusSnapshot(req, campusId) {
     openIncidents: openIncidents.length,
   };
 }
+// Premier jet des notes de revue (IA) depuis le snapshot chiffré + la revue précédente.
+app.post("/api/reviews/draft-notes", requireAuth, requireAdmin, async (req, res) => {
+  const cid = req.body?.campusId;
+  if (!cid || !canCampus(req, cid)) return res.status(400).json({ error: "campus requis / hors périmètre" });
+  const campus = store.listCampuses().find((c) => c.id === cid);
+  const snap = campusSnapshot(req, cid);
+  if (!snap) return res.status(404).json({ error: "campus introuvable" });
+  const prev = store.listReviews(cid)[0] || null;   // la plus récente
+  const line = (label, s) => s ? `${label} : santé ${s.health ?? "?"} · remplissage ${s.occupancy ?? "?"}% · Qualiopi ${s.qualiopi ?? "?"}% · satisfaction ${s.satisfaction ?? "?"}/10 · insertion ${s.insertionRate ?? "?"}% · CA ${s.revenue ?? "?"}€ · marge ${s.margin ?? "?"}€ · ${s.openActions ?? 0} action(s) ouverte(s) dont ${s.overdueActions ?? 0} en retard · ${s.openIncidents ?? 0} incident(s)` : `${label} : (aucune donnée)`;
+  const ctx = [
+    `Campus : ${campus?.name || cid} · mois de la revue : ${req.body?.month || new Date().toISOString().slice(0, 7)}`,
+    line("Ce mois-ci", snap),
+    prev ? line(`Revue précédente (${prev.month})`, prev.snapshot) : "Revue précédente : aucune (première revue)",
+  ].join("\n");
+  try {
+    const resp = await openai.chat.completions.create({
+      model: PROMPTS.pnl.model, max_completion_tokens: 900,
+      messages: [{ role: "system", content: REVIEW_NOTES }, { role: "user", content: ctx }],
+    });
+    res.json({ draft: resp.choices?.[0]?.message?.content || "", truncated: resp.choices?.[0]?.finish_reason === "length" });
+  } catch (e) {
+    console.error("[review-notes]", e?.message || e);
+    res.status(500).json({ error: "génération impossible" });
+  }
+});
 app.get("/api/reviews", requireAuth, (req, res) => {
   const cid = req.query.campusId || null;
   if (cid && !canCampus(req, cid)) return res.status(403).json({ error: "hors périmètre" });

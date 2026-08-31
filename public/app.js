@@ -913,9 +913,22 @@ async function openReviewForm(campusId, campusName) {
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
       <div><label class="field-label">Mois</label><input class="txt rvf" data-f="month" type="month" value="${month}"></div>
     </div>
-    <div class="field"><label class="field-label">Notes de revue</label><textarea class="rvf" data-f="notes" rows="5" placeholder="Points marquants, décisions, points de vigilance, engagements pris avec le directeur…"></textarea></div>
+    <div class="field"><label class="field-label" style="display:flex;justify-content:space-between;align-items:center;">Notes de revue <button type="button" class="btn-ghost btn-sm" id="rvf-ai">✨ Rédiger (IA)</button></label><textarea class="rvf" data-f="notes" rows="7" placeholder="Points marquants, décisions, points de vigilance, engagements pris avec le directeur…"></textarea><span id="rvf-ai-msg" class="status"></span></div>
     <div class="actions" style="margin-top:16px;"><button class="btn-primary" id="rvf-save">Enregistrer la revue</button></div>`;
   openModal(`Revue mensuelle — ${campusName}`, body);
+  // Premier jet IA depuis le snapshot chiffré + la revue précédente (relire/éditer avant d'enregistrer).
+  $("#rvf-ai").onclick = async () => {
+    const btn = $("#rvf-ai"); btn.disabled = true; $("#rvf-ai-msg").textContent = "Rédaction… (~15 s)";
+    try {
+      const month = document.querySelector('.rvf[data-f="month"]')?.value || "";
+      const r = await api.post("/api/reviews/draft-notes", { campusId, month });
+      if (r?.draft) {
+        document.querySelector('.rvf[data-f="notes"]').value = r.draft;
+        $("#rvf-ai-msg").textContent = r.truncated ? "⚠️ Jet tronqué — à compléter." : "Premier jet — relis et ajuste.";
+      } else $("#rvf-ai-msg").textContent = r?.error || "Échec de la rédaction";
+    } catch { $("#rvf-ai-msg").textContent = "Erreur réseau"; }
+    btn.disabled = false;
+  };
   let snapshot = null;
   try {
     snapshot = await api.get(`/api/reviews/snapshot/${campusId}`);
@@ -1310,9 +1323,19 @@ async function renderPrevision() {
 const ARB_STATUS = [["toprepare", "À préparer"], ["pending", "En attente CODIR"], ["decided", "Tranché"], ["executed", "Exécuté"]];
 const arbStatusLabel = (s) => (ARB_STATUS.find(([k]) => k === s) || [s, s])[1];
 async function renderArbitrages() {
-  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="arb-weekly">Revue hebdo PDF</button><button class="btn-primary btn-sm" id="add-arb">${I.plus}<span>Arbitrage</span></button>`;
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="arb-codir">📋 ODJ CODIR (IA)</button><button class="btn-ghost btn-sm" id="arb-weekly">Revue hebdo PDF</button><button class="btn-primary btn-sm" id="add-arb">${I.plus}<span>Arbitrage</span></button>`;
   $("#add-arb").addEventListener("click", () => openArbitrageForm(null));
   $("#arb-weekly").addEventListener("click", () => window.open("/api/weekly-review", "_blank"));
+  // Ordre du jour CODIR généré depuis les données réelles (dérives + arbitrages + retards) → livrable.
+  $("#arb-codir").addEventListener("click", async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Génération… (~30 s)";
+    try {
+      const r = await api.post("/api/codir/agenda-draft", {});
+      if (r?.id) openDeliverable(r.id);
+      else alert(r?.error || "Échec de la génération");
+    } catch { alert("Erreur réseau"); }
+    btn.disabled = false; btn.textContent = "📋 ODJ CODIR (IA)";
+  });
   const view = $("#view");
   view.innerHTML = `<p class="muted">Chargement…</p>`;
   const arbs = await api.get("/api/arbitrages") || [];
