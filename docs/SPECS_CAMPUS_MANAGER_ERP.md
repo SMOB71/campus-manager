@@ -1,13 +1,14 @@
-# Dossier de specs — SaaS ERP Formation
+# Dossier de specs — Campus Manager ERP
 
 **Cadrage session 1 — 6 septembre 2026 — à relire et annoter par Stéphane.**
+**Décision produit : l'ERP se construit DANS Campus Manager** (campusmanager.fr) — pas de nouveau nom ni de nouveau socle ; phasage dans [PLAN_CAMPUS_MANAGER_ERP.md](PLAN_CAMPUS_MANAGER_ERP.md).
 Référentiel du projet : tout écart futur se discute contre ce document. Le modèle de données est aligné sur les structures standard des SI de formation du marché (spec complète en notre possession, conservée hors repo) pour garantir l'importabilité des données d'un établissement existant.
 
 ---
 
 ## 1. Vision
 
-L'ERP SaaS des **CFA, écoles supérieures privées et organismes de formation** (5 à 5 000 apprenants) : toute la gestion — apprenants, planning, assiduité, contrats, facturation, conformité — dans une UX moderne, avec le pilotage et l'IA en standard, une API publique complète, et une reprise de données depuis le SI existant en jours.
+**Campus Manager**, l'ERP des CFA, écoles supérieures privées et organismes de formation (5 à 5 000 apprenants) : toute la gestion — apprenants, planning, assiduité, contrats, facturation, conformité — dans une UX moderne, avec le pilotage et l'IA en standard, une API publique complète, et une reprise de données depuis le SI existant en jours.
 
 - **Cibles** : CFA et écoles multi-sites (cœur), OF mono-site (entrée de gamme), groupes/réseaux (premium).
 - **Modèle** : abonnement par apprenant actif/mois, 3 paliers (Essentiel / Pro / Réseau), portails inclus à tous les paliers.
@@ -17,7 +18,7 @@ L'ERP SaaS des **CFA, écoles supérieures privées et organismes de formation**
 
 | Rôle | Portée | Typique |
 |---|---|---|
-| Admin organisme | tout le tenant | DG, DAF |
+| Admin organisme | toute l'instance | DG, DAF |
 | Directeur de site | son/ses sites | directeur de campus |
 | Administratif | sites assignés, modules gestion | assistante de direction, chargé alternance |
 | Formateur | ses groupes : planning, émargement, notes | enseignant, intervenant |
@@ -26,23 +27,24 @@ L'ERP SaaS des **CFA, écoles supérieures privées et organismes de formation**
 | Représentant légal | dossiers liés (portail, mineurs) | parent |
 | Super-admin éditeur | support, jamais les données métier sans accréditation tracée | nous |
 
-Modèle de permission : rôle × site × module, RLS Postgres par `organization_id` partout (pattern Ruliora), délégations fines par module (ex. administratif « contrats » sans « facturation »).
+Modèle de permission : rôle × campus × module — extension du cloisonnement existant (admin/directeur scopé par campusIds) aux nouveaux rôles formateur/apprenant/tuteur, délégations fines par module (ex. administratif « contrats » sans « facturation »).
 
 ## 3. Socle technique
 
-- **Stack** : NestJS (API REST OpenAPI générée), Next.js (app + portails), PostgreSQL + Drizzle avec **RLS par tenant**, Redis (files, cache), stockage objet S3-compatible FR chiffré pour les documents.
-- **Hébergement** : France (OVH/Scaleway), sauvegardes chiffrées externalisées, PRA documenté.
+- **Stack** : l'existant Campus Manager (Node/Express, store JSON **chiffré AES-256-GCM par instance**, fichiers dédiés pour les gros volumes comme `sessions.json`), étendu module par module.
+- **Architecture commerciale** : **une instance dédiée par client** — conteneur + volume chiffré (DATA_KEY propre) + sous-domaine. Isolation totale par établissement (argument sécurité/RGPD/souveraineté), zéro refonte multi-tenant ; réévaluation vers un socle mutualisé Postgres à ~30 clients.
+- **Hébergement** : France (VPS OVH actuels pour le réseau et la beta, capacité dédiée à la commercialisation), sauvegardes chiffrées externalisées (le schéma actuel), PRA documenté.
 - **Sécurité** : MFA, sessions courtes, audit log immuable, chiffrement au repos, throttling, CSP stricte, pentest avant commercialisation.
-- **RGPD by design** : registre des traitements par tenant, durées de rétention configurables, export/purge par personne, DPA type.
+- **RGPD by design** : registre des traitements (module RGPD existant, étendu), durées de rétention configurables, export/purge par personne, DPA type.
 - **API publique** : chaque fonctionnalité de l'UI passe par l'API publique documentée (dogfooding) ; jetons scopés par module ; webhooks (inscription créée, absence saisie, contrat signé, facture émise…).
-- **IA** : fournisseur configurable par tenant, cible souveraine FR (cohérent avec le plan IA souveraine Ruliora) ; l'IA **propose, l'humain valide** — aucun chiffre ni document réglementaire auto-validé (règle zéro-hallucination héritée de Campus Manager).
+- **IA** : fournisseur configurable par instance, cible souveraine FR (cohérent avec le plan IA souveraine Ruliora) ; l'IA **propose, l'humain valide** — aucun chiffre ni document réglementaire auto-validé (règle zéro-hallucination héritée de Campus Manager).
 
 ## 4. Modèle de données cible (par domaine)
 
-Conventions : UUID, `organization_id` sur toutes les tables, soft-delete + audit, identifiants externes génériques (table `external_ids` : source, code — la clé de toute reprise de données et des synchronisations).
+Conventions : collections du store Campus Manager (les entités volumineuses — émargements, séances — en fichiers dédiés type `sessions.json`), audit sur toute mutation, identifiants externes génériques (`external_ids` : source, code — la clé de toute reprise de données). Les noms ci-dessous sont logiques ; plusieurs existent déjà (campus=site, classes=cohortes, teachers=staff, curricula, rooms, periods, partners→company).
 
 ### 4.1 Structure
-- **organization** (tenant) ; **site** (nom, SIRET, RNE/UAI, n° de déclaration d'activité, RIB) ; **school_year** (année scolaire/période).
+- **site** (= campus existant, enrichi : SIRET, RNE/UAI, n° de déclaration d'activité, RIB) ; **school_year** (année scolaire).
 ### 4.2 Offre de formation
 - **program** (formation : nom, code diplôme/RNCP, niveau, durées mois/jours/heures, **NPEC**, prix de vente, unité de facturation, nature d'action ; mapping comptable — comptes généraux/analytiques — paramétrable par tenant).
 - **cohort** (promotion/session : période, formation, site, dates, capacités min/max, modalité d'enseignement, entrées/sorties permanentes, prix).
@@ -67,14 +69,13 @@ Conventions : UUID, `organization_id` sur toutes les tables, soft-delete + audit
 
 Chaque module = objectif, user stories clés (US), règles métier structurantes (RM), et **docs réels requis** avant codage.
 
-### M0 — Socle SaaS *(Bloc 1)*
-Tenant, auth MFA, RBAC §2, audit, RGPD, abonnement Stripe, thème/logo par tenant.
-US : en tant qu'admin organisme je crée mes sites, invite mes utilisateurs avec un rôle et une portée, et vois tout ce qui a été fait dans un journal.
-RM : aucune route sans RLS ; toute mutation auditée ; suppression = anonymisation RGPD, jamais un DELETE physique des dossiers réglementaires.
+### M0 — Socle produit *(transverse)*
+Déjà en place : auth (MFA WebAuthn), rôles admin/directeur scopés, audit, RGPD, chiffrement, CSRF, sauvegardes. À ajouter : rôles formateur/apprenant/tuteur (Bloc 1), provisioning d'instances + Stripe + vitrine campusmanager.fr (Bloc 7).
+RM : aucune route sans cloisonnement ; toute mutation auditée ; suppression = anonymisation RGPD, jamais un DELETE physique des dossiers réglementaires.
 
 ### M1 — Référentiels *(Bloc 2)*
 Sites, années scolaires, formations, cohortes, matières, blocs, salles, motifs d'absence, calendrier (vacances/fériés/examens/stage).
-US : je crée une formation avec son référentiel horaire et son NPEC ; je duplique une cohorte d'une année sur l'autre en 1 clic (une rentrée = 80 % de reconduction).
+US : je crée une formation avec son référentiel horaire et son NPEC ; je duplique une classe d'une année sur l'autre en 1 clic (une rentrée = 80 % de reconduction). NB : formations/référentiels/classes/salles/périodes existent déjà (module planning) — ce module les enrichit (NPEC, prix, RNCP).
 RM : une cohorte a des capacités min/max ; alertes sous-remplissage (pattern cockpit).
 
 ### M2 — Apprenants & inscriptions *(Bloc 2)*
@@ -92,10 +93,8 @@ Formulaire public de candidature (par site/formation), funnel paramétrable (nou
 US : un candidat postule en ligne, dépose ses pièces, reçoit sa convocation ; je pilote mon funnel par formation avec taux de conversion.
 RM : consentement RGPD explicite à la candidature ; purge automatique des candidatures non converties (durée paramétrable).
 
-### M5 — Planning *(Bloc 3 — portage de `schedule.js`)*
-Enseignants (contrat de service, disponibilités, plafonds d'heures sup), génération assistée, conflits (salle/prof/classe/période), couverture du référentiel, équité de service, publication, ICS.
-US : je pose une semaine type et je la déroule jusqu'aux vacances ; le système refuse un créneau qui dépasse le service contractuel du formateur ou chevauche une période d'examens.
-RM : celles déjà codées (SERVICE_LIMITS, périodes par classe, examens exclusifs) + multi-sites (un formateur sur 2 sites, temps de trajet paramétrable).
+### M5 — Planning *(DÉJÀ LIVRÉ — module Enseignement)*
+En production : générateur (semaine type déroulée sur l'année, contraintes légales dures), conflits (salle/prof/classe/période), couverture du référentiel, service et équité, impression A4, iCal, envoi par mail. Reste : temps de trajet inter-sites paramétrable (mineur).
 
 ### M6 — Assiduité & émargement *(Bloc 3 — le module le plus sensible)*
 Feuille d'émargement par séance ; 3 modes : signature tactile en salle (tablette formateur), code séance saisi par l'apprenant sur son portail, pointage badge (plus tard). Justificatifs, workflow de justification, alertes.
@@ -137,18 +136,9 @@ Cockpit multi-sites (santé, heatmap, alertes, priorités — patterns Campus Ma
 
 Disponibilité cible 99,5 % (SLA early adopters), RTO 4 h / RPO 24 h puis 1 h, p95 < 300 ms sur les listes standards, tests automatisés à chaque module (unitaires + **cloisonnement multi-tenant systématique** — le test « le tenant A ne voit jamais le tenant B » est bloquant en CI), accessibilité RGAA raisonnable sur les portails (secteur handicap-sensible, argument Qualiopi ind. 26).
 
-## 7. Noms candidats (à vérifier : dispo .fr/.com + INPI)
+## 7. Nom & marque
 
-| Nom | Idée |
-|---|---|
-| **Scolaris** | scolarité + latin, sérieux, mémorisable |
-| **Alterno** | l'alternance au centre — mais réducteur si cible OF |
-| **Praxio** | praxis, la formation en pratique |
-| **Cursia** | cursus, féminin, doux, dispo probable |
-| **Formalis** | formation + légal — colle au positionnement conformité |
-| **Tenuo** | « tenir » le registre, court, très probablement dispo |
-
-Ma préférence : **Cursia** ou **Formalis**. Décision = toi ; je vérifie dispo DNS/INPI dès que tu shortlistes.
+**Décidé : Campus Manager** — le domaine campusmanager.fr est actif avec sa charte (teal/corail). À traiter avant le premier client externe : dépôt INPI de la marque, CGV/DPA, structure de facturation.
 
 ## 8. Questions ouvertes pour Stéphane (à annoter)
 

@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import cron from "node-cron";
 import * as XLSX from "xlsx";
-import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY, REVIEW_NOTES, CODIR_AGENDA, COPIL_AGENDA, CURRICULUM_IMPORT } from "./lib/prompts.js";
+import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY, REVIEW_NOTES, CODIR_AGENDA, COPIL_AGENDA, CURRICULUM_IMPORT, TEACHING_ASSIGNMENTS } from "./lib/prompts.js";
 import { issueCookie, clearCookie, sessionUserId, issueCsrf, csrfValid } from "./lib/auth.js";
 import * as userstore from "./lib/userstore.js";
 import { generateDailyBrief } from "./lib/brief.js";
@@ -2893,6 +2893,73 @@ app.get("/api/schedule/service", requireAuth, (req, res) => {
   const rows = teachers.map((t) => serviceOf(t, sessions));
   const cost = rows.reduce((a, r) => a + (r.cost || 0), 0);
   res.json({ rows: rows.sort((a, b) => b.planned - a.planned), equity: equity(rows), cost: Math.round(cost), limits: SERVICE_LIMITS });
+});
+
+// Propose qui peut enseigner quoi, à partir du référentiel et des fiches existantes.
+// C'est l'information la plus structurante du module : sans elle, tout le monde est
+// « polyvalent » et le générateur affecte au hasard. On la propose, l'utilisateur valide.
+app.post("/api/schedule/suggest-assignments", requireAuth, requireAdmin, async (req, res) => {
+  const { curriculumId, campusId } = req.body || {};
+  const cur = store.getCurriculum(curriculumId);
+  if (!cur) return res.status(404).json({ error: "référentiel introuvable" });
+  const teachers = store.listTeachers({ campusId }).filter((t) => t.active !== false);
+  if (!teachers.length) return res.status(400).json({ error: "aucun intervenant déclaré" });
+
+  const ctx = [
+    `Référentiel : ${cur.name}${cur.diploma ? ` (${cur.diploma})` : ""}`,
+    "Modules :",
+    ...(cur.modules || []).map((m) => `- id=${m.id} | ${m.code ? m.code + " · " : ""}${m.label}${m.heures != null ? ` (${m.heures} h)` : ""}${m.requiresRoom ? ` [salle ${m.requiresRoom}]` : ""}`),
+    "",
+    "Intervenants :",
+    ...teachers.map((t) => `- id=${t.id} | ${t.name} | ${t.status}${t.company ? ` chez ${t.company}` : ""} | matières déclarées : ${(t.subjects || []).join(", ") || "AUCUNE"}`),
+  ].join("\n");
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: PROMPTS.pnl.model, max_completion_tokens: 2500,
+      messages: [{ role: "system", content: TEACHING_ASSIGNMENTS }, { role: "user", content: ctx }],
+    });
+    if (resp.choices?.[0]?.finish_reason === "length") return res.status(502).json({ error: "réponse tronquée" });
+    const raw = resp.choices?.[0]?.message?.content || "";
+    const m = raw.match(/\{[\s\S]*\}/);
+    let d; try { d = JSON.parse(m ? m[0] : raw); } catch { return res.status(502).json({ error: "réponse IA non exploitable" }); }
+    const byT = new Map(teachers.map((t) => [t.id, t]));
+    const byM = new Map((cur.modules || []).map((x) => [x.id, x]));
+    // On ne fait confiance à rien : chaque identifiant renvoyé est revérifié contre
+    // le référentiel et la liste réelle des intervenants.
+    const assignments = (Array.isArray(d.assignments) ? d.assignments : [])
+      .filter((a) => byM.has(a.moduleId))
+      .map((a) => ({
+        moduleId: a.moduleId, moduleLabel: byM.get(a.moduleId).label,
+        teachers: (Array.isArray(a.teacherIds) ? a.teacherIds : []).filter((id) => byT.has(id)).slice(0, 3)
+          .map((id) => ({ id, name: byT.get(id).name })),
+        confidence: ["haute", "moyenne", "faible"].includes(a.confidence) ? a.confidence : "faible",
+        rationale: String(a.rationale || "").slice(0, 300),
+      }))
+      .filter((a) => a.teachers.length);
+    res.json({ assignments, unmatched: Array.isArray(d.unmatched) ? d.unmatched.slice(0, 20) : [] });
+  } catch (e) {
+    console.error("[suggest-assignments]", e?.message || e);
+    res.status(500).json({ error: "suggestion impossible" });
+  }
+});
+
+// Applique les affectations validées : ajoute les matières aux fiches concernées.
+app.post("/api/schedule/apply-assignments", requireAuth, requireAdmin, (req, res) => {
+  const list = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
+  const touched = new Map();
+  for (const a of list) {
+    for (const t of a.teachers || []) {
+      const cur = touched.get(t.id) || store.getTeacher(t.id);
+      if (!cur) continue;
+      const subs = new Set([...(cur.subjects || []), a.moduleLabel].filter(Boolean));
+      cur.subjects = [...subs];
+      touched.set(t.id, cur);
+    }
+  }
+  for (const [id, t] of touched) store.updateTeacher(id, { subjects: t.subjects });
+  logAudit(req, "validate", "teacher", `${touched.size} fiche(s) enrichie(s) des matières`);
+  res.json({ updated: touched.size });
 });
 
 // Taux d'occupation des salles : une salle vide toute la semaine coûte un loyer,
