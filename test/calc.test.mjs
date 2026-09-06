@@ -73,3 +73,25 @@ test("buildOpeningBudget : répartit le total par lot", () => {
   assert.ok(Math.abs(sum - 500000) <= OPENING_LOTS.length); // tolérance arrondi
   assert.deepEqual(buildOpeningBudget(0), []);
 });
+
+// --- Portée des règles de validation ---
+// `objectif` vaut un nombre d'inscrits en admissions, mais une phrase dans un plan
+// d'action. Borné globalement, il rejetait toute action dont l'objectif était rempli.
+test("validateBody : les champs ambigus ne sont bornés que sur leurs routes numériques", async () => {
+  const { validateBody } = await import("../lib/validators.js");
+
+  // texte libre accepté là où le champ est rédactionnel
+  assert.equal(validateBody({ objectif: "Ouvrir en septembre" }, "/api/actions").ok, true);
+  assert.equal(validateBody({ objectif: "Sécuriser le bail" }, "/api/committees").ok, true);
+
+  // toujours borné là où il est numérique
+  assert.equal(validateBody({ objectif: 150 }, "/api/campuses/x1/admissions").ok, true);
+  assert.equal(validateBody({ objectif: 999999 }, "/api/campuses/x1/admissions").ok, false);
+  assert.equal(validateBody({ objectif: "beaucoup" }, "/api/campuses/x1/admissions").ok, false);
+  assert.equal(validateBody({ attendees: "plein" }, "/api/events").ok, false);
+  assert.equal(validateBody({ confidence: 180 }, "/api/campuses/x1/director-review").ok, false);
+
+  // les champs non ambigus restent bornés partout
+  assert.equal(validateBody({ occupancy: 150 }, "/api/actions").ok, false);
+  assert.equal(validateBody({ occupancy: 80 }, "/api/actions").ok, true);
+});

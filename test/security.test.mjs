@@ -94,6 +94,59 @@ test("cloisonnement rôles : un directeur n'accède pas aux routes admin", async
   assert.equal(d.status, 200);
   const users = await req("/api/users", { cookie: d.cookie }); // route admin
   assert.equal(users.status, 403);
+  // Les comités de pilotage sont des données réseau : même cloisonnement.
+  assert.equal((await req("/api/committees", { cookie: d.cookie })).status, 403);
+  const create = await req("/api/committees", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: { name: "COPIL pirate" } });
+  assert.equal(create.status, 403);
+});
+
+test("SI campus : config admin-only, jeton jamais renvoyé, overview scopé", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Si" } })).json();
+  // URL invalide refusée ; config valide acceptée
+  const bad = await req(`/api/campuses/${campus.id}/si/config`, { method: "PUT", ...opts, json: { baseUrl: "ftp://nope", token: "t" } });
+  assert.equal(bad.status, 400);
+  const ok = await (await req(`/api/campuses/${campus.id}/si/config`, { method: "PUT", ...opts, json: { baseUrl: "https://erp.demo.test", token: "secret-token-4242" } })).json();
+  assert.equal(ok.configured, true);
+  assert.ok(!JSON.stringify(ok).includes("secret-token-4242")); // jamais le jeton en clair
+  // l'overview non plus ne fuit pas le jeton
+  const over = await (await req("/api/si/overview", { cookie: a.cookie })).json();
+  assert.ok(!JSON.stringify(over).includes("secret-token-4242"));
+  // un directeur ne peut ni configurer ni synchroniser (données réseau + secret)
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req(`/api/campuses/${campus.id}/si/config`, { method: "PUT", cookie: d.cookie, csrf: d.csrf, json: { baseUrl: "https://x.test", token: "t" } })).status, 403);
+  assert.equal((await req(`/api/campuses/${campus.id}/si/sync`, { method: "POST", cookie: d.cookie, csrf: d.csrf, json: {} })).status, 403);
+  // et l'overview d'un directeur sans campus assigné est vide (scopé)
+  const dOver = await (await req("/api/si/overview", { cookie: d.cookie })).json();
+  assert.equal(dOver.length, 0);
+});
+
+test("comité : cycle complet et action rattachée à une séance", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const o = await (await req("/api/openings", { method: "POST", ...opts, json: { name: "Ouv Test", targetDate: "2027-09-01", seed: false } })).json();
+  const c = await (await req("/api/committees", { method: "POST", ...opts, json: { scope: "opening", scopeId: o.id, name: "COPIL Test" } })).json();
+  const s = await (await req(`/api/committees/${c.id}/sessions`, { method: "POST", ...opts, json: { date: "2026-10-01" } })).json();
+
+  // une action sans intitulé est refusée
+  const vide = await req(`/api/committees/${c.id}/sessions/${s.id}/tasks`, { method: "POST", ...opts, json: {} });
+  assert.equal(vide.status, 400);
+
+  const t = await (await req(`/api/committees/${c.id}/sessions/${s.id}/tasks`, { method: "POST", ...opts, json: { title: "Sécuriser le bail", accountable: "DAF" } })).json();
+  assert.equal(t.committeeId, c.id);
+  assert.equal(t.sessionId, s.id);
+
+  const out = await (await req(`/api/openings/${o.id}/tasks/${t.id}/outputs`, { method: "POST", ...opts, json: { label: "Bail signé" } })).json();
+  assert.equal(out.status, "todo");
+  const cm = await req(`/api/openings/${o.id}/tasks/${t.id}/comments`, { method: "POST", ...opts, json: { text: "   " } });
+  assert.equal(cm.status, 400, "un message vide est refusé");
+
+  // un comité réseau ne peut pas fabriquer d'action d'ouverture
+  const net = await (await req("/api/committees", { method: "POST", ...opts, json: { scope: "network", name: "CODIR" } })).json();
+  const ns = await (await req(`/api/committees/${net.id}/sessions`, { method: "POST", ...opts, json: {} })).json();
+  const ko = await req(`/api/committees/${net.id}/sessions/${ns.id}/tasks`, { method: "POST", ...opts, json: { title: "X" } });
+  assert.equal(ko.status, 400);
 });
 
 test("compte désactivé → login refusé", async () => {

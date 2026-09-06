@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import cron from "node-cron";
 import * as XLSX from "xlsx";
-import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY, REVIEW_NOTES, CODIR_AGENDA } from "./lib/prompts.js";
+import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY, REVIEW_NOTES, CODIR_AGENDA, COPIL_AGENDA, CURRICULUM_IMPORT } from "./lib/prompts.js";
 import { issueCookie, clearCookie, sessionUserId, issueCsrf, csrfValid } from "./lib/auth.js";
 import * as userstore from "./lib/userstore.js";
 import { generateDailyBrief } from "./lib/brief.js";
@@ -18,10 +18,15 @@ import * as authstore from "./lib/authstore.js";
 import { encryptionEnabled, encryptBuffer, decryptBuffer } from "./lib/crypto-store.js";
 import { extractText } from "./lib/extract.js";
 import { toMarkdown, toHtml, toDocx } from "./lib/export.js";
+import * as sessionstore from "./lib/sessionstore.js";
+import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
+import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
+import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
 import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
+import { testConnection as siTestConnection, syncCampus as siSyncCampus } from "./lib/si.js";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 
@@ -137,7 +142,7 @@ app.use((req, res, next) => {
 // validateBody ne vérifie que les champs présents ayant une règle (no-op sinon) → sûr en global.
 app.use((req, res, next) => {
   if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
-    const v = validateBody(req.body);
+    const v = validateBody(req.body, req.path);
     if (!v.ok) return res.status(400).json({ error: v.error });
   }
   next();
@@ -1246,6 +1251,76 @@ app.delete("/api/documents/:id", requireAuth, (req, res) => {
 });
 
 // ===== Centre de notifications (agrégat proactif) =====
+// ===== Connecteur SI campus (ERP de gestion) =====
+// Le jeton est créé côté campus dans le module « prestataires webservices REST »
+// du SI ; il n'est jamais renvoyé au client (tokenMask).
+async function syncSiCampus(c) {
+  const cfg = store.getSiConfig(c.id);
+  if (!cfg || cfg.enabled === false) return null;
+  try {
+    const summary = await siSyncCampus(cfg, { windowDays: 30 });
+    store.setSiSnapshot(c.id, summary);
+    // KPI auto-alimentés (merge par campus+mois : n'écrase que ces champs)
+    const month = new Date().toISOString().slice(0, 7);
+    const kpi = { campusId: c.id, month };
+    if (summary.effectif != null) kpi.students = summary.effectif;
+    if (summary.contrats?.actifs != null) kpi.alternants = summary.contrats.actifs;
+    if (kpi.students != null || kpi.alternants != null) store.addKpi(kpi);
+    return { ok: true, summary };
+  } catch (e) {
+    store.setSiError(c.id, e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+app.get("/api/si/overview", requireAuth, (req, res) => {
+  const rows = store.listCampuses().filter((c) => canCampus(req, c.id)).map((c) => {
+    const snap = store.getSiSnapshot(c.id);
+    return {
+      campusId: c.id, campus: c.name, config: store.maskSiConfig(c.id),
+      syncedAt: snap?.syncedAt || null, lastError: snap?.lastError || null,
+      summary: snap?.summary || null, history: snap?.history || [],
+    };
+  });
+  res.json(rows);
+});
+
+app.put("/api/campuses/:id/si/config", requireAuth, requireAdmin, (req, res) => {
+  const { baseUrl, token, codesSite, enabled } = req.body || {};
+  if (baseUrl && !/^https?:\/\//.test(String(baseUrl))) return res.status(400).json({ error: "URL du SI invalide (http(s) attendu)" });
+  const cfg = store.setSiConfig(req.params.id, { baseUrl, token, codesSite, enabled });
+  if (!cfg) return res.status(404).json({ error: "campus inconnu" });
+  logAudit(req, "update", "si", `config connecteur SI (${req.params.id})`);
+  res.json(store.maskSiConfig(req.params.id));
+});
+
+app.post("/api/campuses/:id/si/test", requireAuth, requireAdmin, async (req, res) => {
+  const cfg = store.getSiConfig(req.params.id);
+  if (!cfg) return res.status(400).json({ error: "connecteur non configuré (URL + jeton requis)" });
+  try { res.json(await siTestConnection(cfg)); } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+app.post("/api/campuses/:id/si/sync", requireAuth, requireAdmin, async (req, res) => {
+  const c = store.listCampuses().find((x) => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: "campus inconnu" });
+  if (!store.getSiConfig(c.id)) return res.status(400).json({ error: "connecteur non configuré (URL + jeton requis)" });
+  const r = await syncSiCampus(c);
+  if (!r?.ok) return res.status(502).json({ error: r?.error || "synchronisation impossible" });
+  logAudit(req, "seed", "si", `sync SI ${c.name}`);
+  res.json({ ok: true, summary: r.summary });
+});
+
+app.post("/api/si/sync", requireAuth, requireAdmin, async (req, res) => {
+  const results = [];
+  for (const c of store.listCampuses()) {
+    if (!store.getSiConfig(c.id)) continue;
+    const r = await syncSiCampus(c);
+    if (r) results.push({ campusId: c.id, campus: c.name, ok: r.ok, error: r.error || null });
+  }
+  logAudit(req, "seed", "si", `sync SI réseau (${results.length} campus)`);
+  res.json({ results });
+});
+
 app.get("/api/notifications", requireAuth, (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const rows = buildNetworkRows(req);
@@ -1274,6 +1349,17 @@ app.get("/api/notifications", requireAuth, (req, res) => {
     if (r.satisfaction != null && r.satisfaction < th.satisfaction) notifs.push({ type: "satisfaction", severity: r.satisfaction < th.satisfaction - 1 ? "high" : "medium", campusId: r.id, campus: r.name, label: `Satisfaction à ${r.satisfaction}/10 (seuil ${th.satisfaction})`, date: null });
     const k = store.latestKpi(r.id) || {};
     if (k.revenue) { const m = marginOf(k); if (m != null) { const mpct = Math.round((m / k.revenue) * 100); if (mpct < th.marginPct) notifs.push({ type: "marge", severity: mpct < th.marginPct - 5 ? "high" : "medium", campusId: r.id, campus: r.name, label: `Marge à ${mpct}% (seuil ${th.marginPct}%)`, date: null }); } }
+  }
+  // Signaux du SI campus : ruptures de contrat en cours, absentéisme, synchro en échec
+  for (const c of store.listCampuses().filter((c) => canCampus(req, c.id))) {
+    const snap = store.getSiSnapshot(c.id);
+    if (!snap) continue;
+    const s = snap.summary;
+    const nR = s?.contrats?.rupturesEnCours?.length || 0;
+    if (nR) notifs.push({ type: "rupture", severity: "high", campusId: c.id, campus: c.name, label: `${nR} rupture${nR > 1 ? "s" : ""} de contrat en cours (SI)`, date: null });
+    const ar = s?.assiduite?.absentRate;
+    if (ar != null && ar > th.absenteeism) notifs.push({ type: "absenteisme", severity: ar > th.absenteeism + 5 ? "high" : "medium", campusId: c.id, campus: c.name, label: `Absentéisme à ${ar}% (seuil ${th.absenteeism}%)`, date: null });
+    if (snap.lastError && (!snap.syncedAt || snap.lastError.at > snap.syncedAt)) notifs.push({ type: "si", severity: "low", campusId: c.id, campus: c.name, label: "Synchro SI en échec", date: (snap.lastError.at || "").slice(0, 10) || null });
   }
   // Décisions CODIR en retard + revues mensuelles à faire (admin — données réseau)
   if (req.user?.role === "admin") {
@@ -1472,6 +1558,75 @@ app.patch("/api/openings/:id/tasks/:tid", requireAuth, requireAdmin, (req, res) 
 });
 app.delete("/api/openings/:id/tasks/:tid", requireAuth, requireAdmin, (req, res) => { store.deleteOpeningTask(req.params.id, req.params.tid); res.json({ ok: true }); });
 
+// --- Livrables attendus d'une action (suivi sans fichier, fichier optionnel) ---
+app.post("/api/openings/:id/tasks/:tid/outputs", requireAuth, requireAdmin, (req, res) => {
+  const out = store.addTaskOutput(req.params.id, req.params.tid, req.body || {});
+  if (!out) return res.status(404).json({ error: "action introuvable" });
+  logAudit(req, "create", "opening", `livrable « ${out.label} »`);
+  res.json(out);
+});
+app.patch("/api/openings/:id/tasks/:tid/outputs/:oid", requireAuth, requireAdmin, (req, res) => {
+  const out = store.updateTaskOutput(req.params.id, req.params.tid, req.params.oid, req.body || {});
+  if (!out) return res.status(404).json({ error: "introuvable" });
+  res.json(out);
+});
+app.delete("/api/openings/:id/tasks/:tid/outputs/:oid", requireAuth, requireAdmin, (req, res) => {
+  store.deleteTaskOutput(req.params.id, req.params.tid, req.params.oid);
+  res.json({ ok: true });
+});
+// Dépôt du fichier d'un livrable : réutilise la GED (binaire chiffré sur disque), le
+// livrable ne garde que l'identifiant du document.
+app.post("/api/openings/:id/tasks/:tid/outputs/:oid/document", requireAuth, requireAdmin, uploadDoc, (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "fichier manquant" });
+  const o = store.getOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: "ouverture introuvable" });
+  try {
+    if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR, { recursive: true });
+    const fname = crypto.randomBytes(12).toString("hex");
+    fs.writeFileSync(path.join(DOCS_DIR, fname), encryptBuffer(req.file.buffer));
+    const doc = store.addDocument({
+      campusId: o.campusId || null, campusName: o.name,
+      name: req.file.originalname, size: req.file.size, mime: req.file.mimetype,
+      category: "ouverture", file: fname,
+    });
+    const out = store.updateTaskOutput(req.params.id, req.params.tid, req.params.oid, { documentId: doc.id, status: "produced" });
+    if (!out) return res.status(404).json({ error: "livrable introuvable" });
+    logAudit(req, "upload", "document", `${doc.name} (ouverture ${o.name})`);
+    res.json({ output: out, document: doc });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- Checklist d'une action : les étapes du « comment » ---
+app.post("/api/openings/:id/tasks/:tid/steps", requireAuth, requireAdmin, (req, res) => {
+  const text = String(req.body?.text || "").trim();
+  if (!text) return res.status(400).json({ error: "intitulé requis" });
+  const s = store.addTaskStep(req.params.id, req.params.tid, { text });
+  if (!s) return res.status(404).json({ error: "action introuvable" });
+  res.json(s);
+});
+app.patch("/api/openings/:id/tasks/:tid/steps/:sid", requireAuth, requireAdmin, (req, res) => {
+  const s = store.updateTaskStep(req.params.id, req.params.tid, req.params.sid, req.body || {});
+  if (!s) return res.status(404).json({ error: "introuvable" });
+  res.json(s);
+});
+app.delete("/api/openings/:id/tasks/:tid/steps/:sid", requireAuth, requireAdmin, (req, res) => {
+  store.deleteTaskStep(req.params.id, req.params.tid, req.params.sid);
+  res.json({ ok: true });
+});
+
+// --- Échanges sur une action ---
+app.post("/api/openings/:id/tasks/:tid/comments", requireAuth, requireAdmin, (req, res) => {
+  const text = String(req.body?.text || "").trim();
+  if (!text) return res.status(400).json({ error: "message vide" });
+  const c = store.addTaskComment(req.params.id, req.params.tid, { by: req.user?.name || req.user?.email || "", text });
+  if (!c) return res.status(404).json({ error: "action introuvable" });
+  res.json(c);
+});
+app.delete("/api/openings/:id/tasks/:tid/comments/:cid", requireAuth, requireAdmin, (req, res) => {
+  store.deleteTaskComment(req.params.id, req.params.tid, req.params.cid);
+  res.json({ ok: true });
+});
+
 // Budget d'ouverture ventilé par lot (budgété / engagé / réalisé) — buildOpeningBudget dans lib/calc.js
 app.patch("/api/openings/:id/budget", requireAuth, requireAdmin, (req, res) => {
   const b = store.setOpeningBudget(req.params.id, req.body?.lines || []);
@@ -1501,6 +1656,109 @@ app.post("/api/openings/:id/convert", requireAuth, requireAdmin, (req, res) => {
   if (o.status !== "ouvert") store.updateOpening(o.id, { status: "ouvert" });
   res.json({ ok: true, ...r });
 });
+// ===== Comités de pilotage (ouverture / campus / réseau) =====
+app.get("/api/committees", requireAuth, requireAdmin, (req, res) => {
+  const { scope, scopeId } = req.query;
+  res.json(store.listCommittees({ scope, scopeId: scopeId === undefined ? undefined : scopeId || null }));
+});
+app.get("/api/committees/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCommittee(req.params.id);
+  if (!c) return res.status(404).json({ error: "introuvable" });
+  res.json(c);
+});
+app.post("/api/committees", requireAuth, requireAdmin, (req, res) => {
+  if (!req.body?.name) return res.status(400).json({ error: "nom requis" });
+  const c = store.addCommittee(req.body);
+  logAudit(req, "create", "committee", c.name);
+  res.json(c);
+});
+app.patch("/api/committees/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = store.updateCommittee(req.params.id, req.body || {});
+  if (!c) return res.status(404).json({ error: "introuvable" });
+  logAudit(req, "update", "committee", c.name);
+  res.json(c);
+});
+app.delete("/api/committees/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCommittee(req.params.id);
+  store.deleteCommittee(req.params.id);
+  if (c) logAudit(req, "delete", "committee", c.name);
+  res.json({ ok: true });
+});
+
+app.post("/api/committees/:id/sessions", requireAuth, requireAdmin, (req, res) => {
+  const s = store.addSession(req.params.id, req.body || {});
+  if (!s) return res.status(404).json({ error: "comité introuvable" });
+  res.json(s);
+});
+app.patch("/api/committees/:id/sessions/:sid", requireAuth, requireAdmin, (req, res) => {
+  const s = store.updateSession(req.params.id, req.params.sid, req.body || {});
+  if (!s) return res.status(404).json({ error: "introuvable" });
+  res.json(s);
+});
+app.delete("/api/committees/:id/sessions/:sid", requireAuth, requireAdmin, (req, res) => {
+  store.deleteSession(req.params.id, req.params.sid);
+  res.json({ ok: true });
+});
+
+// Crée une action d'ouverture depuis une séance et garde le lien dans les deux sens.
+app.post("/api/committees/:id/sessions/:sid/tasks", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCommittee(req.params.id);
+  if (!c) return res.status(404).json({ error: "comité introuvable" });
+  if (c.scope !== "opening" || !c.scopeId) {
+    return res.status(400).json({ error: "ce comité n'est pas rattaché à une ouverture" });
+  }
+  if (!String(req.body?.title || "").trim()) return res.status(400).json({ error: "intitulé requis" });
+  const t = store.addOpeningTask(c.scopeId, { ...(req.body || {}), committeeId: c.id, sessionId: req.params.sid });
+  if (!t) return res.status(404).json({ error: "ouverture introuvable" });
+  store.linkSessionTask(c.id, req.params.sid, t.id);
+  logAudit(req, "create", "opening", `action « ${t.title} » (COPIL ${c.name})`);
+  res.json(t);
+});
+
+// Ordre du jour assisté : nourri des retards, des livrables non produits et des décisions
+// non soldées de la séance précédente. Même motif que /api/codir/agenda-draft.
+app.post("/api/committees/:id/sessions/:sid/agenda-draft", requireAuth, requireAdmin, async (req, res) => {
+  const c = store.getCommittee(req.params.id);
+  if (!c) return res.status(404).json({ error: "comité introuvable" });
+  const sessions = (c.sessions || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const idx = sessions.findIndex((s) => s.id === req.params.sid);
+  const prev = idx > 0 ? sessions[idx - 1] : null;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const lines = [`Comité : ${c.name}${c.cadence ? ` (${c.cadence})` : ""}`];
+  if (c.members?.length) lines.push(`Membres : ${c.members.map((m) => `${m.name}${m.role ? ` — ${m.role}` : ""}`).join(", ")}`);
+
+  if (c.scope === "opening" && c.scopeId) {
+    const o = store.getOpening(c.scopeId);
+    if (o) {
+      const tasks = o.tasks || [];
+      const late = tasks.filter((t) => t.status !== "done" && t.dueDate && t.dueDate < today);
+      const done = tasks.filter((t) => t.status === "done").length;
+      lines.push(`Projet : ${o.name}${o.city ? ` (${o.city})` : ""} — rentrée ${o.targetDate || "non datée"} — avancement ${tasks.length ? Math.round((done / tasks.length) * 100) : 0} %`);
+      if (late.length) lines.push(`Actions en retard (${late.length}) :\n` + late.slice(0, 15).map((t) => `- ${t.title} (${t.dueDate}${t.owner ? `, ${t.owner}` : ""})`).join("\n"));
+      const pending = tasks.flatMap((t) => (t.outputs || []).filter((o2) => o2.status !== "validated").map((o2) => `- ${o2.label} [${o2.status}] — action « ${t.title} »`));
+      if (pending.length) lines.push(`Livrables non validés (${pending.length}) :\n` + pending.slice(0, 15).join("\n"));
+    }
+  }
+  if (prev) {
+    lines.push(`Séance précédente du ${prev.date || "?"} :`);
+    if (prev.resolutions?.length) lines.push("Décisions prises :\n" + prev.resolutions.map((r) => `- ${r.text}${r.owner ? ` (${r.owner}` : ""}${r.dueDate ? `, ${r.dueDate})` : r.owner ? ")" : ""}`).join("\n"));
+    if (prev.minutes) lines.push(`Compte rendu précédent :\n${prev.minutes.slice(0, 2000)}`);
+  }
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: modelFor("ordre_du_jour"),
+      messages: [{ role: "system", content: COPIL_AGENDA }, { role: "user", content: lines.join("\n\n") }],
+      max_completion_tokens: 2500,
+    });
+    res.json({ draft: resp.choices?.[0]?.message?.content || "", truncated: resp.choices?.[0]?.finish_reason === "length" });
+  } catch (e) {
+    console.error("[copil-agenda]", e?.message || e);
+    res.status(500).json({ error: "génération impossible" });
+  }
+});
+
 const OPENING_STATUS_LBL = { todo: "À faire", doing: "En cours", done: "Fait", blocked: "Bloqué" };
 function buildOpeningHtml(o) {
   const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -2133,7 +2391,7 @@ app.delete("/api/events/:id", requireAuth, (req, res) => {
 });
 
 // ===== Paramètres (seuils d'alerte + board pack) =====
-const DEFAULT_THRESHOLDS = { occupancy: 70, qualiopiMonths: 3, admissionsWarn: 80, admissionsCrit: 60, satisfaction: 7, marginPct: 0 };
+const DEFAULT_THRESHOLDS = { occupancy: 70, qualiopiMonths: 3, admissionsWarn: 80, admissionsCrit: 60, satisfaction: 7, marginPct: 0, absenteeism: 10 };
 function thresholds() { return { ...DEFAULT_THRESHOLDS, ...(store.getSettings().thresholds || {}) }; }
 app.get("/api/settings", requireAuth, requireAdmin, (req, res) => {
   const s = store.getSettings();
@@ -2283,6 +2541,466 @@ if (mailConfigured && cron.validate(boardCron)) {
       .catch((e) => console.error("[board] echec :", e?.message || e));
   }, { timezone: "Europe/Paris" });
   console.log(`[board] board pack planifie (${boardCron}, Europe/Paris)`);
+}
+
+// ===================== Module Plannings =====================
+// Professeurs, référentiels, salles, classes, calendrier, séances, génération.
+// Les référentiels et les professeurs sont des données RÉSEAU (admin) ; salles,
+// classes, périodes et séances sont rattachées à un campus donc scopées.
+
+const DAY_LABEL_FR = { lun: "Lundi", mar: "Mardi", mer: "Mercredi", jeu: "Jeudi", ven: "Vendredi", sam: "Samedi", dim: "Dimanche" };
+const DAY_OF = (iso) => ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"][new Date(`${iso}T12:00:00Z`).getUTCDay()];
+
+// Résout une séance en objet affichable : le store ne stocke que des identifiants,
+// mais aucune vue (grille, impression, email, iCal) n'est lisible sans les libellés.
+function hydrate(sessions) {
+  const camp = new Map(store.listCampuses().map((c) => [c.id, c]));
+  const klass = new Map(store.listClasses().map((k) => [k.id, k]));
+  const rooms = new Map(store.listRooms().map((r) => [r.id, r]));
+  const teachers = new Map(store.listTeachers().map((t) => [t.id, t]));
+  const modules = new Map();
+  for (const cur of store.listCurricula()) for (const m of cur.modules || []) modules.set(m.id, m);
+  return sessions.map((s) => {
+    const k = klass.get(s.classId), m = modules.get(s.moduleId);
+    return {
+      ...s,
+      className: k?.name || null, campusName: camp.get(s.campusId)?.name || null,
+      moduleLabel: m ? (m.label || m.code) : null, moduleCode: m?.code || null,
+      teacherName: teachers.get(s.teacherId)?.name || null,
+      roomName: rooms.get(s.roomId)?.name || null,
+      day: s.date ? DAY_OF(s.date) : null, dayLabel: s.date ? DAY_LABEL_FR[DAY_OF(s.date)] : null,
+    };
+  });
+}
+// Contexte de vérification d'un créneau : ce que la séance seule ne porte pas.
+function conflictCtx(s) {
+  const k = store.getClass(s.classId);
+  const modules = new Map();
+  for (const cur of store.listCurricula()) for (const m of cur.modules || []) modules.set(m.id, m);
+  return {
+    teacher: s.teacherId ? store.getTeacher(s.teacherId) : null,
+    room: s.roomId ? store.getRoom(s.roomId) : null,
+    module: s.moduleId ? modules.get(s.moduleId) : null,
+    classSize: k ? store.classSize(k) : null,
+    periods: store.listPeriods({ campusId: s.campusId }),
+  };
+}
+// Un directeur ne voit et ne touche que ses campus.
+function scopeSessions(req, list) {
+  const allowed = allowedCampusIds(req);
+  return allowed === null ? list : list.filter((s) => allowed.includes(s.campusId));
+}
+
+// --- Professeurs (réseau) ---
+app.get("/api/teachers", requireAuth, (req, res) => {
+  const allowed = allowedCampusIds(req);
+  const all = store.listTeachers();
+  res.json(allowed === null ? all : all.filter((t) => (t.campusIds || []).some((c) => allowed.includes(c))));
+});
+app.post("/api/teachers", requireAuth, requireAdmin, (req, res) => {
+  if (!String(req.body?.name || "").trim()) return res.status(400).json({ error: "nom requis" });
+  const t = store.addTeacher(req.body);
+  logAudit(req, "create", "teacher", t.name);
+  res.json(t);
+});
+app.patch("/api/teachers/:id", requireAuth, requireAdmin, (req, res) => {
+  const t = store.updateTeacher(req.params.id, req.body || {});
+  if (!t) return res.status(404).json({ error: "introuvable" });
+  logAudit(req, "update", "teacher", t.name);
+  res.json(t);
+});
+app.delete("/api/teachers/:id", requireAuth, requireAdmin, (req, res) => {
+  const t = store.getTeacher(req.params.id);
+  store.deleteTeacher(req.params.id);
+  if (t) logAudit(req, "delete", "teacher", t.name);
+  res.json({ ok: true });
+});
+// Amorce depuis les contacts « professeur » déjà saisis sur les fiches campus :
+// ils portent nom, email et téléphone et ne servaient jusqu'ici qu'aux comptes rendus.
+app.post("/api/teachers/import-contacts", requireAuth, requireAdmin, (req, res) => {
+  const existing = new Set(store.listTeachers().map((t) => (t.email || t.name).toLowerCase()));
+  const made = [];
+  for (const c of store.listCampuses()) {
+    for (const k of (c.contacts || []).filter((x) => x.category === "professeur")) {
+      const name = `${k.firstName || ""} ${k.lastName || ""}`.trim() || k.role || "Sans nom";
+      const key = (k.email || name).toLowerCase();
+      if (existing.has(key)) continue;
+      existing.add(key);
+      made.push(store.addTeacher({ name, email: k.email, phone: k.phone, campusIds: [c.id], status: "vacataire" }));
+    }
+  }
+  if (made.length) logAudit(req, "create", "teacher", `${made.length} depuis les contacts`);
+  res.json({ imported: made.length, teachers: made });
+});
+
+// --- Référentiels (réseau) ---
+app.get("/api/curricula", requireAuth, (req, res) => {
+  res.json(store.listCurricula().map((c) => ({ ...c, totalHours: store.curriculumHours(c) })));
+});
+app.post("/api/curricula", requireAuth, requireAdmin, (req, res) => {
+  if (!String(req.body?.name || "").trim()) return res.status(400).json({ error: "intitulé requis" });
+  const c = store.addCurriculum(req.body);
+  logAudit(req, "create", "curriculum", c.name);
+  res.json(c);
+});
+app.patch("/api/curricula/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = store.updateCurriculum(req.params.id, req.body || {});
+  if (!c) return res.status(404).json({ error: "introuvable" });
+  logAudit(req, "update", "curriculum", c.name);
+  res.json(c);
+});
+app.delete("/api/curricula/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCurriculum(req.params.id);
+  store.deleteCurriculum(req.params.id);
+  if (c) logAudit(req, "delete", "curriculum", c.name);
+  res.json({ ok: true });
+});
+
+// Import d'un référentiel depuis un fichier — PROPOSITION, jamais écriture directe.
+// Même doctrine que la proposition financière : un volume horaire inventé est un
+// risque réglementaire, pas une coquille.
+app.post("/api/curricula/import", requireAuth, requireAdmin, uploadOne, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "fichier manquant" });
+  let text = "";
+  try { text = await extractText(req.file); } catch (e) { return res.status(400).json({ error: "fichier illisible : " + e.message }); }
+  if (!text.trim()) return res.status(400).json({ error: "aucun texte exploitable dans ce fichier" });
+  try {
+    const resp = await openai.chat.completions.create({
+      model: PROMPTS.pnl.model, max_completion_tokens: 3000,
+      messages: [{ role: "system", content: CURRICULUM_IMPORT }, { role: "user", content: text.slice(0, 120000) }],
+    });
+    if (resp.choices?.[0]?.finish_reason === "length") return res.status(502).json({ error: "document trop long, découpe-le" });
+    const raw = resp.choices?.[0]?.message?.content || "";
+    const m = raw.match(/\{[\s\S]*\}/);
+    let d; try { d = JSON.parse(m ? m[0] : raw); } catch { return res.status(502).json({ error: "réponse IA non exploitable" }); }
+    const modules = (Array.isArray(d.modules) ? d.modules : [])
+      .filter((x) => x && (x.label || x.code))
+      .map((x) => ({
+        code: String(x.code || "").trim(), label: String(x.label || "").trim(),
+        // null explicite = volume absent du document. On ne comble pas.
+        heures: x.heures == null || x.heures === "" ? null : Number(x.heures),
+        year: x.year == null ? null : Number(x.year),
+      }));
+    const proposal = { name: String(d.name || "").trim(), diploma: String(d.diploma || "").trim(), level: String(d.level || "").trim(), modules, source: req.file.originalname, at: new Date().toISOString() };
+    store.setCurriculumProposal(req.user.id, proposal);
+    logAudit(req, "propose", "curriculum", `${proposal.name || "sans titre"} (${modules.length} modules)`);
+    res.json({ proposal, missing: modules.filter((x) => x.heures == null).length });
+  } catch (e) {
+    console.error("[curriculum-import]", e?.message || e);
+    res.status(500).json({ error: "extraction impossible" });
+  }
+});
+app.get("/api/curricula/proposal", requireAuth, requireAdmin, (req, res) => res.json(store.getCurriculumProposal(req.user.id) || null));
+app.post("/api/curricula/proposal/confirm", requireAuth, requireAdmin, (req, res) => {
+  const p = req.body?.proposal || store.getCurriculumProposal(req.user.id);
+  if (!p) return res.status(404).json({ error: "aucune proposition en attente" });
+  const c = store.addCurriculum(p);
+  store.clearCurriculumProposal(req.user.id);
+  logAudit(req, "validate", "curriculum", c.name);
+  res.json(c);
+});
+app.post("/api/curricula/proposal/discard", requireAuth, requireAdmin, (req, res) => {
+  store.clearCurriculumProposal(req.user.id);
+  logAudit(req, "discard", "curriculum", "proposition écartée");
+  res.json({ ok: true });
+});
+
+// --- Salles, classes, périodes (par campus) ---
+// Le nom de la fonction de liste est donné explicitement : dériver un pluriel anglais
+// depuis « Class » produit « listClasss » et un 500 silencieux au premier appel.
+for (const [seg, api, listName] of [["rooms", "Room", "listRooms"], ["classes", "Class", "listClasses"], ["periods", "Period", "listPeriods"]]) {
+  const List = store[listName];
+  app.get(`/api/${seg}`, requireAuth, (req, res) => {
+    const allowed = allowedCampusIds(req);
+    let items = List({ campusId: req.query.campusId || undefined });
+    if (allowed !== null) items = items.filter((x) => !x.campusId || allowed.includes(x.campusId));
+    res.json(items);
+  });
+  app.post(`/api/${seg}`, requireAuth, (req, res) => {
+    const cid = req.body?.campusId;
+    if (cid && !assertCampus(req, res, cid)) return;
+    if (!cid && req.user?.role !== "admin") return res.status(403).json({ error: "campus requis" });
+    const made = store[`add${api}`](req.body || {});
+    logAudit(req, "create", seg, made.name || made.label || made.kind || "");
+    res.json(made);
+  });
+  app.patch(`/api/${seg}/:id`, requireAuth, (req, res) => {
+    const cur = List().find((x) => x.id === req.params.id);
+    if (!cur) return res.status(404).json({ error: "introuvable" });
+    if (cur.campusId && !assertCampus(req, res, cur.campusId)) return;
+    res.json(store[`update${api}`](req.params.id, req.body || {}));
+  });
+  app.delete(`/api/${seg}/:id`, requireAuth, (req, res) => {
+    const cur = List().find((x) => x.id === req.params.id);
+    if (cur?.campusId && !assertCampus(req, res, cur.campusId)) return;
+    store[`delete${api}`](req.params.id);
+    res.json({ ok: true });
+  });
+}
+
+// --- Séances ---
+app.get("/api/sessions", requireAuth, (req, res) => {
+  const { campusId, classId, teacherId, roomId, from, to } = req.query;
+  const list = sessionstore.listSessions({ campusId, classId, teacherId, roomId, from, to });
+  res.json(hydrate(scopeSessions(req, list)));
+});
+// Vérification d'un créneau sans l'écrire : l'éditeur interroge avant de poser.
+app.post("/api/sessions/check", requireAuth, (req, res) => {
+  const s = req.body || {};
+  if (s.campusId && !assertCampus(req, res, s.campusId)) return;
+  const others = sessionstore.listSessions({ from: s.date, to: s.date });
+  res.json({ conflicts: conflictsFor(s, others, conflictCtx(s)) });
+});
+app.post("/api/sessions", requireAuth, (req, res) => {
+  const s = req.body || {};
+  if (!s.campusId || !assertCampus(req, res, s.campusId)) return;
+  if (!s.date || !s.start || !s.end) return res.status(400).json({ error: "date et horaires requis" });
+  const others = sessionstore.listSessions({ from: s.date, to: s.date });
+  const conflicts = conflictsFor(s, others, conflictCtx(s));
+  // Un blocage dur ne se force pas ; un « forçable » oui, mais il est tracé.
+  if (hasHardBlock(conflicts)) return res.status(409).json({ error: "créneau impossible", conflicts });
+  const forcables = conflicts.filter((c) => c.level === "block-forcable");
+  if (forcables.length && !s.force) return res.status(409).json({ error: "conflit à confirmer", conflicts, forcable: true });
+  const made = sessionstore.addSession({ ...s, forced: forcables.map((c) => c.code) });
+  if (forcables.length) logAudit(req, "update", "session", `forçage ${forcables.map((c) => c.code).join(",")} le ${s.date}`);
+  res.json(hydrate([made])[0]);
+});
+// Série récurrente : une seule écriture pour N séances.
+app.post("/api/sessions/series", requireAuth, (req, res) => {
+  const { until, force, ...s } = req.body || {};
+  if (!s.campusId || !assertCampus(req, res, s.campusId)) return;
+  if (!s.date || !s.start || !s.end || !until) return res.status(400).json({ error: "date, horaires et date de fin requis" });
+  const seriesId = sessionstore.id();
+  const occ = expandWeekly({ ...s, seriesId }, until, store.listPeriods({ campusId: s.campusId }));
+  if (!occ.length) return res.status(400).json({ error: "aucune date : la période est entièrement fermée" });
+  const kept = [], skipped = [];
+  const byDate = new Map();
+  for (const o of occ) {
+    if (!byDate.has(o.date)) byDate.set(o.date, sessionstore.listSessions({ from: o.date, to: o.date }));
+    const conflicts = conflictsFor(o, byDate.get(o.date), conflictCtx(o));
+    const hard = hasHardBlock(conflicts);
+    const forcables = conflicts.filter((c) => c.level === "block-forcable");
+    // Une occurrence en conflit est ÉCARTÉE, pas la série entière : un seul jour férié
+    // oublié ne doit pas faire échouer la pose d'une année.
+    if (hard || (forcables.length && !force)) { skipped.push({ date: o.date, conflicts }); continue; }
+    kept.push({ ...o, forced: forcables.map((c) => c.code) });
+  }
+  const made = kept.length ? sessionstore.addSessions(kept) : [];
+  logAudit(req, "create", "session", `série de ${made.length} séances`);
+  res.json({ seriesId, created: made.length, skipped });
+});
+app.patch("/api/sessions/:id", requireAuth, (req, res) => {
+  const cur = sessionstore.getSession(req.params.id);
+  if (!cur) return res.status(404).json({ error: "introuvable" });
+  if (!assertCampus(req, res, cur.campusId)) return;
+  const next = { ...cur, ...req.body };
+  if (req.body?.date || req.body?.start || req.body?.end || req.body?.teacherId || req.body?.roomId) {
+    const others = sessionstore.listSessions({ from: next.date, to: next.date });
+    const conflicts = conflictsFor(next, others, conflictCtx(next));
+    if (hasHardBlock(conflicts)) return res.status(409).json({ error: "créneau impossible", conflicts });
+    if (conflicts.some((c) => c.level === "block-forcable") && !req.body.force) {
+      return res.status(409).json({ error: "conflit à confirmer", conflicts, forcable: true });
+    }
+  }
+  res.json(hydrate([sessionstore.updateSession(req.params.id, req.body || {})])[0]);
+});
+app.patch("/api/sessions/series/:sid", requireAuth, requireAdmin, (req, res) => {
+  res.json({ updated: sessionstore.updateSeries(req.params.sid, req.body || {}).length });
+});
+app.delete("/api/sessions/:id", requireAuth, (req, res) => {
+  const cur = sessionstore.getSession(req.params.id);
+  if (cur && !assertCampus(req, res, cur.campusId)) return;
+  sessionstore.deleteSession(req.params.id);
+  res.json({ ok: true });
+});
+app.delete("/api/sessions/series/:sid", requireAuth, requireAdmin, (req, res) => {
+  res.json({ deleted: sessionstore.deleteSeries(req.params.sid) });
+});
+
+// --- Génération automatique de la semaine type ---
+app.post("/api/schedule/generate", requireAuth, requireAdmin, (req, res) => {
+  const { campusId, classIds, ...opts } = req.body || {};
+  if (campusId && !assertCampus(req, res, campusId)) return;
+  let classes = store.listClasses({ campusId });
+  if (Array.isArray(classIds) && classIds.length) classes = classes.filter((k) => classIds.includes(k.id));
+  if (!classes.length) return res.status(400).json({ error: "aucune classe à planifier" });
+
+  const sizes = {};
+  for (const k of classes) sizes[k.id] = store.classSize(k);
+  // Dates témoins : une date réelle par jour de la semaine, pour que la vérification
+  // de disponibilité (indisponibilités datées comprises) porte sur du concret.
+  const monday = nextMonday(req.body?.weekOf);
+  const probeDates = {};
+  ["lun", "mar", "mer", "jeu", "ven", "sam"].forEach((d, i) => {
+    const dt = new Date(`${monday}T12:00:00Z`); dt.setUTCDate(dt.getUTCDate() + i);
+    probeDates[d] = dt.toISOString().slice(0, 10);
+  });
+
+  const out = generateWeek({
+    classes, curricula: store.listCurricula(),
+    teachers: store.listTeachers({ campusId }).filter((t) => t.active !== false),
+    rooms: store.listRooms({ campusId }), sizes, probeDates,
+    limits: SERVICE_LIMITS,
+  }, opts);
+  res.json({ ...out, weekOf: monday, options: { ...GEN_DEFAULTS, ...opts } });
+});
+function nextMonday(from) {
+  // Lundi de la semaine visée (ou le prochain si la date tombe un autre jour).
+  const d = from ? new Date(`${from}T12:00:00Z`) : new Date();
+  const day = d.getUTCDay();               // 0 = dimanche, 1 = lundi
+  d.setUTCDate(d.getUTCDate() + (day === 1 ? 0 : (8 - day) % 7));
+  return d.toISOString().slice(0, 10);
+}
+// Application : la semaine générée devient des séances datées, sur toute la période.
+app.post("/api/schedule/apply", requireAuth, requireAdmin, (req, res) => {
+  const { week, weekOf, until, campusId } = req.body || {};
+  if (!Array.isArray(week) || !week.length) return res.status(400).json({ error: "semaine vide" });
+  if (campusId && !assertCampus(req, res, campusId)) return;
+  if (!weekOf || !until) return res.status(400).json({ error: "période requise" });
+  const periods = store.listPeriods({ campusId });
+  const offset = { lun: 0, mar: 1, mer: 2, jeu: 3, ven: 4, sam: 5 };
+  const all = [];
+  for (const w of week) {
+    const d = new Date(`${weekOf}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + (offset[w.day] ?? 0));
+    const first = d.toISOString().slice(0, 10);
+    const seriesId = sessionstore.id();
+    all.push(...expandWeekly({
+      campusId: campusId || w.campusId, classId: w.classId, moduleId: w.moduleId,
+      teacherId: w.teacherId, roomId: w.roomId, start: w.start, end: w.end,
+      date: first, seriesId, kind: "cours",
+    }, until, periods));
+  }
+  const made = sessionstore.addSessions(all);
+  logAudit(req, "create", "session", `planning appliqué : ${made.length} séances`);
+  res.json({ created: made.length });
+});
+
+// --- Pilotage : couverture, service, coût ---
+app.get("/api/schedule/coverage", requireAuth, (req, res) => {
+  const k = store.getClass(req.query.classId);
+  if (!k) return res.status(404).json({ error: "classe introuvable" });
+  if (!assertCampus(req, res, k.campusId)) return;
+  const cur = store.getCurriculum(k.curriculumId);
+  if (!cur) return res.status(400).json({ error: "aucun référentiel rattaché à cette classe" });
+  const sessions = sessionstore.listSessions({ classId: k.id });
+  res.json({ classId: k.id, className: k.name, curriculum: cur.name, ...coverage(cur, sessions, { today: new Date().toISOString().slice(0, 10), endDate: req.query.endDate }) });
+});
+app.get("/api/schedule/service", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !assertCampus(req, res, campusId)) return;
+  const sessions = scopeSessions(req, sessionstore.listSessions({ campusId, from: req.query.from, to: req.query.to }));
+  const teachers = store.listTeachers({ campusId });
+  const rows = teachers.map((t) => serviceOf(t, sessions));
+  const cost = rows.reduce((a, r) => a + (r.cost || 0), 0);
+  res.json({ rows: rows.sort((a, b) => b.planned - a.planned), equity: equity(rows), cost: Math.round(cost), limits: SERVICE_LIMITS });
+});
+
+// Taux d'occupation des salles : une salle vide toute la semaine coûte un loyer,
+// une salle saturée bloque le planning. Les deux se voient ici et nulle part ailleurs.
+app.get("/api/schedule/rooms-usage", requireAuth, (req, res) => {
+  const { campusId, from, to } = req.query;
+  if (campusId && !assertCampus(req, res, campusId)) return;
+  const rooms = store.listRooms({ campusId });
+  const sessions = scopeSessions(req, sessionstore.listSessions({ campusId, from, to })).filter((s) => s.status !== "cancelled");
+  // Capacité théorique : jours ouvrés × amplitude, calée sur la fenêtre demandée.
+  const days = from && to ? Math.max(1, Math.round((new Date(`${to}T12:00:00Z`) - new Date(`${from}T12:00:00Z`)) / 86400000) + 1) : 7;
+  const openHoursPerDay = 9;
+  const capacity = Math.round((days * 5 / 7) * openHoursPerDay);
+  const rows = rooms.map((r) => {
+    const mine = sessions.filter((s) => s.roomId === r.id);
+    const used = mine.reduce((a, s) => a + hoursOf(s), 0);
+    return {
+      roomId: r.id, name: r.name, kind: r.kind, places: r.places,
+      sessions: mine.length, hours: Math.round(used * 10) / 10,
+      rate: capacity ? Math.round((used / capacity) * 100) : null,
+      classes: [...new Set(mine.map((s) => s.classId))].length,
+    };
+  }).sort((a, b) => (b.rate || 0) - (a.rate || 0));
+  const orphelines = rows.filter((r) => !r.sessions).map((r) => r.name);
+  res.json({ rows, capacityHours: capacity, unused: orphelines });
+});
+
+// --- Impression, iCal, envoi ---
+function scheduleFor(req) {
+  const { classId, teacherId, from, to } = req.query;
+  const list = sessionstore.listSessions({ classId, teacherId, from, to });
+  return hydrate(scopeSessions(req, list));
+}
+app.get("/api/schedule/print", requireAuth, (req, res) => {
+  const rows = scheduleFor(req);
+  const who = req.query.classId ? store.getClass(req.query.classId)?.name : store.getTeacher(req.query.teacherId)?.name;
+  const html = buildScheduleHtml({
+    title: who || "Emploi du temps",
+    subtitle: [req.query.from && `du ${frDateFR(req.query.from)}`, req.query.to && `au ${frDateFR(req.query.to)}`].filter(Boolean).join(" "),
+    sessions: rows,
+  });
+  res.set("Content-Type", "text/html; charset=utf-8").send(html);
+});
+app.get("/api/schedule/ics", requireAuth, (req, res) => {
+  const rows = scheduleFor(req);
+  const who = req.query.classId ? store.getClass(req.query.classId)?.name : store.getTeacher(req.query.teacherId)?.name;
+  res.set("Content-Type", "text/calendar; charset=utf-8")
+     .set("Content-Disposition", `attachment; filename="planning-${slugify(who || "campus")}.ics"`)
+     .send(buildIcs({ sessions: rows, name: who || "Emploi du temps" }));
+});
+const frDateFR = (iso) => (iso ? iso.split("-").reverse().join("/") : "");
+const slugify = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+// Envoi du planning. Un professeur reçoit LE SIEN (son email de fiche) ; une classe
+// s'envoie à des destinataires explicites — les emails étudiants ne sont pas stockés,
+// et je ne vais pas les inventer.
+app.post("/api/schedule/send", requireAuth, requireAdmin, async (req, res) => {
+  const { teacherIds, classId, to, from, until, intro } = req.body || {};
+  const period = { from, to: until };
+  const targets = [];
+
+  for (const tid of Array.isArray(teacherIds) ? teacherIds : []) {
+    const t = store.getTeacher(tid);
+    if (!t) continue;
+    if (!t.email) { targets.push({ name: t.name, error: "aucune adresse email sur la fiche" }); continue; }
+    const rows = hydrate(sessionstore.listSessions({ teacherId: tid, from: period.from, to: period.to }));
+    targets.push({ name: t.name, to: t.email, title: `Votre emploi du temps${period.from ? ` — à partir du ${frDateFR(period.from)}` : ""}`, rows });
+  }
+  if (classId) {
+    const k = store.getClass(classId);
+    if (!k) return res.status(404).json({ error: "classe introuvable" });
+    if (!assertCampus(req, res, k.campusId)) return;
+    const dest = (Array.isArray(to) ? to : String(to || "").split(/[,;\s]+/)).map((x) => String(x).trim()).filter(Boolean);
+    if (!dest.length) return res.status(400).json({ error: "aucun destinataire : les adresses des étudiants ne sont pas stockées, indique-les" });
+    const rows = hydrate(sessionstore.listSessions({ classId, from: period.from, to: period.to }));
+    targets.push({ name: k.name, to: dest.join(","), title: `Emploi du temps — ${k.name}`, rows });
+  }
+  if (!targets.length) return res.status(400).json({ error: "aucun destinataire" });
+
+  const sent = [], failed = [];
+  for (const t of targets) {
+    if (t.error) { failed.push({ name: t.name, error: t.error }); continue; }
+    try {
+      await sendMail({
+        user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD,
+        to: t.to, subject: t.title,
+        html: buildScheduleEmail({ title: t.title, intro: intro || "", sessions: t.rows }),
+      });
+      sent.push({ name: t.name, to: t.to, sessions: t.rows.length });
+    } catch (e) { failed.push({ name: t.name, error: e.message }); }
+  }
+  logAudit(req, "update", "session", `planning envoyé à ${sent.length} destinataire(s)`);
+  res.json({ sent, failed });
+});
+
+// --- Sync SI campus quotidienne (avant l'arrivée au bureau ; brief à 7h30) ---
+const siCron = process.env.SI_CRON || "15 6 * * *";
+if (process.env.SI_SYNC !== "off" && cron.validate(siCron)) {
+  cron.schedule(siCron, async () => {
+    for (const c of store.listCampuses()) {
+      if (!store.getSiConfig(c.id)) continue;
+      try {
+        const r = await syncSiCampus(c);
+        if (r) console.log(`[si] ${c.name} : ${r.ok ? "sync ok" : "echec — " + r.error}`);
+      } catch (e) { console.error(`[si] ${c.name} :`, e?.message || e); }
+    }
+  }, { timezone: "Europe/Paris" });
+  console.log(`[si] sync planifiee (${siCron}, Europe/Paris)`);
 }
 
 app.listen(PORT, () => {

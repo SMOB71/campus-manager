@@ -38,6 +38,7 @@ const I = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
   net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
   funnel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18l-7 8v7l-4 2v-9z"/></svg>',
+  plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5"/></svg>',
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6M21 20a6 6 0 0 0-4-5.6"/></svg>',
   mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',
@@ -300,7 +301,7 @@ async function registerPasskey(deviceName) {
 }
 
 // ---------- Navigation ----------
-const NAV_GROUPS = ["Pilotage", "Décisions", "Réseau", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
+const NAV_GROUPS = ["Pilotage", "Décisions", "Réseau", "Enseignement", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
 const NAV = [
   { id: "accueil", label: "Accueil", icon: I.home, group: "Pilotage" },
   { id: "heatmap", label: "Heatmap réseau", icon: I.net, admin: true, group: "Pilotage" },
@@ -317,6 +318,7 @@ const NAV = [
   { id: "directeurs", label: "Directeurs", icon: I.users, admin: true, group: "Réseau" },
   { id: "tournee", label: "Tournée", icon: I.route, group: "Réseau" },
   { id: "ouvertures", label: "Ouvertures", icon: I.rocket, admin: true, group: "Réseau" },
+  { id: "si", label: "SI campus (ERP)", icon: I.plug, group: "Réseau" },
   { id: "documents", label: "Documents", icon: I.folder, group: "Réseau" },
   { id: "admissions", label: "Admissions", icon: I.funnel, group: "Recrutement" },
   { id: "evenements", label: "JPO & événements", icon: I.mega, group: "Recrutement" },
@@ -327,6 +329,10 @@ const NAV = [
   { id: "insertion", label: "Insertion & satisfaction", icon: I.heart, group: "Performance" },
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
+  { id: "planning", label: "Emploi du temps", icon: I.agenda, group: "Enseignement" },
+  { id: "professeurs", label: "Professeurs", icon: I.campus, group: "Enseignement" },
+  { id: "referentiels", label: "Référentiels", icon: I.note, admin: true, group: "Enseignement" },
+  { id: "sallesclasses", label: "Salles & classes", icon: I.net, group: "Enseignement" },
   { id: "risques", label: "Risques", icon: I.alert, group: "Conformité" },
   { id: "actions", label: "Plans d'action", icon: I.actions, group: "Conformité" },
   { id: "atelier", label: "Atelier", icon: I.pnl, group: "Atelier" },
@@ -380,7 +386,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, planning: renderPlanning, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1021,6 +1027,7 @@ const TH_FIELDS = [
   { k: "satisfaction", l: "Satisfaction minimale", suf: "/10", help: "Alerte si la satisfaction est sous cette note" },
   { k: "marginPct", l: "Marge minimale", suf: "%", help: "Alerte si la marge d'un campus est sous ce pourcentage" },
   { k: "qualiopiMonths", l: "Horizon Qualiopi", suf: "mois", help: "Alerte quand un audit Qualiopi arrive dans ce délai" },
+  { k: "absenteeism", l: "Absentéisme maximal", suf: "%", help: "Alerte si le taux d'absentéisme du SI campus (minutes prévues vs assiduité) dépasse ce seuil" },
 ];
 async function renderParametres() {
   const view = $("#view");
@@ -2318,8 +2325,8 @@ async function renderAlertesInto(view) {
   notifCount = n.length; renderNav();
   if (!n.length) { view.innerHTML = `<p class="empty">Rien à signaler — tout est à jour 👌</p>`; return; }
   const sevLabel = { high: "Urgent", medium: "À suivre", low: "Information" };
-  const typeLabel = { action: "Action", visite: "Visite", qualiopi: "Qualiopi", incident: "Incident", admissions: "Admissions", ouverture: "Ouverture" };
-  const canAct = { qualiopi: 1, incident: 1, admissions: 1, ouverture: 1, visite: 1 };
+  const typeLabel = { action: "Action", visite: "Visite", qualiopi: "Qualiopi", incident: "Incident", admissions: "Admissions", ouverture: "Ouverture", rupture: "Rupture", absenteisme: "Absentéisme", si: "SI campus" };
+  const canAct = { qualiopi: 1, incident: 1, admissions: 1, ouverture: 1, visite: 1, rupture: 1, absenteisme: 1 };
   const groups = { high: [], medium: [], low: [] };
   n.forEach((x) => (groups[x.severity] || groups.low).push(x));
   view.innerHTML = Object.entries(groups).filter(([, v]) => v.length).map(([sev, items]) => `
@@ -2337,7 +2344,7 @@ async function renderAlertesInto(view) {
   }));
 }
 function openNotif(type, campusId) {
-  const routes = { action: "actions", visite: "tournee", qualiopi: "qualiopi", incident: "risques", admissions: "admissions", ouverture: "ouvertures" };
+  const routes = { action: "actions", visite: "tournee", qualiopi: "qualiopi", incident: "risques", admissions: "admissions", ouverture: "ouvertures", rupture: "si", absenteisme: "si", si: "si" };
   if (type === "qualiopi" && campusId) qCampus = campusId;
   if (routes[type]) return setView(routes[type]);
   if (campusId) return openCampus360(campusId);
@@ -3176,6 +3183,120 @@ async function renderTournee() {
   }));
 }
 
+// ---------- Vue : SI campus (connecteur ERP) ----------
+const nfr = (n) => (n == null ? "—" : Number(n).toLocaleString("fr-FR"));
+async function renderSi() {
+  $("#topbar-actions").innerHTML = isAdmin() ? `<button class="btn-primary btn-sm" id="si-sync-all">⟳ <span>Tout synchroniser</span></button>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const rows = await api.get("/api/si/overview") || [];
+  const configured = rows.filter((r) => r.config?.configured);
+  const statusPill = (r) => {
+    if (!r.config?.configured) return `<span class="pill">non connecté</span>`;
+    if (!r.config.enabled) return `<span class="pill">en pause</span>`;
+    if (r.lastError && (!r.syncedAt || r.lastError.at > r.syncedAt)) return `<span class="pill overdue">échec de synchro</span>`;
+    if (r.syncedAt) return `<span class="pill done">synchronisé ${new Date(r.syncedAt).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>`;
+    return `<span class="pill doing">jamais synchronisé</span>`;
+  };
+  const kpiCell = (v, l, tone) => `<div class="k${tone ? " k-" + tone : ""}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  const card = (r) => {
+    const s = r.summary;
+    const nRupt = s?.contrats?.rupturesEnCours?.length || 0;
+    const ar = s?.assiduite?.absentRate;
+    return `<div class="card card-pad" style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <h3 style="margin:0;">${esc(r.campus)} ${statusPill(r)}</h3>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${s ? `<button class="btn-ghost btn-sm si-detail" data-id="${r.campusId}">Détail</button>` : ""}
+          ${isAdmin() && r.config?.configured ? `<button class="btn-ghost btn-sm si-sync" data-id="${r.campusId}">Synchroniser</button>` : ""}
+          ${isAdmin() ? `<button class="btn-ghost btn-sm si-cfg" data-id="${r.campusId}">Configurer</button>` : ""}
+        </div>
+      </div>
+      ${r.lastError && (!r.syncedAt || r.lastError.at > r.syncedAt) ? `<p class="sub" style="color:var(--bad);margin:8px 0 0;">${esc(r.lastError.message)}</p>` : ""}
+      ${s ? `<div class="kpis" style="margin-top:12px;">
+        ${kpiCell(nfr(s.effectif), "apprenants")}
+        ${kpiCell(ar != null ? ar + " %" : "—", "absentéisme (30 j)", ar != null && ar > 10 ? "bad" : "")}
+        ${kpiCell(s.absences ? nfr(s.absences.unjustifiedH) + " h" : "—", "abs. non justifiées")}
+        ${kpiCell(nfr(s.contrats?.actifs), "contrats actifs")}
+        ${kpiCell(String(nRupt), "ruptures en cours", nRupt ? "bad" : "")}
+        ${kpiCell(s.finance ? nfr(s.finance.ecart) + " €" : "—", "écart facturé/assiduité", s.finance?.ecart > 0 ? "bad" : "")}
+      </div>` : r.config?.configured ? "" : `<p class="sub muted" style="margin:8px 0 0;">Renseigne l'URL de l'instance du SI du campus et son jeton API pour alimenter automatiquement effectifs, assiduité, contrats et facturation.</p>`}
+    </div>`;
+  };
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-bottom:14px;"><p style="margin:0;">Connecteur <strong>SI campus</strong> — l'ERP de gestion de chaque campus alimente le cockpit chaque nuit : effectifs, assiduité, contrats d'alternance (dont <strong>ruptures en cours</strong>) et écart facturation/assiduité OPCO. <span class="muted">Le jeton se crée dans le module « prestataires webservices REST » du SI du campus.</span></p></div>
+    ${rows.length ? rows.map(card).join("") : `<p class="empty">Ajoute d'abord des campus.</p>`}
+    ${configured.length ? "" : rows.length ? `<p class="hint muted">Aucun campus connecté pour l'instant${isAdmin() ? " — clique sur « Configurer »" : ""}.</p>` : ""}`;
+  $("#si-sync-all")?.addEventListener("click", async () => {
+    $("#si-sync-all").disabled = true;
+    const r = await api.post("/api/si/sync");
+    const ko = (r.results || []).filter((x) => !x.ok);
+    alert(r.results?.length ? `Synchronisation : ${r.results.length - ko.length} ok${ko.length ? `, ${ko.length} en échec (${ko.map((x) => x.campus).join(", ")})` : ""}` : "Aucun campus connecté.");
+    renderSi();
+  });
+  $$(".si-cfg").forEach((b) => b.addEventListener("click", () => openSiConfig(rows.find((r) => r.campusId === b.dataset.id))));
+  $$(".si-sync").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "Synchro…";
+    const r = await api.post(`/api/campuses/${b.dataset.id}/si/sync`);
+    if (r.error) alert(r.error);
+    renderSi();
+  }));
+  $$(".si-detail").forEach((b) => b.addEventListener("click", () => openSiDetail(rows.find((r) => r.campusId === b.dataset.id))));
+}
+
+function openSiConfig(r) {
+  if (!r) return;
+  const c = r.config || {};
+  openModal(`SI campus — ${r.campus}`, `
+    <div class="field"><label class="field-label">URL de l'instance <span class="muted">(ex. https://erp.moncampus.fr)</span></label><input class="txt" id="sic-url" value="${esc(c.baseUrl || "")}" placeholder="https://…"></div>
+    <div class="field"><label class="field-label">Jeton API <span class="muted">${c.tokenMask ? "(actuel : " + esc(c.tokenMask) + " — laisser vide pour conserver)" : "(prestataire webservices REST)"}</span></label><input class="txt" id="sic-token" type="password" placeholder="${c.tokenMask ? "inchangé" : "jeton X-Auth-Token"}"></div>
+    <div class="field"><label class="field-label">Codes site <span class="muted">(optionnel, séparés par des virgules — pour une instance multi-sites)</span></label><input class="txt" id="sic-sites" value="${esc(c.codesSite || "")}"></div>
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0;"><input type="checkbox" id="sic-enabled" ${c.enabled !== false ? "checked" : ""}> <span>Synchronisation quotidienne active</span></label>
+    <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-primary" id="sic-save">Enregistrer</button>
+      <button class="btn-ghost" id="sic-test">Tester la connexion</button>
+    </div>
+    <div id="sic-msg" class="sub" style="margin-top:8px;"></div>`);
+  const msg = (t, ok) => { const m = $("#sic-msg"); m.textContent = t; m.style.color = ok ? "var(--good)" : "var(--bad)"; };
+  const save = async () => {
+    const body = { baseUrl: $("#sic-url").value.trim(), codesSite: $("#sic-sites").value.trim(), enabled: $("#sic-enabled").checked };
+    const tok = $("#sic-token").value.trim();
+    if (tok) body.token = tok;
+    const res = await api.put(`/api/campuses/${r.campusId}/si/config`, body);
+    if (res.error) { msg(res.error, false); return null; }
+    return res;
+  };
+  $("#sic-save").onclick = async () => { if (await save()) { msg("Configuration enregistrée.", true); setTimeout(() => { document.querySelector(".modal-bg")?.remove(); renderSi(); }, 500); } };
+  $("#sic-test").onclick = async () => {
+    if (!(await save())) return;
+    msg("Test en cours…", true);
+    const res = await api.post(`/api/campuses/${r.campusId}/si/test`);
+    if (res.error) msg(res.error, false);
+    else msg(`Connexion OK — ${res.sites?.length || 0} site(s) : ${(res.sites || []).map((s) => s.nom || s.code).slice(0, 5).join(", ")}`, true);
+  };
+}
+
+function openSiDetail(r) {
+  const s = r?.summary;
+  if (!s) return;
+  const ruptRow = (x, resil) => `<div class="item"><div class="grow"><div class="ttl">${esc(x.apprenant)}</div><div class="sub muted">${resil ? "Résilié le " + esc(x.dateResiliation || "?") : "Résiliation en cours"}${x.motif ? " · " + esc(x.motif) : ""}${x.dateDeb ? " · contrat depuis " + esc(x.dateDeb) : ""}</div></div>${x.npecOpco ? `<span class="pill">NPEC ${nfr(x.npecOpco)} €</span>` : ""}</div>`;
+  openModal(`SI campus — ${r.campus} (fenêtre ${s.windowDays} j)`, `
+    ${s.errors ? `<p class="sub" style="color:var(--bad);">Endpoints en échec : ${esc(Object.keys(s.errors).join(", "))} — vérifier les endpoints autorisés du jeton.</p>` : ""}
+    ${s.contrats ? `<div class="section-title" style="margin-top:0;">Ruptures de contrat</div>
+      ${s.contrats.rupturesEnCours.length ? `<div class="sub muted" style="margin-bottom:6px;">En cours de résiliation :</div><div class="list">${s.contrats.rupturesEnCours.map((x) => ruptRow(x, false)).join("")}</div>` : ""}
+      ${s.contrats.rupturesPeriode.length ? `<div class="sub muted" style="margin:8px 0 6px;">Résiliées sur la période :</div><div class="list">${s.contrats.rupturesPeriode.map((x) => ruptRow(x, true)).join("")}</div>` : ""}
+      ${!s.contrats.rupturesEnCours.length && !s.contrats.rupturesPeriode.length ? `<p class="muted">Aucune rupture — ${nfr(s.contrats.actifs)} contrat(s) actif(s) sur ${nfr(s.contrats.total)}.</p>` : ""}` : ""}
+    ${s.absences?.topAbsents?.length ? `<div class="section-title">Apprenants les plus absents (30 j)</div>
+      <div class="list">${s.absences.topAbsents.map((x) => `<div class="item"><div class="grow"><div class="ttl">${esc(x.nom)}</div><div class="sub muted">${nfr(Math.round(x.totalMin / 60))} h dont ${nfr(Math.round(x.unjustifiedMin / 60))} h non justifiées · ${x.count} absence(s)</div></div></div>`).join("")}</div>` : ""}
+    ${s.finance ? `<div class="section-title">Facturation vs assiduité (base OPCO)</div>
+      <div class="kpis">
+        <div class="k"><div class="v">${nfr(s.finance.facture)} €</div><div class="l">facturé</div></div>
+        <div class="k"><div class="v">${nfr(s.finance.assiduite)} €</div><div class="l">valeur assiduité</div></div>
+        <div class="k${s.finance.ecart > 0 ? " k-bad" : ""}"><div class="v">${nfr(s.finance.ecart)} €</div><div class="l">écart (risque OPCO)</div></div>
+      </div>
+      <p class="hint muted">Un écart positif = du facturé non couvert par l'assiduité constatée → risque de reprise OPCO liée à l'absentéisme.</p>` : ""}`);
+}
+
 // ---------- Vue : Journal d'audit ----------
 async function renderJournal() {
   const view = $("#view");
@@ -3278,7 +3399,7 @@ function ouvTaskRow(t) {
   return `<div class="ouv-task ${t.status === "done" ? "is-done" : ""}">
     <button class="ouv-check st-${t.status} task-cycle" data-tid="${t.id}" title="${TASK_STATUS[t.status]} — cliquer pour changer"></button>
     <div class="grow"><div class="ttl">${t.critical ? '<span class="crit-dot" title="chemin critique"></span>' : ""}${esc(t.title)}</div>
-      <div class="sub muted">${when}${t.owner ? " · " + esc(t.owner) : ""}${t.notes ? " · " + esc(t.notes) : ""}</div></div>
+      <div class="sub muted">${when}${t.owner ? " · " + esc(t.owner) : ""}${(t.steps || []).length ? ` · ${(t.steps || []).filter((s) => s.done).length}/${(t.steps || []).length} étapes` : ""}${(t.outputs || []).length ? ` · ${(t.outputs || []).filter((o) => o.status === "validated").length}/${(t.outputs || []).length} livrables` : ""}${t.notes ? " · " + esc(t.notes) : ""}</div></div>
     <span class="pill st-task-${t.status}">${TASK_STATUS[t.status]}</span>
     <button class="btn-ghost btn-sm task-edit" data-tid="${t.id}">✎</button>
   </div>`;
@@ -3331,6 +3452,9 @@ let ouvView = "lot";
 async function openOuvertureDetail(oid) {
   const o = await api.get(`/api/openings/${oid}`);
   if (!o || o.error) return;
+  // Les comités ne sont chargés que pour leur onglet : la modale est reconstruite à
+  // chaque mutation, inutile de payer la requête sur les trois autres vues.
+  const committees = ouvView === "copil" ? (await api.get(`/api/committees?scope=opening&scopeId=${oid}`)) || [] : [];
   const p = ouvProgress(o);
   const byLot = {};
   (o.tasks || []).forEach((t) => { (byLot[t.lot] = byLot[t.lot] || []).push(t); });
@@ -3349,7 +3473,7 @@ async function openOuvertureDetail(oid) {
       ${fkpi(o.budget != null ? eur(o.budget) : "—", "Budget d'ouverture")}
     </div>
     <div class="row" style="margin:10px 0;gap:8px;align-items:center;">
-      <div class="chips" id="ouv-mode"><button class="chip ${ouvView === "lot" ? "active" : ""}" data-m="lot">Par lot</button><button class="chip ${ouvView === "frise" ? "active" : ""}" data-m="frise">Frise</button><button class="chip ${ouvView === "budget" ? "active" : ""}" data-m="budget">Budget</button></div>
+      <div class="chips" id="ouv-mode"><button class="chip ${ouvView === "lot" ? "active" : ""}" data-m="lot">Par lot</button><button class="chip ${ouvView === "frise" ? "active" : ""}" data-m="frise">Frise</button><button class="chip ${ouvView === "budget" ? "active" : ""}" data-m="budget">Budget</button><button class="chip ${ouvView === "copil" ? "active" : ""}" data-m="copil">Comité</button></div>
       <button class="btn-ghost btn-sm" id="ouv-addtask">+ Tâche</button>
       <button class="btn-ghost btn-sm" id="ouv-reseed">Régénérer le type</button>
       <button class="btn-ghost btn-sm" id="ouv-xlsx">Excel</button>
@@ -3358,7 +3482,7 @@ async function openOuvertureDetail(oid) {
       <button class="btn-ghost btn-sm" id="ouv-edit">Modifier</button>
       <button class="btn-ghost btn-sm btn-danger" id="ouv-del">Supprimer</button>
     </div>
-    <div id="ouv-plan">${ouvView === "budget" ? ouvBudgetHtml(o) : ouvView === "frise" ? ouvFriseHtml(frise) : (OUV_LOTS.map(lotSection).join("") || '<p class="muted">Aucune tâche. Ajoute-en ou régénère le rétroplanning type.</p>')}</div>`;
+    <div id="ouv-plan">${ouvView === "budget" ? ouvBudgetHtml(o) : ouvView === "copil" ? ouvCopilHtml(committees, o) : ouvView === "frise" ? ouvFriseHtml(frise) : (OUV_LOTS.map(lotSection).join("") || '<p class="muted">Aucune tâche. Ajoute-en ou régénère le rétroplanning type.</p>')}</div>`;
   openModal(`${o.name}${o.city ? " · " + o.city : ""}`, body);
   $("#ouv-edit").onclick = () => { closeModals(); openOuvertureForm(o); };
   $("#ouv-del").onclick = async () => { if (!confirm("Supprimer ce projet d'ouverture ?")) return; await api.del(`/api/openings/${oid}`); closeModals(); renderOuvertures(); };
@@ -3384,7 +3508,15 @@ async function openOuvertureDetail(oid) {
     await api.patch(`/api/openings/${oid}/tasks/${t.id}`, { status: next });
     closeModals(); openOuvertureDetail(oid);
   }));
-  $$(".task-edit").forEach((b) => b.addEventListener("click", () => openTaskForm(oid, (o.tasks || []).find((x) => x.id === b.dataset.tid))));
+  // Le crayon ouvre désormais la fiche complète (contexte, RACI, livrables, échanges).
+  $$(".task-edit").forEach((b) => b.addEventListener("click", () => openTaskSheet(oid, b.dataset.tid)));
+  if (ouvView === "copil") {
+    $("#cp-add")?.addEventListener("click", () => openCommitteeForm(oid));
+    $$(".cp-edit").forEach((b) => b.addEventListener("click", () => openCommitteeForm(oid, committees.find((c) => c.id === b.dataset.cid))));
+    $$(".cp-addses").forEach((b) => b.addEventListener("click", () => openSessionSheet(oid, b.dataset.cid)));
+    $$(".cp-ses").forEach((b) => b.addEventListener("click", () => openSessionSheet(oid, b.dataset.cid, b.dataset.sid)));
+    $$(".cp-task").forEach((b) => b.addEventListener("click", () => openTaskSheet(oid, b.dataset.tid)));
+  }
 }
 function openTaskForm(oid, t) {
   const e = t || {};
@@ -3406,6 +3538,236 @@ function openTaskForm(oid, t) {
     closeModals(); openOuvertureDetail(oid);
   };
   if (t) $("#tk-del").onclick = async () => { if (!confirm("Supprimer cette tâche ?")) return; await api.del(`/api/openings/${oid}/tasks/${t.id}`); closeModals(); openOuvertureDetail(oid); };
+}
+
+// ---------- Comité de pilotage & fiche action détaillée ----------
+const OUT_STATUS = { todo: "À produire", produced: "Produit", validated: "Validé" };
+const SES_STATUS = { planned: "Prévue", held: "Tenue" };
+
+function cpSessionRow(c, s) {
+  const dec = (s.resolutions || []).length, act = (s.taskIds || []).length;
+  const meta = [
+    `${(s.agendaItems || []).length} point(s)`,
+    dec ? `${dec} décision(s)` : "",
+    act ? `${act} action(s)` : "",
+  ].filter(Boolean).join(" · ");
+  return `<button class="ouv-task cp-ses" data-cid="${c.id}" data-sid="${s.id}" style="width:100%;text-align:left;">
+    <span class="pill st-task-${s.status === "held" ? "done" : "doing"}">${SES_STATUS[s.status]}</span>
+    <span class="ttl">${esc(s.date || "date à fixer")}</span>
+    <span class="muted">${esc(meta)}</span></button>`;
+}
+
+function ouvCopilHtml(committees, o) {
+  const add = `<div class="actions" style="margin-top:12px;"><button class="btn-primary btn-sm" id="cp-add">+ Comité de pilotage</button></div>`;
+  if (!committees.length) {
+    return `<p class="empty">Aucun comité de pilotage sur ce projet.<br><span class="muted">Le comité porte les séances, les décisions et les actions qui en découlent — le rétroplanning dit quoi faire, le comité dit qui tranche.</span></p>${add}`;
+  }
+  const byId = {};
+  (o.tasks || []).forEach((t) => (byId[t.id] = t));
+  return committees.map((c) => {
+    const sessions = (c.sessions || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const open = (c.sessions || []).flatMap((s) => (s.resolutions || []).map((r) => ({ ...r, date: s.date })));
+    const linked = (c.sessions || []).flatMap((s) => s.taskIds || []).map((id2) => byId[id2]).filter(Boolean);
+    const late = linked.filter((t) => t.status !== "done" && t.dueDate && t.dueDate < new Date().toISOString().slice(0, 10));
+    return `<div class="ouv-lot">
+      <div class="ouv-lot-head">
+        <span class="ttl">${esc(c.name)}${c.cadence ? ` <span class="muted">· ${esc(c.cadence)}</span>` : ""}</span>
+        <span><button class="btn-ghost btn-sm cp-edit" data-cid="${c.id}">Modifier</button>
+              <button class="btn-ghost btn-sm cp-addses" data-cid="${c.id}">+ Séance</button></span>
+      </div>
+      <div style="padding:0 12px 10px;">
+        <p class="muted" style="margin:6px 0;">${(c.members || []).length ? (c.members || []).map((m) => `${esc(m.name)}${m.role ? ` <span class="muted">(${esc(m.role)})</span>` : ""}`).join(" · ") : "Aucun membre déclaré."}</p>
+        ${late.length ? `<p class="neg" style="margin:6px 0;">${late.length} action(s) du comité en retard.</p>` : ""}
+        <div class="list">${sessions.length ? sessions.map((s) => cpSessionRow(c, s)).join("") : '<p class="muted">Aucune séance.</p>'}</div>
+        ${open.length ? `<p class="field-label" style="margin-top:10px;">Décisions</p><ul style="margin:6px 0 0 18px;padding:0;font-size:13.5px;">${open.map((r) => `<li>${esc(r.text)}${r.owner ? ` — <span class="muted">${esc(r.owner)}</span>` : ""}${r.dueDate ? ` <span class="muted">(${esc(r.dueDate)})</span>` : ""}</li>`).join("")}</ul>` : ""}
+        ${linked.length ? `<p class="field-label" style="margin-top:10px;">Actions issues du comité</p><div class="list">${linked.map((t) => `<button class="ouv-task cp-task" data-tid="${t.id}" style="width:100%;text-align:left;"><span class="pill st-task-${t.status}">${TASK_STATUS[t.status]}</span><span class="ttl">${esc(t.title)}</span><span class="muted">${esc(t.dueDate || "")}</span></button>`).join("")}</div>` : ""}
+      </div></div>`;
+  }).join("") + add;
+}
+
+function openCommitteeForm(oid, c) {
+  const e = c || {};
+  const members = (e.members || []);
+  const memberRow = (m = {}) => `<tr><td><input class="txt cpm" data-f="name" value="${esc(m.name || "")}" placeholder="Nom"></td><td><input class="txt cpm" data-f="role" value="${esc(m.role || "")}" placeholder="Rôle"></td><td><input class="txt cpm" data-f="email" value="${esc(m.email || "")}" placeholder="Email"></td><td><button class="btn-ghost btn-sm cpm-del">×</button></td></tr>`;
+  openModal(c ? "Modifier le comité" : "Nouveau comité de pilotage", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Nom *</label><input class="txt cpf" data-f="name" value="${esc(e.name || "Comité de pilotage")}"></div>
+      <div><label class="field-label">Cadence</label><input class="txt cpf" data-f="cadence" value="${esc(e.cadence || "")}" placeholder="mensuel, bimensuel…"></div>
+    </div>
+    <p class="field-label" style="margin-top:12px;">Membres</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Nom</th><th>Rôle</th><th>Email</th><th></th></tr></thead><tbody id="cpm-body">${members.map(memberRow).join("") || memberRow()}</tbody></table></div>
+    <button class="btn-ghost btn-sm" id="cpm-add" style="margin-top:6px;">+ Membre</button>
+    <div class="actions" style="margin-top:14px;">${c ? `<button class="btn-ghost btn-sm btn-danger" id="cp-del">Supprimer</button>` : ""}<button class="btn-primary" id="cp-save">Enregistrer</button></div>`);
+  $("#cpm-add").onclick = () => $("#cpm-body").insertAdjacentHTML("beforeend", memberRow());
+  $("#cpm-body").addEventListener("click", (ev) => { if (ev.target.closest(".cpm-del")) ev.target.closest("tr").remove(); });
+  $("#cp-save").onclick = async () => {
+    const body = {}; $$(".cpf").forEach((i) => (body[i.dataset.f] = i.value));
+    if (!String(body.name || "").trim()) return;
+    body.members = $$("#cpm-body tr").map((tr) => { const m = {}; $$(".cpm", tr).forEach((i) => (m[i.dataset.f] = i.value)); return m; }).filter((m) => m.name.trim());
+    if (c) await api.patch(`/api/committees/${c.id}`, body);
+    else await api.post("/api/committees", { ...body, scope: "opening", scopeId: oid });
+    ouvView = "copil"; closeModals(); openOuvertureDetail(oid);
+  };
+  if (c) $("#cp-del").onclick = async () => { if (!confirm("Supprimer ce comité et ses séances ?")) return; await api.del(`/api/committees/${c.id}`); ouvView = "copil"; closeModals(); openOuvertureDetail(oid); };
+}
+
+async function openSessionSheet(oid, cid, sid) {
+  const c = await api.get(`/api/committees/${cid}`);
+  if (!c || c.error) return;
+  const s = sid ? (c.sessions || []).find((x) => x.id === sid) : null;
+  const e = s || {};
+  const resRow = (r = {}) => `<tr><td><input class="txt cpr" data-f="text" value="${esc(r.text || "")}" placeholder="Décision"></td><td><input class="txt cpr" data-f="owner" value="${esc(r.owner || "")}" placeholder="Pilote"></td><td><input class="txt cpr" data-f="dueDate" type="date" value="${esc(r.dueDate || "")}"></td><td><button class="btn-ghost btn-sm cpr-del">×</button></td></tr>`;
+  const present = new Set(e.presentIds || []);
+  openModal(s ? `Séance du ${esc(s.date || "?")}` : "Nouvelle séance", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Date</label><input class="txt sef" data-f="date" type="date" value="${esc(e.date || "")}"></div>
+      <div><label class="field-label">Statut</label><select class="txt sef" data-f="status">${Object.entries(SES_STATUS).map(([k, l]) => `<option value="${k}" ${e.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    </div>
+    ${(c.members || []).length ? `<p class="field-label" style="margin-top:12px;">Présents</p><div class="chips">${(c.members || []).map((m) => `<label class="jal-chk"><input type="checkbox" class="se-pres" value="${m.id}" ${present.has(m.id) ? "checked" : ""}> ${esc(m.name)}</label>`).join("")}</div>` : ""}
+    <p class="field-label" style="margin-top:12px;">Ordre du jour <span class="muted">(un point par ligne)</span></p>
+    <textarea class="txt" id="se-agenda" rows="5">${esc((e.agendaItems || []).map((a) => a.text).join("\n"))}</textarea>
+    <button class="btn-ghost btn-sm" id="se-ia" style="margin-top:6px;">✨ Proposer un ordre du jour (IA)</button>
+    <span class="muted" id="se-ia-msg"></span>
+    <p class="field-label" style="margin-top:12px;">Compte rendu</p>
+    <textarea class="txt" id="se-minutes" rows="6">${esc(e.minutes || "")}</textarea>
+    <p class="field-label" style="margin-top:12px;">Décisions</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Décision</th><th>Pilote</th><th>Échéance</th><th></th></tr></thead><tbody id="cpr-body">${(e.resolutions || []).map(resRow).join("") || resRow()}</tbody></table></div>
+    <button class="btn-ghost btn-sm" id="cpr-add" style="margin-top:6px;">+ Décision</button>
+    ${s ? `<p class="field-label" style="margin-top:14px;">Créer une action depuis cette séance</p>
+      <div class="row" style="gap:8px;"><input class="txt" id="se-nt" placeholder="Intitulé de l'action" style="flex:1;"><input class="txt" id="se-nd" type="date" style="max-width:170px;"><button class="btn-ghost btn-sm" id="se-addtask">Créer</button></div>` : ""}
+    <div class="actions" style="margin-top:14px;">${s ? `<button class="btn-ghost btn-sm btn-danger" id="se-del">Supprimer</button>` : ""}<button class="btn-primary" id="se-save">Enregistrer</button></div>`);
+
+  $("#cpr-add").onclick = () => $("#cpr-body").insertAdjacentHTML("beforeend", resRow());
+  $("#cpr-body").addEventListener("click", (ev) => { if (ev.target.closest(".cpr-del")) ev.target.closest("tr").remove(); });
+  const collect = () => {
+    const body = {}; $$(".sef").forEach((i) => (body[i.dataset.f] = i.value));
+    body.agendaItems = $("#se-agenda").value.split("\n").map((t) => t.trim()).filter(Boolean).map((text) => ({ text }));
+    body.minutes = $("#se-minutes").value;
+    body.presentIds = $$(".se-pres").filter((i) => i.checked).map((i) => i.value);
+    body.resolutions = $$("#cpr-body tr").map((tr) => { const r = {}; $$(".cpr", tr).forEach((i) => (r[i.dataset.f] = i.value)); return r; }).filter((r) => r.text.trim());
+    return body;
+  };
+  $("#se-ia").onclick = async () => {
+    if (!s) { $("#se-ia-msg").textContent = " enregistre d'abord la séance."; return; }
+    $("#se-ia-msg").textContent = " génération…";
+    const r = await api.post(`/api/committees/${cid}/sessions/${s.id}/agenda-draft`, {});
+    if (r?.error) { $("#se-ia-msg").textContent = " " + r.error; return; }
+    $("#se-ia-msg").textContent = "";
+    $("#se-agenda").value = (r.draft || "").trim();
+  };
+  $("#se-save").onclick = async () => {
+    if (s) await api.patch(`/api/committees/${cid}/sessions/${s.id}`, collect());
+    else await api.post(`/api/committees/${cid}/sessions`, collect());
+    ouvView = "copil"; closeModals(); openOuvertureDetail(oid);
+  };
+  if (s) {
+    $("#se-del").onclick = async () => { if (!confirm("Supprimer cette séance ?")) return; await api.del(`/api/committees/${cid}/sessions/${s.id}`); ouvView = "copil"; closeModals(); openOuvertureDetail(oid); };
+    $("#se-addtask").onclick = async () => {
+      const title = $("#se-nt").value.trim(); if (!title) return;
+      const r = await api.post(`/api/committees/${cid}/sessions/${s.id}/tasks`, { title, dueDate: $("#se-nd").value });
+      if (r?.error) { alert(r.error); return; }
+      ouvView = "copil"; closeModals(); openOuvertureDetail(oid);
+    };
+  }
+}
+
+async function openTaskSheet(oid, tid) {
+  const o = await api.get(`/api/openings/${oid}`);
+  const t = (o?.tasks || []).find((x) => x.id === tid);
+  if (!t) return;
+  const others = (o.tasks || []).filter((x) => x.id !== tid);
+  const dep = new Set(t.dependsOn || []);
+  const outRow = (out) => `<tr>
+    <td>${esc(out.label)}</td>
+    <td><select class="txt out-st" data-oid="${out.id}">${Object.entries(OUT_STATUS).map(([k, l]) => `<option value="${k}" ${out.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></td>
+    <td>${esc(out.owner || "—")}</td><td>${esc(out.dueDate || "—")}</td>
+    <td>${out.documentId ? `<a class="btn-ghost btn-sm" href="/api/documents/${out.documentId}/download">Télécharger</a>` : `<label class="btn-ghost btn-sm" style="cursor:pointer;">joindre<input type="file" class="out-file" data-oid="${out.id}" hidden></label>`}</td>
+    <td><button class="btn-ghost btn-sm out-del" data-oid="${out.id}">×</button></td></tr>`;
+  openModal(esc(t.title), `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Intitulé *</label><input class="txt tsf" data-f="title" value="${esc(t.title)}"></div>
+      <div><label class="field-label">Lot</label><select class="txt tsf" data-f="lot">${OUV_LOTS.map((l) => `<option value="${l.k}" ${t.lot === l.k ? "selected" : ""}>${l.l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Échéance</label><input class="txt tsf" data-f="dueDate" type="date" value="${esc(t.dueDate || "")}"></div>
+      <div><label class="field-label">Statut</label><select class="txt tsf" data-f="status">${Object.entries(TASK_STATUS).map(([k, l]) => `<option value="${k}" ${t.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Avancement %</label><input class="txt tsf" data-f="progress" type="number" min="0" max="100" value="${t.progress == null ? "" : t.progress}" ${(t.steps || []).length ? "disabled" : ""}>${(t.steps || []).length ? '<span class="hint muted">calculé depuis la checklist</span>' : ""}</div>
+      <div style="grid-column:1/-1;"><label class="field-label">Contexte</label><textarea class="txt tsf" data-f="description" rows="3">${esc(t.description || "")}</textarea></div>
+      <div><label class="field-label">Responsable (R)</label><input class="txt tsf" data-f="owner" value="${esc(t.owner || "")}"></div>
+      <div><label class="field-label">Approbateur (A)</label><input class="txt tsf" data-f="accountable" value="${esc(t.accountable || "")}"></div>
+      <div><label class="field-label">Consulté (C)</label><input class="txt tsf" data-f="consulted" value="${esc(t.consulted || "")}"></div>
+      <div><label class="field-label">Informé (I)</label><input class="txt tsf" data-f="informed" value="${esc(t.informed || "")}"></div>
+      <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="ts-crit" ${t.critical ? "checked" : ""}> Chemin critique</label></div>
+      ${others.length ? `<div style="grid-column:1/-1;"><label class="field-label">Dépend de</label><select class="txt" id="ts-dep" multiple size="4">${others.map((x) => `<option value="${x.id}" ${dep.has(x.id) ? "selected" : ""}>${esc(x.title)}</option>`).join("")}</select></div>` : ""}
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-ghost btn-sm btn-danger" id="ts-del">Supprimer l'action</button><button class="btn-primary" id="ts-save">Enregistrer</button></div>
+
+    <p class="field-label" style="margin-top:16px;">À faire ${(t.steps || []).length ? `<span class="muted">— ${(t.steps || []).filter((s) => s.done).length}/${(t.steps || []).length}</span>` : ""}</p>
+    <div class="list" id="ts-st">${(t.steps || []).length ? (t.steps || []).map((s) => `<div class="ouv-task${s.done ? " is-done" : ""}"><label class="jal-chk" style="flex:1;"><input type="checkbox" class="st-chk" data-sid="${s.id}" ${s.done ? "checked" : ""}> <span class="ttl">${esc(s.text)}</span></label><button class="btn-ghost btn-sm st-del" data-sid="${s.id}">×</button></div>`).join("") : '<p class="muted">Aucune étape. Découpe l\'action en étapes concrètes : l\'avancement se calculera tout seul.</p>'}</div>
+    <div class="row" style="gap:8px;margin-top:8px;"><input class="txt" id="ts-stt" placeholder="Nouvelle étape" style="flex:1;"><button class="btn-ghost btn-sm" id="ts-stadd">Ajouter</button></div>
+
+    <p class="field-label" style="margin-top:16px;">Livrables attendus</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Livrable</th><th>Statut</th><th>Responsable</th><th>Échéance</th><th>Fichier</th><th></th></tr></thead>
+      <tbody id="ts-out">${(t.outputs || []).map(outRow).join("") || '<tr><td colspan="6" class="muted">Aucun livrable déclaré.</td></tr>'}</tbody></table></div>
+    <div class="row" style="gap:8px;margin-top:8px;">
+      <input class="txt" id="ts-ol" placeholder="Nouveau livrable" style="flex:1;">
+      <input class="txt" id="ts-oo" placeholder="Responsable" style="max-width:160px;">
+      <input class="txt" id="ts-od" type="date" style="max-width:170px;">
+      <button class="btn-ghost btn-sm" id="ts-oadd">Ajouter</button>
+    </div>
+
+    <p class="field-label" style="margin-top:16px;">Échanges</p>
+    <div class="list" id="ts-cm">${(t.comments || []).length ? (t.comments || []).map((c) => `<div class="ouv-task"><span class="ttl">${esc(c.text)}</span><span class="muted">${esc(c.by || "")} · ${esc((c.at || "").slice(0, 10))}</span><button class="btn-ghost btn-sm cm-del" data-cid="${c.id}">×</button></div>`).join("") : '<p class="muted">Aucun échange.</p>'}</div>
+    <div class="row" style="gap:8px;margin-top:8px;"><input class="txt" id="ts-cmt" placeholder="Ajouter un message" style="flex:1;"><button class="btn-ghost btn-sm" id="ts-cmadd">Envoyer</button></div>`);
+
+  const back = () => { closeModals(); openTaskSheet(oid, tid); };
+  $("#ts-save").onclick = async () => {
+    const body = {}; $$(".tsf").forEach((i) => (body[i.dataset.f] = i.value));
+    if (!String(body.title || "").trim()) return;
+    body.critical = $("#ts-crit").checked;
+    body.progress = body.progress === "" ? null : Number(body.progress);
+    if ($("#ts-dep")) body.dependsOn = $$("#ts-dep option").filter((op) => op.selected).map((op) => op.value);
+    await api.patch(`/api/openings/${oid}/tasks/${tid}`, body);
+    closeModals(); openOuvertureDetail(oid);
+  };
+  $("#ts-del").onclick = async () => { if (!confirm("Supprimer cette action ?")) return; await api.del(`/api/openings/${oid}/tasks/${tid}`); closeModals(); openOuvertureDetail(oid); };
+  $("#ts-stadd").onclick = async () => {
+    const text = $("#ts-stt").value.trim(); if (!text) return;
+    await api.post(`/api/openings/${oid}/tasks/${tid}/steps`, { text }); back();
+  };
+  $("#ts-stt").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("#ts-stadd").click(); });
+  $$(".st-chk").forEach((chk) => chk.addEventListener("change", async () => {
+    await api.patch(`/api/openings/${oid}/tasks/${tid}/steps/${chk.dataset.sid}`, { done: chk.checked });
+    back();
+  }));
+  $$(".st-del").forEach((b) => b.addEventListener("click", async () => {
+    await api.del(`/api/openings/${oid}/tasks/${tid}/steps/${b.dataset.sid}`); back();
+  }));
+  $("#ts-oadd").onclick = async () => {
+    const label = $("#ts-ol").value.trim(); if (!label) return;
+    await api.post(`/api/openings/${oid}/tasks/${tid}/outputs`, { label, owner: $("#ts-oo").value, dueDate: $("#ts-od").value });
+    back();
+  };
+  $$(".out-st").forEach((sel) => sel.addEventListener("change", async () => {
+    await api.patch(`/api/openings/${oid}/tasks/${tid}/outputs/${sel.dataset.oid}`, { status: sel.value });
+    back();
+  }));
+  $$(".out-del").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Supprimer ce livrable ?")) return;
+    await api.del(`/api/openings/${oid}/tasks/${tid}/outputs/${b.dataset.oid}`); back();
+  }));
+  $$(".out-file").forEach((inp) => inp.addEventListener("change", async () => {
+    const f = inp.files?.[0]; if (!f) return;
+    const fd = new FormData(); fd.append("file", f);
+    const r = await fetch(`/api/openings/${oid}/tasks/${tid}/outputs/${inp.dataset.oid}/document`, { method: "POST", headers: { "X-CSRF-Token": csrfToken() }, body: fd }).then((x) => x.json());
+    if (r?.error) { alert(r.error); return; }
+    back();
+  }));
+  $("#ts-cmadd").onclick = async () => {
+    const text = $("#ts-cmt").value.trim(); if (!text) return;
+    await api.post(`/api/openings/${oid}/tasks/${tid}/comments`, { text }); back();
+  };
+  $$(".cm-del").forEach((b) => b.addEventListener("click", async () => {
+    await api.del(`/api/openings/${oid}/tasks/${tid}/comments/${b.dataset.cid}`); back();
+  }));
 }
 
 // ---------- Vue : Sauvegardes / Restauration (admin) ----------
@@ -3495,3 +3857,526 @@ function closePalette() { document.getElementById("palette")?.remove(); }
 document.getElementById("global-search")?.addEventListener("click", () => { if (state.user) openPalette(); });
 
 boot();
+
+// ======================= Module Enseignement =======================
+// Emploi du temps, professeurs, référentiels, salles et classes.
+
+const PLAN_DAYS = [["lun", "Lundi"], ["mar", "Mardi"], ["mer", "Mercredi"], ["jeu", "Jeudi"], ["ven", "Vendredi"], ["sam", "Samedi"]];
+const SES_KIND = { cours: "Cours", examen: "Examen", rattrapage: "Rattrapage", reunion: "Réunion" };
+const SES_STATUT = { planned: "Prévue", done: "Faite", cancelled: "Annulée" };
+const TEACH_STATUS = { permanent: "Permanent", vacataire: "Vacataire", intervenant: "Intervenant" };
+const PERIOD_KIND = { vacances: "Vacances", ferie: "Férié", examens: "Examens", stage: "Stage" };
+
+// Lundi de la semaine contenant `d`.
+function mondayOf(d) {
+  const x = new Date(`${d}T12:00:00Z`);
+  x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7));
+  return x.toISOString().slice(0, 10);
+}
+const addDays = (iso, n) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const hhmmToMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || "")); return m ? +m[1] * 60 + +m[2] : 0; };
+
+let planState = { week: mondayOf(new Date().toISOString().slice(0, 10)), campusId: "", classId: "", teacherId: "" };
+
+// ---------- Emploi du temps : grille semaine éditable ----------
+async function renderPlanning() {
+  const [campuses, classes, teachers] = await Promise.all([api.get("/api/campuses"), api.get("/api/classes"), api.get("/api/teachers")]);
+  if (!planState.campusId && campuses[0]) planState.campusId = campuses[0].id;
+  const from = planState.week, to = addDays(from, 5);
+  const q = new URLSearchParams({ from, to });
+  if (planState.campusId) q.set("campusId", planState.campusId);
+  if (planState.classId) q.set("classId", planState.classId);
+  if (planState.teacherId) q.set("teacherId", planState.teacherId);
+  const sessions = await api.get(`/api/sessions?${q}`);
+
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="pl-gen">✨ Générer</button><button class="btn-primary btn-sm" id="pl-add">+ Séance</button>`;
+  const mine = classes.filter((k) => !planState.campusId || k.campusId === planState.campusId);
+
+  $("#view").innerHTML = `
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <button class="btn-ghost btn-sm" id="pl-prev">← Semaine</button>
+      <b style="min-width:210px;text-align:center;">${frDate(from)} → ${frDate(to)}</b>
+      <button class="btn-ghost btn-sm" id="pl-next">Semaine →</button>
+      <select class="txt" id="pl-campus" style="max-width:180px;">${campuses.map((c) => `<option value="${c.id}" ${planState.campusId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
+      <select class="txt" id="pl-class" style="max-width:180px;"><option value="">Toutes les classes</option>${mine.map((k) => `<option value="${k.id}" ${planState.classId === k.id ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select>
+      <select class="txt" id="pl-teacher" style="max-width:180px;"><option value="">Tous les professeurs</option>${teachers.map((t) => `<option value="${t.id}" ${planState.teacherId === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>
+      <span style="flex:1"></span>
+      <button class="btn-ghost btn-sm" id="pl-print">Imprimer</button>
+      <button class="btn-ghost btn-sm" id="pl-ics">Agenda (.ics)</button>
+      <button class="btn-ghost btn-sm" id="pl-send">Envoyer</button>
+    </div>
+    ${planBanner(sessions)}
+    <div class="card" style="overflow-x:auto;"><div class="plan-grid">
+      ${PLAN_DAYS.map(([k, l], i) => `<div class="plan-col">
+        <div class="plan-head">${l}<span class="muted">${frDate(addDays(from, i)).slice(0, 5)}</span></div>
+        <div class="plan-day" data-date="${addDays(from, i)}">
+          ${sessions.filter((s) => s.date === addDays(from, i)).sort((a, b) => hhmmToMin(a.start) - hhmmToMin(b.start)).map(planCard).join("")
+            || '<p class="muted" style="font-size:12px;padding:8px;">—</p>'}
+        </div></div>`).join("")}
+    </div></div>
+    <p class="hint muted" style="margin-top:8px;">Clique une séance pour la modifier. Chaque déplacement est revérifié : professeur, salle, classe, disponibilités, vacances et capacité.</p>`;
+
+  $("#pl-prev").onclick = () => { planState.week = addDays(planState.week, -7); renderPlanning(); };
+  $("#pl-next").onclick = () => { planState.week = addDays(planState.week, 7); renderPlanning(); };
+  for (const [id, key] of [["pl-campus", "campusId"], ["pl-class", "classId"], ["pl-teacher", "teacherId"]]) {
+    $(`#${id}`).onchange = (e) => { planState[key] = e.target.value; renderPlanning(); };
+  }
+  $("#pl-add").onclick = () => openSessionForm();
+  $("#pl-gen").onclick = () => openGenerator();
+  $("#pl-print").onclick = () => window.open(`/api/schedule/print?${filterQS()}`, "_blank");
+  $("#pl-ics").onclick = () => { location.href = `/api/schedule/ics?${filterQS()}`; };
+  $("#pl-send").onclick = () => openSendForm(teachers, mine);
+  $$(".plan-card").forEach((c) => c.addEventListener("click", () => openSessionForm(sessions.find((s) => s.id === c.dataset.sid))));
+}
+function filterQS() {
+  const q = new URLSearchParams({ from: planState.week, to: addDays(planState.week, 5) });
+  if (planState.classId) q.set("classId", planState.classId);
+  if (planState.teacherId) q.set("teacherId", planState.teacherId);
+  return q.toString();
+}
+function planCard(s) {
+  const forced = (s.forced || []).length;
+  return `<div class="plan-card${s.status === "cancelled" ? " off" : ""}${forced ? " forced" : ""}" data-sid="${s.id}" title="${forced ? "Conflit assumé : " + esc(s.forced.join(", ")) : ""}">
+    <div class="h">${esc(s.start)}–${esc(s.end)}${s.kind !== "cours" ? ` <span class="pill">${esc(SES_KIND[s.kind])}</span>` : ""}${forced ? ' <span class="pill p-warn">forcé</span>' : ""}</div>
+    <div class="t">${esc(s.moduleLabel || "—")}</div>
+    <div class="m muted">${[s.className, s.teacherName, s.roomName].filter(Boolean).map(esc).join(" · ")}</div></div>`;
+}
+function planBanner(sessions) {
+  const h = sessions.reduce((a, s) => a + (hhmmToMin(s.end) - hhmmToMin(s.start)) / 60, 0);
+  const forced = sessions.filter((s) => (s.forced || []).length).length;
+  return `<div class="kpis" style="margin-bottom:10px;">
+    ${fkpi(sessions.length, "séances")}${fkpi(Math.round(h) + " h", "volume")}
+    ${fkpi(new Set(sessions.map((s) => s.teacherId).filter(Boolean)).size, "professeurs")}
+    ${fkpi(forced, "conflits assumés", forced ? "bad" : "good")}</div>`;
+}
+
+// ---------- Formulaire de séance : la vérification est faite AVANT d'écrire ----------
+async function openSessionForm(s) {
+  const e = s || { date: planState.week, start: "09:00", end: "11:00", campusId: planState.campusId };
+  const [classes, teachers, rooms, curricula] = await Promise.all([api.get("/api/classes"), api.get("/api/teachers"), api.get("/api/rooms"), api.get("/api/curricula")]);
+  const k = classes.find((x) => x.id === (e.classId || planState.classId));
+  const cur = curricula.find((c) => c.id === k?.curriculumId);
+  const modules = cur?.modules || [];
+  openModal(s ? "Modifier la séance" : "Nouvelle séance", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Classe *</label><select class="txt ssf" data-f="classId">${classes.map((x) => `<option value="${x.id}" ${(e.classId || planState.classId) === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Module</label><select class="txt ssf" data-f="moduleId"><option value="">—</option>${modules.map((m) => `<option value="${m.id}" ${e.moduleId === m.id ? "selected" : ""}>${esc(m.label || m.code)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Professeur</label><select class="txt ssf" data-f="teacherId"><option value="">—</option>${teachers.map((t) => `<option value="${t.id}" ${e.teacherId === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Salle</label><select class="txt ssf" data-f="roomId"><option value="">—</option>${rooms.map((r) => `<option value="${r.id}" ${e.roomId === r.id ? "selected" : ""}>${esc(r.name)}${r.places ? ` (${r.places})` : ""}</option>`).join("")}</select></div>
+      <div><label class="field-label">Date *</label><input class="txt ssf" data-f="date" type="date" value="${esc(e.date || "")}"></div>
+      <div><label class="field-label">Type</label><select class="txt ssf" data-f="kind">${Object.entries(SES_KIND).map(([kk, l]) => `<option value="${kk}" ${e.kind === kk ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Début *</label><input class="txt ssf" data-f="start" type="time" value="${esc(e.start || "")}"></div>
+      <div><label class="field-label">Fin *</label><input class="txt ssf" data-f="end" type="time" value="${esc(e.end || "")}"></div>
+      ${s ? `<div><label class="field-label">Statut</label><select class="txt ssf" data-f="status">${Object.entries(SES_STATUT).map(([kk, l]) => `<option value="${kk}" ${e.status === kk ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : `
+      <div><label class="field-label">Répéter jusqu'au</label><input class="txt" id="ss-until" type="date" placeholder="série hebdomadaire"></div>`}
+      <div style="grid-column:1/-1;"><label class="field-label">Notes</label><input class="txt ssf" data-f="notes" value="${esc(e.notes || "")}"></div>
+    </div>
+    <div id="ss-conflicts" style="margin-top:10px;"></div>
+    <div class="actions" style="margin-top:12px;">
+      ${s ? `<button class="btn-ghost btn-sm btn-danger" id="ss-del">Supprimer</button>` : ""}
+      <button class="btn-ghost btn-sm" id="ss-check">Vérifier</button>
+      <button class="btn-primary" id="ss-save">Enregistrer</button></div>`);
+
+  const collect = () => {
+    const b = { campusId: e.campusId || planState.campusId };
+    $$(".ssf").forEach((i) => (b[i.dataset.f] = i.value));
+    return b;
+  };
+  const showConflicts = (list, forcable) => {
+    const box = $("#ss-conflicts");
+    if (!list?.length) { box.innerHTML = '<p class="muted" style="font-size:13px;">Aucun conflit détecté.</p>'; return; }
+    box.innerHTML = list.map((c) => `<div class="item" style="border-left:3px solid ${c.level === "warn" ? "#8A6114" : "#8A4B4B"};">
+      <span class="pill ${c.level === "warn" ? "p-warn" : "p-off"}">${c.level === "warn" ? "Alerte" : c.level === "block-forcable" ? "À confirmer" : "Impossible"}</span>
+      <span class="grow">${esc(c.message)}</span></div>`).join("")
+      + (forcable ? '<p class="hint muted">Ces points peuvent être forcés — le forçage est tracé et remonte dans le suivi de service.</p>' : "");
+  };
+  $("#ss-check").onclick = async () => showConflicts((await api.post("/api/sessions/check", collect())).conflicts);
+  $("#ss-save").onclick = async () => {
+    const body = collect();
+    if (!body.date || !body.start || !body.end) return;
+    const until = $("#ss-until")?.value;
+    let r;
+    if (s) r = await api.patch(`/api/sessions/${s.id}`, body);
+    else if (until) r = await api.post("/api/sessions/series", { ...body, until });
+    else r = await api.post("/api/sessions", body);
+    if (r?.conflicts) {
+      showConflicts(r.conflicts, r.forcable);
+      if (r.forcable && confirm("Conflit signalé. Poser quand même la séance ?")) {
+        const f = s ? await api.patch(`/api/sessions/${s.id}`, { ...body, force: true })
+                    : until ? await api.post("/api/sessions/series", { ...body, until, force: true })
+                            : await api.post("/api/sessions", { ...body, force: true });
+        if (f?.conflicts) { showConflicts(f.conflicts, f.forcable); return; }
+      } else return;
+    }
+    if (r?.skipped?.length) alert(`${r.created} séances posées. ${r.skipped.length} écartées (conflit ou période fermée).`);
+    closeModals(); renderPlanning();
+  };
+  if (s) $("#ss-del").onclick = async () => {
+    if (!confirm("Supprimer cette séance ?")) return;
+    await api.del(`/api/sessions/${s.id}`); closeModals(); renderPlanning();
+  };
+}
+
+// ---------- Générateur ----------
+async function openGenerator() {
+  const classes = (await api.get("/api/classes")).filter((k) => !planState.campusId || k.campusId === planState.campusId);
+  openModal("Générer l'emploi du temps", `
+    <p class="muted" style="font-size:13.5px;">Le générateur construit la <b>semaine type</b> depuis les référentiels, les disponibilités et les salles, puis on la déroule sur la période. Il refuse tout planning qui dépasserait les plafonds légaux de service.</p>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Classes</label>
+        <select class="txt" id="gn-classes" multiple size="${Math.min(6, Math.max(2, classes.length))}">${classes.map((k) => `<option value="${k.id}" selected>${esc(k.name)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Semaine de référence</label><input class="txt" id="gn-week" type="date" value="${planState.week}"></div>
+      <div><label class="field-label">Dérouler jusqu'au</label><input class="txt" id="gn-until" type="date"></div>
+      <div><label class="field-label">Durée d'une séance (min)</label><input class="txt" id="gn-dur" type="number" value="120" step="30" min="30"></div>
+      <div><label class="field-label">Semaines de cours dans l'année</label><input class="txt" id="gn-weeks" type="number" value="36" min="10" max="52"></div>
+      <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="gn-legal" checked> Refuser tout dépassement des plafonds légaux (28 h/semaine, 48 h supplémentaires/an)</label></div>
+    </div>
+    <div id="gn-out" style="margin-top:12px;"></div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="gn-run">Générer</button></div>`);
+
+  $("#gn-run").onclick = async () => {
+    $("#gn-out").innerHTML = '<p class="muted">Génération…</p>';
+    const r = await api.post("/api/schedule/generate", {
+      campusId: planState.campusId,
+      classIds: $$("#gn-classes option").filter((o) => o.selected).map((o) => o.value),
+      weekOf: $("#gn-week").value, sessionMinutes: +$("#gn-dur").value,
+      weeksInYear: +$("#gn-weeks").value, enforceLegalLimits: $("#gn-legal").checked,
+    });
+    if (r?.error) { $("#gn-out").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    $("#gn-out").innerHTML = `
+      <div class="kpis">${fkpi(r.stats.coverage + " %", "couverture", r.stats.coverage === 100 ? "good" : "bad")}
+        ${fkpi(r.stats.placed + "/" + r.stats.demanded, "séances placées")}
+        ${fkpi(r.score.classGaps + " h", "trous étudiants")}${fkpi(r.score.loadStdev, "écart de charge")}</div>
+      ${r.diagnosis?.length ? `<div style="margin:10px 0;">${r.diagnosis.map((d) => `<div class="item" style="border-left:3px solid #8A4B4B;">
+        <div class="grow"><b>${esc(d.message)}</b><br><span class="muted">${esc(d.remedy || "")}</span>
+        ${d.modules?.length ? `<br><span class="muted" style="font-size:12px;">Modules : ${d.modules.map(esc).join(", ")}</span>` : ""}</div></div>`).join("")}</div>` : '<p class="muted">Aucun blocage : tout le référentiel a trouvé sa place.</p>'}
+      <div class="card" style="overflow-x:auto;margin-top:10px;"><table class="net-table"><thead><tr><th>Jour</th><th>Horaire</th><th>Enseignement</th><th>Classe</th><th>Professeur</th><th>Salle</th></tr></thead><tbody>
+        ${r.week.slice().sort((a, b) => PLAN_DAYS.findIndex((d) => d[0] === a.day) - PLAN_DAYS.findIndex((d) => d[0] === b.day) || hhmmToMin(a.start) - hhmmToMin(b.start))
+          .map((w) => `<tr><td>${esc((PLAN_DAYS.find((d) => d[0] === w.day) || [])[1] || w.day)}</td><td>${esc(w.start)}–${esc(w.end)}</td><td>${esc(w.label)}</td><td>${esc(w.classId)}</td><td>${esc(w.teacherId || "—")}</td><td>${esc(w.roomId || "—")}</td></tr>`).join("")}
+      </tbody></table></div>
+      <div class="actions" style="margin-top:10px;"><button class="btn-primary" id="gn-apply">Appliquer sur la période</button></div>`;
+    $("#gn-apply").onclick = async () => {
+      const until = $("#gn-until").value;
+      if (!until) { alert("Indique jusqu'à quelle date dérouler la semaine type."); return; }
+      const a = await api.post("/api/schedule/apply", { week: r.week, weekOf: r.weekOf, until, campusId: planState.campusId });
+      alert(`${a.created} séances créées.`);
+      closeModals(); renderPlanning();
+    };
+  };
+}
+
+// ---------- Envoi du planning ----------
+function openSendForm(teachers, classes) {
+  openModal("Envoyer l'emploi du temps", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Du</label><input class="txt" id="sd-from" type="date" value="${planState.week}"></div>
+      <div><label class="field-label">Au</label><input class="txt" id="sd-until" type="date" value="${addDays(planState.week, 5)}"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Professeurs — chacun reçoit le sien</label>
+        <select class="txt" id="sd-teachers" multiple size="5">${teachers.map((t) => `<option value="${t.id}" ${t.id === planState.teacherId ? "selected" : ""}>${esc(t.name)}${t.email ? "" : " (sans email)"}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Classe</label>
+        <select class="txt" id="sd-class"><option value="">—</option>${classes.map((k) => `<option value="${k.id}" ${k.id === planState.classId ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Destinataires de la classe</label>
+        <input class="txt" id="sd-to" placeholder="adresses séparées par des virgules">
+        <span class="hint muted">Les adresses des étudiants ne sont pas stockées dans l'application : indique-les ici, ou envoie au délégué.</span></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Mot d'introduction</label><input class="txt" id="sd-intro" placeholder="facultatif"></div>
+    </div>
+    <div id="sd-out" style="margin-top:10px;"></div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="sd-go">Envoyer</button></div>`);
+  $("#sd-go").onclick = async () => {
+    $("#sd-out").innerHTML = '<p class="muted">Envoi…</p>';
+    const r = await api.post("/api/schedule/send", {
+      teacherIds: $$("#sd-teachers option").filter((o) => o.selected).map((o) => o.value),
+      classId: $("#sd-class").value || null, to: $("#sd-to").value,
+      from: $("#sd-from").value, until: $("#sd-until").value, intro: $("#sd-intro").value,
+    });
+    if (r?.error) { $("#sd-out").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    $("#sd-out").innerHTML = `<p><b>${r.sent.length} envoi(s)</b>${r.sent.map((x) => `<br><span class="muted">${esc(x.name)} → ${esc(x.to)} (${x.sessions} séances)</span>`).join("")}</p>`
+      + (r.failed.length ? `<p class="neg">${r.failed.map((f) => `${esc(f.name)} : ${esc(f.error)}`).join("<br>")}</p>` : "");
+  };
+}
+
+// ---------- Professeurs & prestataires ----------
+let profFilter = "";
+async function renderProfesseurs() {
+  const [teachers, campuses] = await Promise.all([api.get("/api/teachers"), api.get("/api/campuses")]);
+  const svc = await api.get(`/api/schedule/service${planState.campusId ? `?campusId=${planState.campusId}` : ""}`);
+  const byId = new Map((svc.rows || []).map((r) => [r.teacherId, r]));
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="tc-import">Importer les contacts</button><button class="btn-primary btn-sm" id="tc-add">+ Professeur</button>`;
+  const list = teachers.filter((t) => !profFilter || t.status === profFilter);
+
+  $("#view").innerHTML = `
+    <div class="kpis" style="margin-bottom:12px;">
+      ${fkpi(teachers.length, "professeurs")}
+      ${fkpi(teachers.filter((t) => t.status === "prestataire").length, "prestataires")}
+      ${fkpi(Math.round(svc.cost || 0).toLocaleString("fr-FR") + " €", "coût du planning")}
+      ${fkpi((svc.equity?.stdev ?? 0) + " h", "écart de charge", (svc.equity?.stdev ?? 0) > 40 ? "bad" : "good")}
+    </div>
+    <div class="chips" style="margin-bottom:10px;">
+      ${[["", "Tous"], ...Object.entries(TEACH_STATUS)].map(([k, l]) => `<button class="chip ${profFilter === k ? "active" : ""}" data-s="${k}">${l}</button>`).join("")}
+    </div>
+    ${(svc.rows || []).some((r) => r.flags?.length) ? `<div class="card" style="border-left:3px solid #8A4B4B;padding:12px;margin-bottom:12px;">
+      <b>Service à surveiller</b>${(svc.rows || []).filter((r) => r.flags?.length).map((r) => `<div class="muted" style="font-size:13px;margin-top:4px;">${esc(r.name)} — ${r.flags.map((f) => esc(f.message)).join(" ")}</div>`).join("")}</div>` : ""}
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Nom</th><th>Statut</th><th>Société</th><th>Matières</th><th>Dû</th><th>Posé</th><th>H. supp.</th><th>Coût</th><th></th></tr></thead><tbody>
+      ${list.map((t) => { const s = byId.get(t.id) || {}; return `<tr>
+        <td><b>${esc(t.name)}</b>${t.email ? `<br><span class="muted" style="font-size:12px;">${esc(t.email)}</span>` : ""}</td>
+        <td><span class="pill">${esc(TEACH_STATUS[t.status] || t.status)}</span></td>
+        <td>${esc(t.company || "—")}</td>
+        <td class="muted" style="font-size:12.5px;">${(t.subjects || []).map(esc).join(", ") || "—"}</td>
+        <td class="num">${t.heuresAnnuelles ?? "—"}</td>
+        <td class="num">${s.planned ?? 0}</td>
+        <td class="num ${s.overtime > 0 ? "neg" : ""}">${s.overtime ?? 0}</td>
+        <td class="num">${s.cost != null ? Math.round(s.cost).toLocaleString("fr-FR") + " €" : "—"}</td>
+        <td><button class="btn-ghost btn-sm tc-edit" data-id="${t.id}">✎</button></td></tr>`; }).join("")
+        || '<tr><td colspan="9" class="muted">Aucun professeur. Importe les contacts existants ou crée une fiche.</td></tr>'}
+    </tbody></table></div>`;
+
+  $$(".chips .chip").forEach((c) => c.addEventListener("click", () => { profFilter = c.dataset.s; renderProfesseurs(); }));
+  $("#tc-add").onclick = () => openTeacherForm(null, campuses);
+  $$(".tc-edit").forEach((b) => b.addEventListener("click", () => openTeacherForm(teachers.find((t) => t.id === b.dataset.id), campuses)));
+  $("#tc-import").onclick = async () => {
+    const r = await api.post("/api/teachers/import-contacts", {});
+    alert(r.imported ? `${r.imported} professeur(s) repris depuis les fiches campus.` : "Aucun nouveau contact « professeur » à reprendre.");
+    renderProfesseurs();
+  };
+}
+
+function openTeacherForm(t, campuses) {
+  const e = t || { availability: {}, campusIds: [], unavailable: [] };
+  const day = (k, l) => {
+    const r = (e.availability || {})[k];
+    const on = Array.isArray(r);
+    return `<tr><td><label class="jal-chk"><input type="checkbox" class="av-on" data-d="${k}" ${on ? "checked" : ""}> ${l}</label></td>
+      <td><input class="txt av-a" data-d="${k}" type="time" value="${on && r[0] ? esc(r[0][0]) : ""}"></td>
+      <td><input class="txt av-b" data-d="${k}" type="time" value="${on && r[0] ? esc(r[0][1]) : ""}"></td></tr>`;
+  };
+  openModal(t ? "Modifier la fiche" : "Nouveau professeur", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Nom *</label><input class="txt tf" data-f="name" value="${esc(e.name || "")}"></div>
+      <div><label class="field-label">Statut</label><select class="txt tf" data-f="status">${Object.entries(TEACH_STATUS).map(([k, l]) => `<option value="${k}" ${e.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Email</label><input class="txt tf" data-f="email" value="${esc(e.email || "")}"></div>
+      <div><label class="field-label">Téléphone</label><input class="txt tf" data-f="phone" value="${esc(e.phone || "")}"></div>
+      <div><label class="field-label">Société <span class="muted">(prestataire)</span></label><input class="txt tf" data-f="company" value="${esc(e.company || "")}"></div>
+      <div><label class="field-label">Réf. contrat</label><input class="txt tf" data-f="contractRef" value="${esc(e.contractRef || "")}"></div>
+      <div><label class="field-label">Heures annuelles dues</label><input class="txt tf" data-f="heuresAnnuelles" type="number" value="${e.heuresAnnuelles ?? ""}"></div>
+      <div><label class="field-label">Taux horaire (€)</label><input class="txt tf" data-f="tauxHoraire" type="number" value="${e.tauxHoraire ?? ""}"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Matières enseignées <span class="muted">(séparées par des virgules — laisser vide = polyvalent, servi en dernier recours)</span></label>
+        <input class="txt" id="tf-subj" value="${esc((e.subjects || []).join(", "))}"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Campus</label>
+        <select class="txt" id="tf-campus" multiple size="3">${campuses.map((c) => `<option value="${c.id}" ${(e.campusIds || []).includes(c.id) ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+    </div>
+    <p class="field-label" style="margin-top:14px;">Disponibilités — propres à chaque jour</p>
+    <p class="hint muted">Cocher un jour sans horaire = déclaré indisponible ce jour-là. Un jour non coché n'est pas renseigné : le générateur ne s'y aventurera pas, l'éditeur laissera passer.</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Jour</th><th>De</th><th>À</th></tr></thead>
+      <tbody>${PLAN_DAYS.map(([k, l]) => day(k, l)).join("")}</tbody></table></div>
+    <div class="actions" style="margin-top:14px;">${t ? `<button class="btn-ghost btn-sm btn-danger" id="tf-del">Supprimer</button>` : ""}<button class="btn-primary" id="tf-save">Enregistrer</button></div>`);
+
+  $("#tf-save").onclick = async () => {
+    const b = {}; $$(".tf").forEach((i) => (b[i.dataset.f] = i.value));
+    if (!String(b.name || "").trim()) return;
+    b.subjects = $("#tf-subj").value.split(",").map((x) => x.trim()).filter(Boolean);
+    b.campusIds = $$("#tf-campus option").filter((o) => o.selected).map((o) => o.value);
+    b.availability = {};
+    $$(".av-on").forEach((c) => {
+      if (!c.checked) return;                       // jour non coché = non renseigné
+      const d = c.dataset.d;
+      const a = $(`.av-a[data-d="${d}"]`).value, z = $(`.av-b[data-d="${d}"]`).value;
+      b.availability[d] = a && z ? [[a, z]] : [];   // coché sans horaire = indisponible
+    });
+    if (t) await api.patch(`/api/teachers/${t.id}`, b); else await api.post("/api/teachers", b);
+    closeModals(); renderProfesseurs();
+  };
+  if (t) $("#tf-del").onclick = async () => {
+    if (!confirm("Supprimer cette fiche ?")) return;
+    await api.del(`/api/teachers/${t.id}`); closeModals(); renderProfesseurs();
+  };
+}
+
+// ---------- Référentiels ----------
+async function renderReferentiels() {
+  const [curricula, prop] = await Promise.all([api.get("/api/curricula"), api.get("/api/curricula/proposal")]);
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="rf-import">Importer un fichier</button><button class="btn-primary btn-sm" id="rf-add">+ Référentiel</button>`;
+  $("#view").innerHTML = `
+    ${prop ? proposalBox(prop) : ""}
+    ${curricula.length ? `<div class="grid grid-2">${curricula.map((c) => `<div class="card" style="padding:14px;">
+      <div class="row" style="justify-content:space-between;align-items:baseline;">
+        <div><b style="font-size:16px;">${esc(c.name)}</b>${c.diploma ? ` <span class="pill">${esc(c.diploma)}</span>` : ""}</div>
+        <button class="btn-ghost btn-sm rf-edit" data-id="${c.id}">✎</button></div>
+      <div class="muted" style="font-size:13px;margin:6px 0;">${(c.modules || []).length} modules · <b>${c.totalHours || 0} h</b>${(c.modules || []).some((m) => m.heures == null) ? ` · <span class="neg">${(c.modules || []).filter((m) => m.heures == null).length} sans volume</span>` : ""}</div>
+      <div class="list">${(c.modules || []).slice(0, 6).map((m) => `<div class="item"><span class="grow">${esc(m.code ? m.code + " · " : "")}${esc(m.label)}</span><span class="${m.heures == null ? "neg" : "muted"}">${m.heures == null ? "à renseigner" : m.heures + " h"}</span></div>`).join("")}
+        ${(c.modules || []).length > 6 ? `<p class="muted" style="font-size:12px;">+ ${(c.modules || []).length - 6} autres</p>` : ""}</div>
+    </div>`).join("")}</div>` : '<p class="empty">Aucun référentiel.<br><span class="muted">Crée-en un, ou dépose le référentiel officiel : les modules et volumes seront proposés à ta validation.</span></p>'}`;
+  $("#rf-add").onclick = () => openCurriculumForm();
+  $$(".rf-edit").forEach((b) => b.addEventListener("click", () => openCurriculumForm(curricula.find((c) => c.id === b.dataset.id))));
+  $("#rf-import").onclick = () => {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".pdf,.xlsx,.xls,.csv,.txt,.docx";
+    inp.onchange = async () => {
+      const f = inp.files?.[0]; if (!f) return;
+      $("#view").insertAdjacentHTML("afterbegin", '<p class="muted" id="rf-wait">Lecture du document…</p>');
+      const fd = new FormData(); fd.append("file", f);
+      const r = await fetch("/api/curricula/import", { method: "POST", headers: { "X-CSRF-Token": csrfToken() }, body: fd }).then((x) => x.json());
+      $("#rf-wait")?.remove();
+      if (r?.error) { alert(r.error); return; }
+      renderReferentiels();
+    };
+    inp.click();
+  };
+  $("#rf-ok") && ($("#rf-ok").onclick = async () => { await api.post("/api/curricula/proposal/confirm", {}); renderReferentiels(); });
+  $("#rf-no") && ($("#rf-no").onclick = async () => { await api.post("/api/curricula/proposal/discard", {}); renderReferentiels(); });
+}
+function proposalBox(p) {
+  const manque = (p.modules || []).filter((m) => m.heures == null).length;
+  return `<div class="card" style="border-left:3px solid #FF6A4D;padding:14px;margin-bottom:14px;">
+    <b>Proposition à valider — ${esc(p.name || "sans titre")}</b>
+    <p class="muted" style="font-size:13px;">Extrait de « ${esc(p.source || "document")} » : ${(p.modules || []).length} modules.
+    ${manque ? `<span class="neg">${manque} module(s) sans volume horaire — l'extraction ne l'a pas inventé, à toi de le renseigner après validation.</span>` : ""}</p>
+    <div class="card" style="overflow-x:auto;max-height:260px;"><table class="net-table"><thead><tr><th>Code</th><th>Module</th><th>Heures</th><th>Année</th></tr></thead>
+      <tbody>${(p.modules || []).map((m) => `<tr><td>${esc(m.code || "—")}</td><td>${esc(m.label)}</td><td class="${m.heures == null ? "neg" : ""}">${m.heures ?? "—"}</td><td>${m.year ?? "—"}</td></tr>`).join("")}</tbody></table></div>
+    <div class="actions" style="margin-top:10px;"><button class="btn-ghost btn-sm" id="rf-no">Ignorer</button><button class="btn-primary btn-sm" id="rf-ok">Valider et créer</button></div></div>`;
+}
+function openCurriculumForm(c) {
+  const e = c || { modules: [] };
+  const row = (m = {}) => `<tr>
+    <td><input class="txt cm" data-f="code" value="${esc(m.code || "")}" placeholder="M1"></td>
+    <td><input class="txt cm" data-f="label" value="${esc(m.label || "")}" placeholder="Intitulé"></td>
+    <td><input class="txt cm" data-f="heures" type="number" value="${m.heures ?? ""}" placeholder="h"></td>
+    <td><input class="txt cm" data-f="year" type="number" value="${m.year ?? ""}" placeholder="1"></td>
+    <td><input class="txt cm" data-f="requiresRoom" value="${esc(m.requiresRoom || "")}" placeholder="salle exigée"></td>
+    <td><button class="btn-ghost btn-sm cm-del">×</button></td></tr>`;
+  openModal(c ? "Modifier le référentiel" : "Nouveau référentiel", `
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div><label class="field-label">Intitulé *</label><input class="txt cf" data-f="name" value="${esc(e.name || "")}"></div>
+      <div><label class="field-label">Diplôme</label><input class="txt cf" data-f="diploma" value="${esc(e.diploma || "")}" placeholder="BTS"></div>
+      <div><label class="field-label">Niveau</label><input class="txt cf" data-f="level" value="${esc(e.level || "")}"></div>
+    </div>
+    <p class="field-label" style="margin-top:12px;">Modules et volumes horaires</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Code</th><th>Module</th><th>Heures</th><th>Année</th><th>Salle exigée</th><th></th></tr></thead>
+      <tbody id="cm-body">${(e.modules || []).map(row).join("") || row()}</tbody></table></div>
+    <button class="btn-ghost btn-sm" id="cm-add" style="margin-top:6px;">+ Module</button>
+    <div class="actions" style="margin-top:14px;">${c ? `<button class="btn-ghost btn-sm btn-danger" id="cf-del">Supprimer</button>` : ""}<button class="btn-primary" id="cf-save">Enregistrer</button></div>`);
+  $("#cm-add").onclick = () => $("#cm-body").insertAdjacentHTML("beforeend", row());
+  $("#cm-body").addEventListener("click", (ev) => { if (ev.target.closest(".cm-del")) ev.target.closest("tr").remove(); });
+  $("#cf-save").onclick = async () => {
+    const b = {}; $$(".cf").forEach((i) => (b[i.dataset.f] = i.value));
+    if (!String(b.name || "").trim()) return;
+    b.modules = $$("#cm-body tr").map((tr) => { const m = {}; $$(".cm", tr).forEach((i) => (m[i.dataset.f] = i.value)); return m; }).filter((m) => m.label || m.code);
+    if (c) await api.patch(`/api/curricula/${c.id}`, b); else await api.post("/api/curricula", b);
+    closeModals(); renderReferentiels();
+  };
+  if (c) $("#cf-del").onclick = async () => {
+    if (!confirm("Supprimer ce référentiel ?")) return;
+    await api.del(`/api/curricula/${c.id}`); closeModals(); renderReferentiels();
+  };
+}
+
+// ---------- Salles, classes et calendrier ----------
+async function renderSallesClasses() {
+  const [campuses, rooms, classes, curricula, periods] = await Promise.all([
+    api.get("/api/campuses"), api.get("/api/rooms"), api.get("/api/classes"), api.get("/api/curricula"), api.get("/api/periods")]);
+  if (!planState.campusId && campuses[0]) planState.campusId = campuses[0].id;
+  const usage = await api.get(`/api/schedule/rooms-usage?campusId=${planState.campusId}&from=${planState.week}&to=${addDays(planState.week, 6)}`);
+  const byRoom = new Map((usage.rows || []).map((r) => [r.roomId, r]));
+  const mine = (arr) => arr.filter((x) => !x.campusId || x.campusId === planState.campusId);
+
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="sc-room">+ Salle</button><button class="btn-ghost btn-sm" id="sc-class">+ Classe</button><button class="btn-primary btn-sm" id="sc-period">+ Période</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="gap:8px;margin-bottom:12px;align-items:center;">
+      <select class="txt" id="sc-campus" style="max-width:220px;">${campuses.map((c) => `<option value="${c.id}" ${planState.campusId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
+      <span class="muted">Taux d'occupation calculé sur la semaine du ${frDate(planState.week)}</span>
+    </div>
+    <h3 class="sec">Salles</h3>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Salle</th><th>Type</th><th>Places</th><th>Séances</th><th>Heures</th><th>Occupation</th><th></th></tr></thead><tbody>
+      ${mine(rooms).map((r) => { const u = byRoom.get(r.id) || {}; return `<tr>
+        <td><b>${esc(r.name)}</b>${(r.equipment || []).length ? `<br><span class="muted" style="font-size:12px;">${r.equipment.map(esc).join(", ")}</span>` : ""}</td>
+        <td><span class="pill">${esc(r.kind || "standard")}</span></td><td class="num">${r.places ?? "—"}</td>
+        <td class="num">${u.sessions ?? 0}</td><td class="num">${u.hours ?? 0}</td>
+        <td><div class="sim-gauge"><span style="width:${Math.min(100, u.rate || 0)}%"></span></div><span class="muted" style="font-size:12px;">${u.rate ?? 0} %</span></td>
+        <td><button class="btn-ghost btn-sm sc-redit" data-id="${r.id}">✎</button></td></tr>`; }).join("")
+        || '<tr><td colspan="7" class="muted">Aucune salle. Sans salle déclarée, le générateur ne peut rien placer.</td></tr>'}
+    </tbody></table></div>
+    ${usage.unused?.length ? `<p class="hint muted">Inoccupées cette semaine : ${usage.unused.map(esc).join(", ")}.</p>` : ""}
+
+    <h3 class="sec" style="margin-top:18px;">Classes</h3>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Classe</th><th>Référentiel</th><th>Année</th><th>Effectif</th><th></th></tr></thead><tbody>
+      ${mine(classes).map((k) => `<tr><td><b>${esc(k.name)}</b></td>
+        <td>${esc(curricula.find((c) => c.id === k.curriculumId)?.name || "—")}</td>
+        <td class="num">${k.year ?? "—"}</td><td class="num">${k.size ?? "de la filière"}</td>
+        <td><button class="btn-ghost btn-sm sc-kedit" data-id="${k.id}">✎</button></td></tr>`).join("")
+        || '<tr><td colspan="5" class="muted">Aucune classe.</td></tr>'}
+    </tbody></table></div>
+
+    <h3 class="sec" style="margin-top:18px;">Calendrier — vacances, examens, stages</h3>
+    <div class="list">${mine(periods).map((p) => `<div class="item">
+      <span class="pill">${esc(PERIOD_KIND[p.kind] || p.kind)}</span>
+      <span class="grow">${esc(p.label || "")} <span class="muted">du ${frDate(p.from)} au ${frDate(p.to)}</span>${p.classId ? ` <span class="muted">· ${esc(classes.find((k) => k.id === p.classId)?.name || "")}</span>` : ""}</span>
+      <button class="btn-ghost btn-sm sc-pdel" data-id="${p.id}">×</button></div>`).join("")
+      || '<p class="muted">Aucune période. Sans vacances déclarées, une série hebdomadaire posera des cours en plein congé.</p>'}</div>`;
+
+  $("#sc-campus").onchange = (e) => { planState.campusId = e.target.value; renderSallesClasses(); };
+  $("#sc-room").onclick = () => openRoomForm(null);
+  $("#sc-class").onclick = () => openClassForm(null, curricula, campuses);
+  $("#sc-period").onclick = () => openPeriodForm(mine(classes));
+  $$(".sc-redit").forEach((b) => b.addEventListener("click", () => openRoomForm(rooms.find((r) => r.id === b.dataset.id))));
+  $$(".sc-kedit").forEach((b) => b.addEventListener("click", () => openClassForm(classes.find((k) => k.id === b.dataset.id), curricula, campuses)));
+  $$(".sc-pdel").forEach((b) => b.addEventListener("click", async () => { await api.del(`/api/periods/${b.dataset.id}`); renderSallesClasses(); }));
+}
+function openRoomForm(r) {
+  const e = r || {};
+  openModal(r ? "Modifier la salle" : "Nouvelle salle", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Nom *</label><input class="txt rf" data-f="name" value="${esc(e.name || "")}"></div>
+      <div><label class="field-label">Places</label><input class="txt rf" data-f="places" type="number" value="${e.places ?? ""}"></div>
+      <div><label class="field-label">Type</label><input class="txt rf" data-f="kind" value="${esc(e.kind || "standard")}" placeholder="standard, optique, informatique…"></div>
+      <div><label class="field-label">Équipements</label><input class="txt" id="rf-eq" value="${esc((e.equipment || []).join(", "))}" placeholder="banc, réfracteur…"></div>
+    </div>
+    <p class="hint muted">Le « type » et les équipements sont ce qu'un module peut exiger : un TP d'optique posé dans une salle banale sera signalé.</p>
+    <div class="actions" style="margin-top:12px;">${r ? `<button class="btn-ghost btn-sm btn-danger" id="rf-del">Supprimer</button>` : ""}<button class="btn-primary" id="rf-save">Enregistrer</button></div>`);
+  $("#rf-save").onclick = async () => {
+    const b = { campusId: planState.campusId }; $$(".rf").forEach((i) => (b[i.dataset.f] = i.value));
+    if (!String(b.name || "").trim()) return;
+    b.equipment = $("#rf-eq").value.split(",").map((x) => x.trim()).filter(Boolean);
+    if (r) await api.patch(`/api/rooms/${r.id}`, b); else await api.post("/api/rooms", b);
+    closeModals(); renderSallesClasses();
+  };
+  if (r) $("#rf-del").onclick = async () => { if (!confirm("Supprimer cette salle ?")) return; await api.del(`/api/rooms/${r.id}`); closeModals(); renderSallesClasses(); };
+}
+function openClassForm(k, curricula, campuses) {
+  const e = k || {};
+  const camp = campuses.find((c) => c.id === (e.campusId || planState.campusId));
+  openModal(k ? "Modifier la classe" : "Nouvelle classe", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Nom *</label><input class="txt kf" data-f="name" value="${esc(e.name || "")}"></div>
+      <div><label class="field-label">Année</label><input class="txt kf" data-f="year" type="number" value="${e.year ?? ""}"></div>
+      <div><label class="field-label">Référentiel</label><select class="txt kf" data-f="curriculumId"><option value="">—</option>${curricula.map((c) => `<option value="${c.id}" ${e.curriculumId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Filière</label><select class="txt kf" data-f="filiereId"><option value="">—</option>${(camp?.filieres || []).map((f) => `<option value="${f.id}" ${e.filiereId === f.id ? "selected" : ""}>${esc(f.nom)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Effectif <span class="muted">(vide = repris de la filière)</span></label><input class="txt kf" data-f="size" type="number" value="${e.size ?? ""}"></div>
+    </div>
+    <div class="actions" style="margin-top:12px;">${k ? `<button class="btn-ghost btn-sm btn-danger" id="kf-del">Supprimer</button>` : ""}<button class="btn-primary" id="kf-save">Enregistrer</button></div>`);
+  $("#kf-save").onclick = async () => {
+    const b = { campusId: planState.campusId }; $$(".kf").forEach((i) => (b[i.dataset.f] = i.value));
+    if (!String(b.name || "").trim()) return;
+    if (k) await api.patch(`/api/classes/${k.id}`, b); else await api.post("/api/classes", b);
+    closeModals(); renderSallesClasses();
+  };
+  if (k) $("#kf-del").onclick = async () => { if (!confirm("Supprimer cette classe ?")) return; await api.del(`/api/classes/${k.id}`); closeModals(); renderSallesClasses(); };
+}
+function openPeriodForm(classes) {
+  openModal("Nouvelle période", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Type</label><select class="txt pf" data-f="kind">${Object.entries(PERIOD_KIND).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Libellé</label><input class="txt pf" data-f="label" placeholder="Toussaint"></div>
+      <div><label class="field-label">Du *</label><input class="txt pf" data-f="from" type="date"></div>
+      <div><label class="field-label">Au *</label><input class="txt pf" data-f="to" type="date"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Classe concernée <span class="muted">(pour un stage — vide = tout le campus)</span></label>
+        <select class="txt pf" data-f="classId"><option value="">Tout le campus</option>${classes.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="pf-save">Enregistrer</button></div>`);
+  $("#pf-save").onclick = async () => {
+    const b = { campusId: planState.campusId }; $$(".pf").forEach((i) => (b[i.dataset.f] = i.value));
+    if (!b.from || !b.to) return;
+    await api.post("/api/periods", b); closeModals(); renderSallesClasses();
+  };
+}

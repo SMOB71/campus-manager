@@ -10,7 +10,9 @@ login=$(curl -s -o /dev/null -w "%{http_code}" -c "$J" -b "$J" -X POST "$BASE/ap
 [ "$login" = "200" ] && echo "✓ login" || { echo "✗ login ($login)"; exit 1; }
 for ep in /api/me /api/stats /api/network /api/finance /api/finance/annual /api/performance \
           /api/notifications /api/campuses /api/actions /api/openings /api/scenarios \
-          /api/documents /api/audit /api/backups /api/report /api/export/network; do
+          /api/documents /api/audit /api/backups /api/report /api/export/network \
+          /api/committees /api/si/overview \
+          /api/teachers /api/curricula /api/rooms /api/classes /api/periods; do
   c=$(code "$BASE$ep")
   if [ "$c" = "200" ]; then echo "✓ $ep"; else echo "✗ $ep ($c)"; fail=1; fi
 done

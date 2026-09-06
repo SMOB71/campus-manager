@@ -80,3 +80,98 @@ test("documents : indicateur Qualiopi filtrable", () => {
   assert.equal(store.listDocuments(c.id, "3")[0].name, "preuve1.pdf");
   assert.equal(store.listDocuments(c.id).length, 2);
 });
+
+// --- Comités de pilotage & fiche action détaillée ---
+
+test("normTask : les champs de la fiche survivent à une renormalisation complète", () => {
+  // setOpeningTasks réapplique normTask à TOUTES les tâches : tout champ absent de
+  // normTask serait effacé en silence. C'est le piège qui rend ce test nécessaire.
+  const o = store.addOpening({ name: "Ouv Fiche", targetDate: "2027-09-01" });
+  const t = store.addOpeningTask(o.id, {
+    title: "Sécuriser le bail", lot: "immo", description: "6 ans fermes",
+    accountable: "DAF", consulted: "Juridique", informed: "CODIR", progress: 30,
+  });
+  store.addTaskOutput(o.id, t.id, { label: "Bail signé", owner: "DAF" });
+  store.addTaskComment(o.id, t.id, { by: "Stéphane", text: "Bailleur d'accord" });
+
+  store.setOpeningTasks(o.id, store.getOpening(o.id).tasks); // la renormalisation
+  const after = store.getOpening(o.id).tasks.find((x) => x.id === t.id);
+  assert.equal(after.description, "6 ans fermes");
+  assert.equal(after.accountable, "DAF");
+  assert.equal(after.progress, 30);
+  assert.equal(after.outputs.length, 1);
+  assert.equal(after.comments.length, 1);
+});
+
+test("progress : borné à 0-100, vidable", () => {
+  const o = store.addOpening({ name: "Ouv Progress" });
+  const t = store.addOpeningTask(o.id, { title: "T", progress: 420 });
+  assert.equal(t.progress, 100);
+  assert.equal(store.updateOpeningTask(o.id, t.id, { progress: -5 }).progress, 0);
+  assert.equal(store.updateOpeningTask(o.id, t.id, { progress: "" }).progress, null);
+});
+
+test("livrable : statut contraint, fichier optionnel", () => {
+  const o = store.addOpening({ name: "Ouv Livrable" });
+  const t = store.addOpeningTask(o.id, { title: "T" });
+  const out = store.addTaskOutput(o.id, t.id, { label: "Dossier ERP", status: "n'importe quoi" });
+  assert.equal(out.status, "todo");        // valeur inconnue → défaut
+  assert.equal(out.documentId, null);      // le suivi marche sans fichier
+  assert.equal(store.updateTaskOutput(o.id, t.id, out.id, { status: "validated" }).status, "validated");
+  assert.equal(store.updateTaskOutput(o.id, t.id, out.id, { status: "bidon" }).status, "validated"); // refusé
+  store.deleteTaskOutput(o.id, t.id, out.id);
+  assert.equal(store.getOpening(o.id).tasks[0].outputs.length, 0);
+});
+
+test("comité : portée, séances, et lien vers les actions", () => {
+  const o = store.addOpening({ name: "Ouv COPIL" });
+  const c = store.addCommittee({ scope: "opening", scopeId: o.id, name: "COPIL", members: [{ name: "Marie", role: "DAF" }] });
+  assert.equal(c.members[0].userId, null);   // membre sans compte applicatif
+  const s = store.addSession(c.id, { date: "2026-10-01", agendaItems: [{ text: "Point bail" }] });
+  assert.equal(s.status, "planned");
+  const t = store.addOpeningTask(o.id, { title: "Action du comité", committeeId: c.id, sessionId: s.id });
+  store.linkSessionTask(c.id, s.id, t.id);
+  store.linkSessionTask(c.id, s.id, t.id);   // idempotent
+  const back = store.getCommittee(c.id);
+  assert.deepEqual(back.sessions[0].taskIds, [t.id]);
+  assert.equal(back.sessions[0].agendaItems.length, 1);
+  // filtrage par portée : un comité réseau ne doit pas remonter ici
+  store.addCommittee({ scope: "network", name: "CODIR" });
+  assert.equal(store.listCommittees({ scope: "opening", scopeId: o.id }).length, 1);
+  assert.equal(store.listCommittees({ scope: "network" }).length, 1);
+});
+
+test("comité : scope inconnu retombe sur opening, suppression propre", () => {
+  const c = store.addCommittee({ name: "X", scope: "galaxie" });
+  assert.equal(c.scope, "opening");
+  store.deleteCommittee(c.id);
+  assert.equal(store.getCommittee(c.id), null);
+});
+
+test("checklist : l'avancement se dérive des étapes et reprend la main sans elles", () => {
+  const o = store.addOpening({ name: "Ouv Checklist" });
+  const t = store.addOpeningTask(o.id, { title: "Recruter le directeur", progress: 10 });
+  assert.equal(t.progress, 10);                       // saisi librement tant qu'il n'y a pas d'étape
+
+  const s1 = store.addTaskStep(o.id, t.id, { text: "Rédiger la fiche de poste" });
+  store.addTaskStep(o.id, t.id, { text: "Passer les entretiens" });
+  const get = () => store.getOpening(o.id).tasks.find((x) => x.id === t.id);
+  assert.equal(get().progress, 0);                    // 0/2 dès la 1re étape
+  store.updateTaskStep(o.id, t.id, s1.id, { done: true });
+  assert.equal(get().progress, 50);                   // 1/2
+
+  // la saisie manuelle est ignorée tant que la checklist existe
+  store.updateOpeningTask(o.id, t.id, { progress: 99 });
+  assert.equal(get().progress, 50);
+
+  store.deleteTaskStep(o.id, t.id, s1.id);
+  assert.equal(get().progress, 0);                    // 0/1 restant
+  store.deleteTaskStep(o.id, t.id, get().steps[0].id);
+  store.updateOpeningTask(o.id, t.id, { progress: 42 });
+  assert.equal(get().progress, 42);                   // plus d'étape → saisie reprise
+
+  // les étapes survivent aussi à la renormalisation
+  store.addTaskStep(o.id, t.id, { text: "Signer" });
+  store.setOpeningTasks(o.id, store.getOpening(o.id).tasks);
+  assert.equal(get().steps.length, 1);
+});
