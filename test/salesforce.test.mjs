@@ -18,9 +18,13 @@ test("parseMapLines : lignes 'valeur = cible', insensible au vide/mal formé", (
   assert.deepEqual(parseMapLines(null), {});
 });
 
-test("buildSoql : colonnes dédupliquées, WHERE optionnel", () => {
+test("buildSoql : colonnes dédupliquées (les défauts non écrasés restent), WHERE optionnel", () => {
+  // Sans override, les champs par défaut (Email, Phone, Status...) restent dans la requête.
   const soql = buildSoql({ object: "Lead", fields: { nom: "LastName", prenom: "FirstName" }, where: "Status != 'Junk'" });
-  assert.match(soql, /^SELECT Id, LastName, FirstName FROM Lead WHERE Status != 'Junk' ORDER BY/);
+  assert.match(soql, /^SELECT Id, LastName, FirstName, Email, Phone, Status FROM Lead WHERE Status != 'Junk' ORDER BY/);
+  // Champ répété dans les défauts (ex. deux clés pointant vers la même colonne) → une seule occurrence
+  const dedup = buildSoql({ object: "Lead", fields: { nom: "LastName", prenom: "LastName", email: "", telephone: "", statut: "" } });
+  assert.match(dedup, /^SELECT Id, LastName FROM Lead ORDER BY/);
 });
 
 test("normalizeRecords : mappe statuts et campus, tolère les accents/casse", () => {
