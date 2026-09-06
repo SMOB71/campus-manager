@@ -3189,8 +3189,24 @@ async function renderTournee() {
 const ENR_BADGE = { inscrit: ["Inscrit", "done"], sorti: ["Sorti", ""], diplome: ["Diplômé", "done"], rupture: ["Rupture", "overdue"], abandon: ["Abandon", "overdue"] };
 let appFilter = { campusId: "", q: "" };
 async function renderApprenants() {
-  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="add-learner">${I.plus}<span>Apprenant</span></button>`;
+  $("#topbar-actions").innerHTML = `
+    <button class="btn-ghost btn-sm" id="lr-export">Excel</button>
+    <label class="btn-ghost btn-sm" style="cursor:pointer;">Importer<input type="file" id="lr-import" accept=".csv,.xlsx,.xls" hidden></label>
+    <button class="btn-primary btn-sm" id="add-learner">${I.plus}<span>Apprenant</span></button>`;
   $("#add-learner").addEventListener("click", () => openLearnerForm(null));
+  $("#lr-export").addEventListener("click", () => window.open("/api/export/learners", "_blank"));
+  $("#lr-import").addEventListener("change", async () => {
+    const file = $("#lr-import").files[0];
+    if (!file) return;
+    const cid = appFilter.campusId || (state.campuses.length === 1 ? state.campuses[0].id : "");
+    if (!cid) { alert("Choisis d'abord un campus dans le filtre : l'import peuple ce campus.\n\nColonnes reconnues : nom, prenom, civilite, date_naissance, ine, email, telephone, adresse, rqth, classe, annee_scolaire."); $("#lr-import").value = ""; return; }
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await (await fetch(`/api/campuses/${cid}/learners/import`, { method: "POST", headers: { "X-CSRF-Token": csrfToken() }, body: fd })).json();
+    if (r.error) { alert(r.error); return; }
+    alert(`Import terminé : ${r.created} dossier(s) créé(s), ${r.enrolled} inscription(s)${r.skipped.length ? `\n${r.skipped.length} ligne(s) ignorée(s) :\n` + r.skipped.slice(0, 10).map((s) => `  ligne ${s.ligne} — ${s.motif}`).join("\n") + (r.skipped.length > 10 ? "\n  …" : "") : ""}`);
+    await renderApprenants();
+  });
   const view = $("#view");
   view.innerHTML = `<p class="muted">Chargement…</p>`;
   const qs = new URLSearchParams();

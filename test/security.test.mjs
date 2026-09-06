@@ -144,6 +144,31 @@ test("apprenants : cloisonnement directeur + garde-fous", async () => {
   assert.equal((await req(`/api/learners/${l.id}`, { method: "DELETE", ...opts })).status, 200);
 });
 
+test("apprenants : import CSV en masse + export Excel", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Import" } })).json();
+  const csv = "nom;prenom;ine;date_naissance;classe;annee_scolaire\nDurand;Alice;1234IMPORT1;01/09/2007;;2026-2027\nDurand;Alice;1234IMPORT1;01/09/2007;;2026-2027\n;SansNom;;;;";
+  // Le parseur SheetJS attend des virgules OU des points-virgules ? CSV standard : virgules.
+  const csvComma = csv.replace(/;/g, ",");
+  const fd = new FormData();
+  fd.append("file", new Blob([csvComma], { type: "text/csv" }), "rentree.csv");
+  const r = await (await req(`/api/campuses/${campus.id}/learners/import`, { method: "POST", cookie: a.cookie, csrf: a.csrf, form: fd })).json();
+  assert.equal(r.created, 1);           // la 2e ligne = doublon INE, la 3e = sans nom
+  assert.equal(r.enrolled, 1);
+  assert.equal(r.skipped.length, 2);
+  // la date française est normalisée en ISO
+  const list = await (await req(`/api/learners?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].dateNaissance, "2007-09-01");
+  assert.equal(list[0].enrollment?.schoolYear, "2026-2027");
+  // export Excel : 200 + un vrai xlsx (magic PK)
+  const xls = await req("/api/export/learners", { cookie: a.cookie });
+  assert.equal(xls.status, 200);
+  const buf = Buffer.from(await xls.arrayBuffer());
+  assert.equal(buf.slice(0, 2).toString(), "PK");
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

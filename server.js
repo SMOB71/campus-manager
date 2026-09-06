@@ -26,7 +26,7 @@ import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
-import { testConnection as siTestConnection, syncCampus as siSyncCampus } from "./lib/si.js";
+import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 
@@ -1168,6 +1168,18 @@ app.get("/api/export/:kind", requireAuth, (req, res) => {
   if (kind === "insertion") {
     return sendXlsx(res, "Insertion", net.map((r) => { const k = store.latestKpi(r.id) || {}; return { Campus: r.name, Mois: k.month || "", "Satisfaction /10": k.satisfaction ?? "", "Réussite %": k.successRate ?? "", "Insertion 6 mois %": k.insertionRate ?? "" }; }), "insertion-satisfaction.xlsx");
   }
+  if (kind === "learners") {
+    const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+    const enr = new Map();
+    for (const e of store.listEnrollments({})) if (!enr.has(e.learnerId)) enr.set(e.learnerId, e);
+    const rows = scopeByCampus(req, store.listLearners({})).map((l) => {
+      const e = enr.get(l.id);
+      return { Campus: store.listCampuses().find((c) => c.id === l.campusId)?.name || "", Nom: l.nom, "Prénom": l.prenom,
+        "Civilité": l.civilite, "Né(e) le": l.dateNaissance, INE: l.ine, Email: l.email, "Téléphone": l.telephone,
+        RQTH: l.rqth ? "oui" : "", "Année": e?.schoolYear || "", Classe: e ? (classes.get(e.classId) || "") : "", Statut: e?.statut || "" };
+    });
+    return sendXlsx(res, "Apprenants", rows, "apprenants.xlsx");
+  }
   res.status(404).json({ error: "export inconnu" });
 });
 
@@ -1351,6 +1363,62 @@ app.post("/api/learners/:id/documents", requireAuth, uploadDoc, (req, res) => {
   });
   logAudit(req, "upload", "document", `${doc.name} (apprenant ${l.prenom} ${l.nom})`);
   res.json(doc);
+});
+
+// Import en masse (CSV/XLSX) : peuple un campus à la rentrée en une fois.
+// En-têtes reconnues (insensibles casse/accents) : nom, prenom, civilite, date_naissance,
+// lieu_naissance, ine, email, telephone, adresse, rqth, rep_legal_nom, rep_legal_tel,
+// rep_legal_email, classe, annee_scolaire. Doublon = même INE ou même nom+prénom+naissance.
+app.post("/api/campuses/:id/learners/import", campusGuard, uploadOne, (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "fichier manquant" });
+  let rows;
+  try {
+    // raw:true à la lecture = le CSV garde ses chaînes telles quelles (pas de
+    // conversion auto des dates en séries) ; les .xlsx gardent leurs cellules typées.
+    const wb = XLSX.read(req.file.buffer, { type: "buffer", raw: true });
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false });
+  } catch { return res.status(400).json({ error: "fichier illisible (CSV ou Excel attendu)" }); }
+  const norm = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const get = (row, ...keys) => {
+    for (const k of Object.keys(row)) if (keys.includes(norm(k))) return String(row[k]).trim();
+    return "";
+  };
+  const cid = req.params.id;
+  const existing = store.listLearners({ campusId: cid });
+  const byIne = new Map(existing.filter((l) => l.ine).map((l) => [l.ine, l]));
+  const byIdent = new Set(existing.map((l) => `${l.nom}|${l.prenom}|${l.dateNaissance}`.toLowerCase()));
+  const classes = store.listClasses({ campusId: cid });
+  const findClass = (name) => classes.find((k) => norm(k.name) === norm(name)) || null;
+  const report = { created: 0, enrolled: 0, skipped: [] };
+  rows.forEach((row, i) => {
+    const ligne = i + 2; // 1 = en-têtes
+    const nom = get(row, "nom"), prenom = get(row, "prenom");
+    if (!nom || !prenom) { report.skipped.push({ ligne, motif: "nom ou prénom manquant" }); return; }
+    const ine = get(row, "ine").toUpperCase();
+    // Date : format FR/ISO en texte, ou série Excel (cellule date d'un .xlsx)
+    const rawDdn = get(row, "datenaissance", "ddn", "nele", "neele");
+    const ddn = parseFrDate(rawDdn) || (/^\d{4,5}$/.test(rawDdn) ? new Date((Number(rawDdn) - 25569) * 864e5).toISOString().slice(0, 10) : rawDdn);
+    if (ine && byIne.has(ine)) { report.skipped.push({ ligne, motif: `doublon INE ${ine}` }); return; }
+    if (byIdent.has(`${nom}|${prenom}|${ddn || ""}`.toLowerCase())) { report.skipped.push({ ligne, motif: "doublon nom+prénom+naissance" }); return; }
+    const l = store.addLearner({
+      campusId: cid, nom, prenom, civilite: get(row, "civilite"),
+      dateNaissance: ddn || "", lieuNaissance: get(row, "lieunaissance"), ine,
+      email: get(row, "email"), telephone: get(row, "telephone", "tel"), adresse: get(row, "adresse"),
+      rqth: ["1", "oui", "true", "x"].includes(get(row, "rqth").toLowerCase()),
+      repLegalNom: get(row, "replegalnom"), repLegalTel: get(row, "replegaltel"), repLegalEmail: get(row, "replegalemail"),
+    });
+    if (l.ine) byIne.set(l.ine, l);
+    byIdent.add(`${l.nom}|${l.prenom}|${l.dateNaissance}`.toLowerCase());
+    report.created++;
+    const classe = findClass(get(row, "classe"));
+    const year = get(row, "anneescolaire", "annee");
+    if (year) {
+      const e = store.addEnrollment({ learnerId: l.id, campusId: cid, classId: classe?.id || null, schoolYear: year });
+      if (e && !e.error) report.enrolled++;
+    }
+  });
+  logAudit(req, "seed", "apprenants", `import ${req.file.originalname} : ${report.created} créés, ${report.enrolled} inscrits, ${report.skipped.length} ignorés`);
+  res.json(report);
 });
 
 // ===== Connecteur SI campus (ERP de gestion) =====
