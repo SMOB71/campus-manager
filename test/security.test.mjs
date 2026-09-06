@@ -189,6 +189,57 @@ test("candidatures : cloisonnement, conversion, config Salesforce jamais fuitée
   assert.equal((await req(`/api/candidates/${cand.id}`, { method: "PATCH", cookie: d.cookie, csrf: d.csrf, json: { stage: "perdu" } })).status, 403);
 });
 
+test("émargement : cycle appel → clôture → avenant, cloisonné, attestation scellée", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Emarge" } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "BTS Em 1" } })).json();
+  const learner = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Eleve", prenom: "Un" } })).json();
+  await req(`/api/learners/${learner.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+  const session = await (await req("/api/sessions", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, date: "2026-09-14", start: "09:00", end: "12:00" } })).json();
+
+  // Ouverture de la feuille : les inscrits actifs sont pré-remplis
+  const sheet = await (await req(`/api/sessions/${session.id}/attendance`, { method: "POST", ...opts, json: {} })).json();
+  assert.equal(sheet.entries.length, 1);
+  assert.equal(sheet.entries[0].status, "present");
+  assert.ok(sheet.code);
+
+  // Statut invalide refusé
+  assert.equal((await req(`/api/attendance/sheets/${sheet.id}/entries`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: learner.id, status: "n_importe_quoi" }] } })).status, 400);
+
+  // Appel : absent non justifié
+  const saved = await (await req(`/api/attendance/sheets/${sheet.id}/entries`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: learner.id, status: "absent", justified: false }] } })).json();
+  assert.equal(saved.stats.absent, 1);
+  assert.equal(saved.stats.attendanceRate, 0);
+
+  // Clôture : scellement
+  const locked = await (await req(`/api/attendance/sheets/${sheet.id}/lock`, { method: "POST", ...opts, json: {} })).json();
+  assert.equal(locked.status, "locked");
+  assert.equal(locked.seq, 1);
+  assert.match(locked.hash, /^[a-f0-9]{64}$/);
+
+  // Après clôture : saisie directe refusée (409), avenant sans motif refusé, avec motif accepté
+  assert.equal((await req(`/api/attendance/sheets/${sheet.id}/entries`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: learner.id, status: "present" }] } })).status, 409);
+  assert.equal((await req(`/api/attendance/sheets/${sheet.id}/amend`, { method: "POST", ...opts, json: { learnerId: learner.id, status: "excuse" } })).status, 409);
+  const amended = await (await req(`/api/attendance/sheets/${sheet.id}/amend`, { method: "POST", ...opts, json: { learnerId: learner.id, status: "excuse", reason: "certificat medical" } })).json();
+  assert.equal(amended.amendments.length, 1);
+
+  // Chaîne intègre + attestation scellée
+  const chain = await (await req(`/api/attendance/verify?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.equal(chain.ok, true);
+  const proof = await req(`/api/attendance/proof?campusId=${campus.id}&from=2026-09-01&to=2026-09-30`, { cookie: a.cookie });
+  assert.equal(proof.status, 200);
+  const html = await proof.text();
+  assert.match(html, /Attestation d'assiduité/);
+  assert.match(html, /chaîne intègre/);
+
+  // Cloisonnement : un directeur hors périmètre ne voit ni la feuille ni la preuve
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req(`/api/attendance/sheets/${sheet.id}`, { cookie: d.cookie })).status, 403);
+  assert.equal((await req(`/api/attendance/verify?campusId=${campus.id}`, { cookie: d.cookie })).status, 403);
+  assert.equal((await (await req("/api/attendance/sheets", { cookie: d.cookie })).json()).length, 0);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

@@ -19,6 +19,8 @@ import { encryptionEnabled, encryptBuffer, decryptBuffer } from "./lib/crypto-st
 import { extractText } from "./lib/extract.js";
 import { toMarkdown, toHtml, toDocx } from "./lib/export.js";
 import * as sessionstore from "./lib/sessionstore.js";
+import * as attendancestore from "./lib/attendancestore.js";
+import { sheetStats, periodStats, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
 import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
@@ -3053,6 +3055,166 @@ for (const [seg, api, listName] of [["rooms", "Room", "listRooms"], ["classes", 
 }
 
 // --- Séances ---
+// ===== Émargement (preuve de réalisation) =====
+// La feuille est ouverte depuis une séance du planning, remplie, puis CLOSE : la
+// clôture la fige et l'accroche à la chaîne d'empreintes du campus. Après clôture,
+// toute correction passe par un avenant motivé, jamais par une réécriture.
+
+function sheetGuard(req, res) {
+  const sheet = attendancestore.getSheet(req.params.id);
+  if (!sheet) { res.status(404).json({ error: "feuille introuvable" }); return null; }
+  if (!assertCampus(req, res, sheet.campusId)) return null;
+  return sheet;
+}
+// Apprenants attendus à une séance = inscrits actifs de la classe.
+function learnersOfClass(classId, campusId) {
+  const ids = new Set(store.listEnrollments({ classId, statut: "inscrit" }).map((e) => e.learnerId));
+  return store.listLearners({ campusId }).filter((l) => ids.has(l.id));
+}
+function hydrateSheet(sheet) {
+  if (!sheet) return sheet;
+  const names = new Map(store.listLearners({ campusId: sheet.campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
+  return {
+    ...sheet,
+    entries: (sheet.entries || []).map((e) => ({ ...e, learnerName: names.get(e.learnerId) || "—" })),
+    stats: sheetStats(sheet),
+  };
+}
+
+app.get("/api/attendance/sheets", requireAuth, (req, res) => {
+  const { campusId, classId, from, to, status } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let sheets = attendancestore.listSheets({ campusId, classId, from, to, status });
+  if (!campusId) sheets = sheets.filter((s) => canCampus(req, s.campusId));
+  const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+  res.json(sheets.map((s) => ({ ...s, className: classes.get(s.classId) || null, stats: sheetStats(s), entries: undefined, entryCount: (s.entries || []).length })));
+});
+
+// Ouvre (ou retrouve) la feuille d'une séance : c'est le geste « faire l'appel ».
+app.post("/api/sessions/:sid/attendance", requireAuth, (req, res) => {
+  const session = sessionstore.getSession(req.params.sid);
+  if (!session) return res.status(404).json({ error: "séance introuvable" });
+  if (!assertCampus(req, res, session.campusId)) return;
+  const learners = learnersOfClass(session.classId, session.campusId);
+  if (!learners.length) return res.status(400).json({ error: "aucun apprenant inscrit dans cette classe — créer les inscriptions d'abord" });
+  const sheet = attendancestore.openSheet({ session, learners, signMode: req.body?.signMode, openedBy: req.user?.name || req.user?.email || "" });
+  logAudit(req, "create", "emargement", `feuille ${session.date} ${session.start}`);
+  res.json(hydrateSheet(sheet));
+});
+
+app.get("/api/attendance/sheets/:id", requireAuth, (req, res) => {
+  const sheet = sheetGuard(req, res);
+  if (!sheet) return;
+  res.json(hydrateSheet(sheet));
+});
+
+app.patch("/api/attendance/sheets/:id/entries", requireAuth, (req, res) => {
+  const sheet = sheetGuard(req, res);
+  if (!sheet) return;
+  const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+  if (entries.some((e) => e.status && !ATTENDANCE_STATUSES.includes(e.status))) return res.status(400).json({ error: "statut d'appel invalide" });
+  const r = attendancestore.setEntries(sheet.id, entries);
+  if (r?.error) return res.status(409).json(r);
+  res.json(hydrateSheet(r));
+});
+
+app.post("/api/attendance/sheets/:id/sign", requireAuth, (req, res) => {
+  const sheet = sheetGuard(req, res);
+  if (!sheet) return;
+  const { learnerId, signature } = req.body || {};
+  if (!learnerId) return res.status(400).json({ error: "apprenant requis" });
+  const r = attendancestore.signEntry(sheet.id, learnerId, signature);
+  if (r?.error) return res.status(409).json(r);
+  res.json(hydrateSheet(r));
+});
+
+// Signature par code de séance : l'apprenant saisit le code affiché en salle.
+// Route volontairement tolérante au rôle (le portail apprenant s'y branchera),
+// mais elle exige le code exact d'une feuille encore ouverte.
+app.post("/api/attendance/sign-by-code", requireAuth, (req, res) => {
+  const { code, learnerId, signature } = req.body || {};
+  const sheet = attendancestore.getSheetByCode(code);
+  if (!sheet) return res.status(404).json({ error: "code invalide ou séance close" });
+  if (!assertCampus(req, res, sheet.campusId)) return;
+  const r = attendancestore.signEntry(sheet.id, learnerId, signature);
+  if (r?.error) return res.status(409).json(r);
+  res.json({ ok: true, sheetId: sheet.id });
+});
+
+app.post("/api/attendance/sheets/:id/lock", requireAuth, (req, res) => {
+  const sheet = sheetGuard(req, res);
+  if (!sheet) return;
+  const r = attendancestore.lockSheet(sheet.id, req.user?.name || req.user?.email || "");
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "update", "emargement", `clôture feuille ${r.date} ${r.start} (seq ${r.seq})`);
+  res.json(hydrateSheet(r));
+});
+
+app.post("/api/attendance/sheets/:id/amend", requireAuth, (req, res) => {
+  const sheet = sheetGuard(req, res);
+  if (!sheet) return;
+  const r = attendancestore.amendSheet(sheet.id, { ...req.body, by: req.user?.name || req.user?.email || "" });
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "update", "emargement", `avenant feuille ${r.date} — ${req.body?.reason || ""}`);
+  res.json(hydrateSheet(r));
+});
+
+// Contrôle d'intégrité de la chaîne d'un campus : c'est le rapport qu'on présente
+// à un contrôleur, et celui qui révèle une altération du fichier.
+app.get("/api/attendance/verify", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!campusId || !assertCampus(req, res, campusId)) return;
+  res.json(attendancestore.verifyCampusChain(campusId));
+});
+
+// Attestation d'assiduité imprimable (période × classe) — la pièce financeur.
+app.get("/api/attendance/proof", requireAuth, (req, res) => {
+  const { campusId, classId, from, to } = req.query;
+  if (!campusId || !assertCampus(req, res, campusId)) return;
+  const sheets = attendancestore.listSheets({ campusId, classId, from, to, status: "locked" });
+  const agg = periodStats(sheets);
+  const chain = attendancestore.verifyCampusChain(campusId);
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  const className = classId ? (store.getClass(classId)?.name || "") : "toutes classes";
+  const names = new Map(store.listLearners({ campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
+  const perLearner = new Map();
+  for (const s of sheets) {
+    const st = sheetStats(s);
+    for (const e of s.entries || []) {
+      const cur = perLearner.get(e.learnerId) || { planned: 0, absent: 0, unjustified: 0 };
+      cur.planned += st.durationMinutes;
+      if (e.status === "absent" || e.status === "excuse") { cur.absent += st.durationMinutes; if (!e.justified && e.status === "absent") cur.unjustified += st.durationMinutes; }
+      else if (e.status === "retard") { const late = Math.min(Number(e.minutesLate) || 0, st.durationMinutes); cur.absent += late; if (!e.justified) cur.unjustified += late; }
+      perLearner.set(e.learnerId, cur);
+    }
+  }
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const h = (n) => `${Math.floor(n / 60)} h ${String(n % 60).padStart(2, "0")}`;
+  const rows = [...perLearner.entries()].map(([lid, v]) => `<tr><td>${esc(names.get(lid) || "—")}</td><td>${h(v.planned)}</td><td>${h(Math.max(0, v.planned - v.absent))}</td><td>${h(v.absent)}</td><td>${h(v.unjustified)}</td><td>${v.planned ? Math.round(((v.planned - v.absent) / v.planned) * 1000) / 10 : 0} %</td></tr>`).join("");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Attestation d'assiduité</title>
+<style>body{font:13px/1.5 -apple-system,Segoe UI,sans-serif;color:#0D1B2A;max-width:900px;margin:0 auto;padding:28px;}
+h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px;}.band{background:#0B6E5F;color:#fff;padding:14px 18px;border-radius:6px;margin-bottom:18px;}
+.band .eyebrow{color:#FFD9CF;font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px;}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:12.5px;}th{background:#0B6E5F;color:#fff;text-align:left;padding:7px 9px;}
+td{padding:6px 9px;border-bottom:1px solid #e3ded3;}tr:nth-child(even) td{background:#faf8f3;}
+.kpi{display:flex;gap:22px;flex-wrap:wrap;margin:14px 0;}.kpi div{background:#f4efe6;padding:10px 14px;border-radius:6px;}
+.kpi b{display:block;font-size:18px;}.seal{margin-top:22px;padding:12px 14px;border:1px solid #e3ded3;border-radius:6px;font-size:11.5px;color:#4A5568;}
+code{font-family:ui-monospace,monospace;word-break:break-all;}.ok{color:#0B6E5F;font-weight:700;}.ko{color:#B03A2E;font-weight:700;}
+@media print{body{padding:0;}}</style></head><body>
+<div class="band"><div class="eyebrow">Campus Manager · Preuve de réalisation</div><h1>Attestation d'assiduité</h1></div>
+<p><b>${esc(campus?.name || "")}</b> — ${esc(className)}<br>Période du ${esc(from || "origine")} au ${esc(to || "ce jour")} · éditée le ${new Date().toLocaleDateString("fr-FR")}</p>
+<div class="kpi">
+  <div><b>${agg.lockedSheets}</b>séances closes</div>
+  <div><b>${h(agg.plannedMinutes)}</b>heures prévues</div>
+  <div><b>${h(agg.realizedMinutes)}</b>heures réalisées</div>
+  <div><b>${agg.attendanceRate ?? "—"} %</b>taux d'assiduité</div>
+</div>
+<table><thead><tr><th>Apprenant</th><th>Prévu</th><th>Réalisé</th><th>Absence</th><th>dont non justifiée</th><th>Assiduité</th></tr></thead><tbody>${rows || '<tr><td colspan="6">Aucune séance close sur la période.</td></tr>'}</tbody></table>
+<div class="seal"><b>Scellement</b> — chaque feuille close est horodatée par le serveur et chaînée à la précédente par empreinte SHA-256 ; toute modification postérieure rompt la chaîne et devient détectable. Contrôle d'intégrité à l'édition : <span class="${chain.ok ? "ok" : "ko"}">${chain.ok ? "chaîne intègre" : "CHAÎNE ROMPUE (" + esc(chain.reason || "") + ")"}</span> sur ${chain.count ?? 0} feuille(s).<br>Empreinte de tête : <code>${esc(chain.lastHash || "—")}</code><br>Les corrections postérieures à une clôture figurent en avenant sur la feuille concernée.</div>
+</body></html>`);
+});
+
 app.get("/api/sessions", requireAuth, (req, res) => {
   const { campusId, classId, teacherId, roomId, from, to } = req.query;
   const list = sessionstore.listSessions({ campusId, classId, teacherId, roomId, from, to });

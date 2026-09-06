@@ -39,6 +39,7 @@ const I = {
   net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
   funnel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18l-7 8v7l-4 2v-9z"/></svg>',
   grad: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4L2 9l10 5 10-5z"/><path d="M6 11.5V16c0 1.5 2.7 3 6 3s6-1.5 6-3v-4.5"/><path d="M22 9v5"/></svg>',
+  sign: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17c3 0 3-10 6-10s3 10 6 10 3-4 6-4"/><path d="M3 21h18"/></svg>',
   plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5"/></svg>',
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6M21 20a6 6 0 0 0-4-5.6"/></svg>',
@@ -332,6 +333,7 @@ const NAV = [
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
   { id: "planning", label: "Emploi du temps", icon: I.agenda, group: "Enseignement" },
+  { id: "emargement", label: "Émargement", icon: I.sign, group: "Enseignement" },
   { id: "professeurs", label: "Professeurs", icon: I.campus, group: "Enseignement" },
   { id: "referentiels", label: "Référentiels", icon: I.note, admin: true, group: "Enseignement" },
   { id: "sallesclasses", label: "Salles & classes", icon: I.net, group: "Enseignement" },
@@ -388,7 +390,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, planning: renderPlanning, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, planning: renderPlanning, emargement: renderEmargement, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -4193,6 +4195,185 @@ const hhmmToMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ""))
 let planState = { week: mondayOf(new Date().toISOString().slice(0, 10)), campusId: "", classId: "", teacherId: "" };
 
 // ---------- Emploi du temps : grille semaine éditable ----------
+// ---------- Vue : Émargement (preuve de réalisation) ----------
+const ATT_LABEL = { present: "Présent", absent: "Absent", retard: "Retard", excuse: "Excusé" };
+const ATT_TONE = { present: "done", absent: "overdue", retard: "warn", excuse: "" };
+let emCampus = "", emFrom = "", emTo = "";
+async function renderEmargement() {
+  const view = $("#view");
+  if (!emFrom) {
+    const d = new Date(); const start = new Date(d.getTime() - 13 * 864e5);
+    emFrom = start.toISOString().slice(0, 10); emTo = d.toISOString().slice(0, 10);
+  }
+  if (!emCampus) emCampus = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="em-proof">Attestation d'assiduité</button>`;
+  $("#em-proof").addEventListener("click", () => {
+    if (!emCampus) { alert("Choisis un campus."); return; }
+    window.open(`/api/attendance/proof?campusId=${emCampus}&from=${emFrom}&to=${emTo}`, "_blank");
+  });
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const qs = new URLSearchParams({ from: emFrom, to: emTo });
+  if (emCampus) qs.set("campusId", emCampus);
+  const [sheets, sessions, chain] = await Promise.all([
+    api.get("/api/attendance/sheets?" + qs.toString()),
+    api.get(`/api/sessions?${emCampus ? "campusId=" + emCampus + "&" : ""}from=${emFrom}&to=${emTo}`),
+    emCampus ? api.get(`/api/attendance/verify?campusId=${emCampus}`) : Promise.resolve(null),
+  ]);
+  const bySession = new Map((sheets || []).map((s) => [s.sessionId, s]));
+  const rows = (sessions || []).filter((s) => s.kind !== "reunion").sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.start || "").localeCompare(a.start || ""));
+  const openCount = (sheets || []).filter((s) => s.status === "open").length;
+  const lockedCount = (sheets || []).filter((s) => s.status === "locked").length;
+  const todo = rows.filter((s) => !bySession.has(s.id)).length;
+  const line = (s) => {
+    const sh = bySession.get(s.id);
+    const st = sh?.stats;
+    return `<div class="item">
+      <span class="pill">${esc(s.date)}</span>
+      <div class="grow"><div class="ttl">${esc(s.className || s.classId || "—")} <span class="muted" style="font-weight:400;">${esc(s.start)}–${esc(s.end)}${s.moduleName ? " · " + esc(s.moduleName) : ""}${s.teacherName ? " · " + esc(s.teacherName) : ""}</span></div>
+        <div class="sub muted">${sh ? (sh.status === "locked" ? `Close · ${st?.present ?? 0} présents / ${st?.total ?? 0} · assiduité ${st?.attendanceRate ?? "—"} %` : `Ouverte · ${st?.present ?? 0}/${st?.total ?? 0} pointés`) : "Appel non fait"}</div></div>
+      ${sh ? `<span class="pill ${sh.status === "locked" ? "done" : "doing"}">${sh.status === "locked" ? "🔒 close" : "ouverte"}</span>` : ""}
+      <button class="btn-${sh ? "ghost" : "primary"} btn-sm em-open" data-sid="${s.id}" data-sheet="${sh?.id || ""}">${sh ? "Ouvrir" : "Faire l'appel"}</button>
+    </div>`;
+  };
+  view.innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+      <select class="txt" id="em-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${emCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
+      <input class="txt" id="em-from" type="date" value="${emFrom}" style="max-width:160px;">
+      <input class="txt" id="em-to" type="date" value="${emTo}" style="max-width:160px;">
+    </div>
+    <div class="kpis" style="margin-bottom:12px;">
+      <div class="k${todo ? " k-bad" : ""}"><div class="v">${todo}</div><div class="l">appels à faire</div></div>
+      <div class="k"><div class="v">${openCount}</div><div class="l">feuilles ouvertes</div></div>
+      <div class="k"><div class="v">${lockedCount}</div><div class="l">closes (scellées)</div></div>
+    </div>
+    ${chain ? `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid var(--${chain.ok ? "good" : "bad"});">
+      <b>${chain.ok ? "✓ Chaîne de preuve intègre" : "⚠ Chaîne rompue"}</b> — ${chain.ok ? `${chain.count} feuille(s) close(s), chaînées par empreinte SHA-256. Toute modification postérieure serait détectée.` : esc(chain.reason || "incohérence détectée")}
+      ${chain.lastHash ? `<div class="sub muted" style="margin-top:4px;word-break:break-all;font-family:ui-monospace,monospace;font-size:11px;">tête : ${esc(chain.lastHash)}</div>` : ""}
+    </div>` : ""}
+    ${rows.length ? `<div class="list">${rows.map(line).join("")}</div>` : `<p class="empty">Aucune séance sur cette période — vérifie l'emploi du temps.</p>`}`;
+  $("#em-campus").addEventListener("change", () => { emCampus = $("#em-campus").value; renderEmargement(); });
+  $("#em-from").addEventListener("change", () => { emFrom = $("#em-from").value; renderEmargement(); });
+  $("#em-to").addEventListener("change", () => { emTo = $("#em-to").value; renderEmargement(); });
+  $$(".em-open").forEach((b) => b.addEventListener("click", async () => {
+    let sheetId = b.dataset.sheet;
+    if (!sheetId) {
+      const r = await api.post(`/api/sessions/${b.dataset.sid}/attendance`, {});
+      if (r.error) { alert(r.error); return; }
+      sheetId = r.id;
+    }
+    openSheetModal(sheetId);
+  }));
+}
+
+async function openSheetModal(sheetId) {
+  const sh = await api.get(`/api/attendance/sheets/${sheetId}`);
+  if (!sh || sh.error) { alert(sh?.error || "Feuille introuvable"); return; }
+  const locked = sh.status === "locked";
+  const row = (e) => `<div class="item att-row" data-lid="${e.learnerId}">
+    <div class="grow"><div class="ttl">${esc(e.learnerName)}</div>
+      <div class="sub muted">${e.signedAt ? "✍︎ signé " + new Date(e.signedAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "non signé"}${e.reason ? " · " + esc(e.reason) : ""}</div></div>
+    ${locked ? `<span class="pill ${ATT_TONE[e.status]}">${ATT_LABEL[e.status]}</span>
+      <button class="btn-ghost btn-sm att-amend" data-lid="${e.learnerId}">Avenant</button>`
+    : `<select class="txt att-st" data-lid="${e.learnerId}" style="width:120px;">${Object.entries(ATT_LABEL).map(([k, l]) => `<option value="${k}" ${k === e.status ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <input class="txt att-late" data-lid="${e.learnerId}" type="number" min="0" placeholder="min" value="${e.minutesLate || ""}" style="width:70px;${e.status === "retard" ? "" : "display:none;"}" title="minutes de retard">
+      <label class="sub muted" style="display:flex;align-items:center;gap:4px;white-space:nowrap;"><input type="checkbox" class="att-just" data-lid="${e.learnerId}" ${e.justified ? "checked" : ""}> justifié</label>
+      <button class="btn-ghost btn-sm att-sign" data-lid="${e.learnerId}">${e.signedAt ? "✍︎" : "Signer"}</button>`}
+  </div>`;
+  openModal(`Émargement — ${esc(sh.date)} ${esc(sh.start)}–${esc(sh.end)}`, `
+    ${locked ? `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid var(--good);"><b>🔒 Feuille close et scellée</b> le ${new Date(sh.lockedAt).toLocaleString("fr-FR")} par ${esc(sh.lockedBy || "—")} · séquence ${sh.seq}
+      <div class="sub muted" style="word-break:break-all;font-family:ui-monospace,monospace;font-size:11px;margin-top:4px;">${esc(sh.hash || "")}</div>
+      <div class="sub muted" style="margin-top:4px;">Toute correction se fait désormais par avenant motivé, conservé sur la feuille.</div></div>`
+    : `<div class="card card-pad" style="margin-bottom:10px;">Code de séance à afficher en salle : <b style="font-size:20px;letter-spacing:3px;font-family:ui-monospace,monospace;">${esc(sh.code)}</b>
+      <div class="sub muted">L'apprenant peut signer depuis son espace avec ce code, ou directement ci-dessous sur la tablette.</div></div>`}
+    <div class="kpis" style="margin-bottom:10px;">
+      <div class="k"><div class="v">${sh.stats.present}</div><div class="l">présents</div></div>
+      <div class="k${sh.stats.absent ? " k-bad" : ""}"><div class="v">${sh.stats.absent}</div><div class="l">absents</div></div>
+      <div class="k"><div class="v">${sh.stats.retard}</div><div class="l">retards</div></div>
+      <div class="k"><div class="v">${sh.stats.attendanceRate ?? "—"} %</div><div class="l">assiduité</div></div>
+    </div>
+    <div class="list">${sh.entries.map(row).join("")}</div>
+    ${sh.amendments?.length ? `<div class="section-title">Avenants</div><div class="list">${sh.amendments.map((a) => `<div class="item"><span class="pill">${new Date(a.at).toLocaleDateString("fr-FR")}</span><div class="grow"><div class="ttl" style="font-weight:500;">${esc(sh.entries.find((e) => e.learnerId === a.learnerId)?.learnerName || "—")} : ${ATT_LABEL[a.from] || a.from} → ${ATT_LABEL[a.to] || a.to}</div><div class="sub muted">${esc(a.reason)} · ${esc(a.by)}</div></div></div>`).join("")}</div>` : ""}
+    ${locked ? "" : `<div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-ghost" id="att-save">Enregistrer l'appel</button>
+      <button class="btn-primary" id="att-lock">🔒 Clore et sceller</button>
+    </div><p class="hint muted">La clôture fige la feuille et l'ajoute à la chaîne de preuve du campus. Après clôture, seules des corrections motivées (avenants) sont possibles.</p>`}`);
+  const collect = () => $$(".att-row").map((r) => {
+    const lid = r.dataset.lid;
+    return { learnerId: lid, status: $(`.att-st[data-lid="${lid}"]`)?.value, minutesLate: Number($(`.att-late[data-lid="${lid}"]`)?.value || 0), justified: $(`.att-just[data-lid="${lid}"]`)?.checked };
+  });
+  $$(".att-st").forEach((s) => s.addEventListener("change", () => {
+    const late = $(`.att-late[data-lid="${s.dataset.lid}"]`);
+    if (late) late.style.display = s.value === "retard" ? "" : "none";
+  }));
+  $("#att-save")?.addEventListener("click", async () => {
+    const r = await api.patch(`/api/attendance/sheets/${sheetId}/entries`, { entries: collect() });
+    if (r.error) { alert(r.error); return; }
+    document.querySelector(".modal-bg")?.remove();
+    openSheetModal(sheetId);
+  });
+  $("#att-lock")?.addEventListener("click", async () => {
+    if (!confirm("Clore et sceller cette feuille ?\n\nElle deviendra non modifiable : toute correction ultérieure devra passer par un avenant motivé, conservé et visible.")) return;
+    await api.patch(`/api/attendance/sheets/${sheetId}/entries`, { entries: collect() });
+    const r = await api.post(`/api/attendance/sheets/${sheetId}/lock`, {});
+    if (r.error) { alert(r.error); return; }
+    document.querySelector(".modal-bg")?.remove();
+    renderEmargement();
+  });
+  $$(".att-sign").forEach((b) => b.addEventListener("click", () => openSignaturePad(sheetId, b.dataset.lid, sh.entries.find((e) => e.learnerId === b.dataset.lid)?.learnerName || "")));
+  $$(".att-amend").forEach((b) => b.addEventListener("click", async () => {
+    const e = sh.entries.find((x) => x.learnerId === b.dataset.lid);
+    const status = prompt(`Nouveau statut pour ${e.learnerName} (present / absent / retard / excuse) :`, e.status);
+    if (!status) return;
+    const reason = prompt("Motif de la correction (obligatoire, conservé sur la feuille) :", "");
+    if (!reason) { alert("Un avenant sans motif n'a aucune valeur probante."); return; }
+    const r = await api.post(`/api/attendance/sheets/${sheetId}/amend`, { learnerId: b.dataset.lid, status, reason });
+    if (r.error) { alert(r.error); return; }
+    document.querySelector(".modal-bg")?.remove();
+    openSheetModal(sheetId);
+  }));
+}
+
+// Pavé de signature tactile : trait au doigt/stylet, envoyé en PNG.
+function openSignaturePad(sheetId, learnerId, name) {
+  const pad = document.createElement("div");
+  pad.className = "modal-bg";
+  pad.innerHTML = `<div class="modal" style="max-width:520px;">
+    <div class="modal-head"><h2>Signature — ${esc(name)}</h2><button class="btn-ghost btn-sm" id="sig-close">Fermer</button></div>
+    <div class="modal-body">
+      <p class="sub muted" style="margin-top:0;">Signe dans le cadre. L'horodatage est celui du serveur.</p>
+      <canvas id="sig-canvas" width="460" height="180" style="width:100%;border:2px dashed var(--line);border-radius:8px;background:var(--surface);touch-action:none;"></canvas>
+      <div class="actions" style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn-ghost" id="sig-clear">Effacer</button>
+        <button class="btn-primary" id="sig-save">Valider la signature</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(pad);
+  const cv = pad.querySelector("#sig-canvas");
+  const ctx = cv.getContext("2d");
+  ctx.lineWidth = 2.2; ctx.lineCap = "round"; ctx.strokeStyle = "#0D1B2A";
+  let drawing = false, dirty = false;
+  const pos = (ev) => {
+    const r = cv.getBoundingClientRect();
+    const p = ev.touches ? ev.touches[0] : ev;
+    return { x: (p.clientX - r.left) * (cv.width / r.width), y: (p.clientY - r.top) * (cv.height / r.height) };
+  };
+  const start = (ev) => { ev.preventDefault(); drawing = true; dirty = true; const { x, y } = pos(ev); ctx.beginPath(); ctx.moveTo(x, y); };
+  const move = (ev) => { if (!drawing) return; ev.preventDefault(); const { x, y } = pos(ev); ctx.lineTo(x, y); ctx.stroke(); };
+  const end = () => { drawing = false; };
+  cv.addEventListener("pointerdown", start); cv.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end, { once: false });
+  pad.querySelector("#sig-close").addEventListener("click", () => pad.remove());
+  pad.querySelector("#sig-clear").addEventListener("click", () => { ctx.clearRect(0, 0, cv.width, cv.height); dirty = false; });
+  pad.querySelector("#sig-save").addEventListener("click", async () => {
+    if (!dirty) { alert("Signature vide."); return; }
+    const r = await api.post(`/api/attendance/sheets/${sheetId}/sign`, { learnerId, signature: cv.toDataURL("image/png") });
+    if (r.error) { alert(r.error); return; }
+    pad.remove();
+    document.querySelector(".modal-bg")?.remove();
+    openSheetModal(sheetId);
+  });
+}
+
 async function renderPlanning() {
   const [campuses, classes, teachers] = await Promise.all([api.get("/api/campuses"), api.get("/api/classes"), api.get("/api/teachers")]);
   if (!planState.campusId && campuses[0]) planState.campusId = campuses[0].id;
