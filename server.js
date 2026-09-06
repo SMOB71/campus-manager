@@ -2883,7 +2883,7 @@ app.get("/api/schedule/coverage", requireAuth, (req, res) => {
   const cur = store.getCurriculum(k.curriculumId);
   if (!cur) return res.status(400).json({ error: "aucun référentiel rattaché à cette classe" });
   const sessions = sessionstore.listSessions({ classId: k.id });
-  res.json({ classId: k.id, className: k.name, curriculum: cur.name, ...coverage(cur, sessions, { today: new Date().toISOString().slice(0, 10), endDate: req.query.endDate }) });
+  res.json({ classId: k.id, className: k.name, curriculum: cur.name, ...coverage(cur, sessions, { today: new Date().toISOString().slice(0, 10), endDate: req.query.endDate, year: k.year }) });
 });
 app.get("/api/schedule/service", requireAuth, (req, res) => {
   const campusId = req.query.campusId;

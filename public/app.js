@@ -3865,7 +3865,7 @@ const PLAN_DAYS = [["lun", "Lundi"], ["mar", "Mardi"], ["mer", "Mercredi"], ["je
 const SES_KIND = { cours: "Cours", examen: "Examen", rattrapage: "Rattrapage", reunion: "Réunion" };
 const SES_STATUT = { planned: "Prévue", done: "Faite", cancelled: "Annulée" };
 const TEACH_STATUS = { permanent: "Permanent", vacataire: "Vacataire", intervenant: "Intervenant" };
-const PERIOD_KIND = { vacances: "Vacances", ferie: "Férié", examens: "Examens", stage: "Stage" };
+const PERIOD_KIND = { vacances: "Vacances", ferie: "Férié", examens: "Examens", stage: "Stage", entreprise: "En entreprise" };
 
 // Lundi de la semaine contenant `d`.
 function mondayOf(d) {
@@ -4201,12 +4201,14 @@ async function renderReferentiels() {
     ${curricula.length ? `<div class="grid grid-2">${curricula.map((c) => `<div class="card" style="padding:14px;">
       <div class="row" style="justify-content:space-between;align-items:baseline;">
         <div><b style="font-size:16px;">${esc(c.name)}</b>${c.diploma ? ` <span class="pill">${esc(c.diploma)}</span>` : ""}</div>
-        <button class="btn-ghost btn-sm rf-edit" data-id="${c.id}">✎</button></div>
+        <span><button class="btn-ghost btn-sm rf-assign" data-id="${c.id}">✨ Qui enseigne quoi</button>
+        <button class="btn-ghost btn-sm rf-edit" data-id="${c.id}">✎</button></span></div>
       <div class="muted" style="font-size:13px;margin:6px 0;">${(c.modules || []).length} modules · <b>${c.totalHours || 0} h</b>${(c.modules || []).some((m) => m.heures == null) ? ` · <span class="neg">${(c.modules || []).filter((m) => m.heures == null).length} sans volume</span>` : ""}</div>
       <div class="list">${(c.modules || []).slice(0, 6).map((m) => `<div class="item"><span class="grow">${esc(m.code ? m.code + " · " : "")}${esc(m.label)}</span><span class="${m.heures == null ? "neg" : "muted"}">${m.heures == null ? "à renseigner" : m.heures + " h"}</span></div>`).join("")}
         ${(c.modules || []).length > 6 ? `<p class="muted" style="font-size:12px;">+ ${(c.modules || []).length - 6} autres</p>` : ""}</div>
     </div>`).join("")}</div>` : '<p class="empty">Aucun référentiel.<br><span class="muted">Crée-en un, ou dépose le référentiel officiel : les modules et volumes seront proposés à ta validation.</span></p>'}`;
   $("#rf-add").onclick = () => openCurriculumForm();
+  $$(".rf-assign").forEach((b) => b.addEventListener("click", () => openAssignments(b.dataset.id)));
   $$(".rf-edit").forEach((b) => b.addEventListener("click", () => openCurriculumForm(curricula.find((c) => c.id === b.dataset.id))));
   $("#rf-import").onclick = () => {
     const inp = document.createElement("input");
@@ -4302,7 +4304,7 @@ async function renderSallesClasses() {
     <div class="card" style="overflow-x:auto;"><table class="net-table">
       <thead><tr><th>Classe</th><th>Référentiel</th><th>Année</th><th>Effectif</th><th></th></tr></thead><tbody>
       ${mine(classes).map((k) => `<tr><td><b>${esc(k.name)}</b></td>
-        <td>${esc(curricula.find((c) => c.id === k.curriculumId)?.name || "—")}</td>
+        <td>${esc(curricula.find((c) => c.id === k.curriculumId)?.name || "—")}${k.modalite === "alternance" ? ' <span class="pill p-warn">alternance</span>' : ""}${k.rythme ? `<br><span class="muted" style="font-size:12px;">${esc(k.rythme)}</span>` : ""}</td>
         <td class="num">${k.year ?? "—"}</td><td class="num">${k.size ?? "de la filière"}</td>
         <td><button class="btn-ghost btn-sm sc-kedit" data-id="${k.id}">✎</button></td></tr>`).join("")
         || '<tr><td colspan="5" class="muted">Aucune classe.</td></tr>'}
@@ -4352,7 +4354,11 @@ function openClassForm(k, curricula, campuses) {
       <div><label class="field-label">Année</label><input class="txt kf" data-f="year" type="number" value="${e.year ?? ""}"></div>
       <div><label class="field-label">Référentiel</label><select class="txt kf" data-f="curriculumId"><option value="">—</option>${curricula.map((c) => `<option value="${c.id}" ${e.curriculumId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
       <div><label class="field-label">Filière</label><select class="txt kf" data-f="filiereId"><option value="">—</option>${(camp?.filieres || []).map((f) => `<option value="${f.id}" ${e.filiereId === f.id ? "selected" : ""}>${esc(f.nom)}</option>`).join("")}</select></div>
-      <div style="grid-column:1/-1;"><label class="field-label">Effectif <span class="muted">(vide = repris de la filière)</span></label><input class="txt kf" data-f="size" type="number" value="${e.size ?? ""}"></div>
+      <div><label class="field-label">Modalité</label><select class="txt kf" data-f="modalite">${[["initial","Initial"],["alternance","Alternance"],["mixte","Mixte"]].map(([k2,l])=>`<option value="${k2}" ${(e.modalite||"initial")===k2?"selected":""}>${l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Rythme <span class="muted">(alternance)</span></label><input class="txt kf" data-f="rythme" value="${esc(e.rythme || "")}" placeholder="2 sem. école / 2 sem. entreprise"></div>
+      <div><label class="field-label">Semaines de cours dans l'année</label><input class="txt kf" data-f="weeksAtSchool" type="number" value="${e.weeksAtSchool ?? ""}" placeholder="auto"></div>
+      <div><label class="field-label">Effectif <span class="muted">(vide = filière)</span></label><input class="txt kf" data-f="size" type="number" value="${e.size ?? ""}"></div>
+      <p class="hint muted" style="grid-column:1/-1;">En alternance, le volume du référentiel se comprime dans moins de semaines : laisse « auto » (moitié de l'année) ou saisis le nombre exact. Déclare aussi les semaines en entreprise dans le calendrier, sinon la récurrence posera des cours pendant que la classe est en poste.</p>
     </div>
     <div class="actions" style="margin-top:12px;">${k ? `<button class="btn-ghost btn-sm btn-danger" id="kf-del">Supprimer</button>` : ""}<button class="btn-primary" id="kf-save">Enregistrer</button></div>`);
   $("#kf-save").onclick = async () => {
@@ -4378,5 +4384,39 @@ function openPeriodForm(classes) {
     const b = { campusId: planState.campusId }; $$(".pf").forEach((i) => (b[i.dataset.f] = i.value));
     if (!b.from || !b.to) return;
     await api.post("/api/periods", b); closeModals(); renderSallesClasses();
+  };
+}
+
+
+// ---------- Qui enseigne quoi : proposition IA, validation humaine ----------
+// C'est l'information qui conditionne toute la qualité du planning. Sans matières
+// déclarées, le générateur traite chacun comme polyvalent et affecte au hasard.
+async function openAssignments(curriculumId) {
+  openModal("Qui enseigne quoi", '<p class="muted">Analyse du référentiel et des fiches intervenants…</p>');
+  const r = await api.post("/api/schedule/suggest-assignments", { curriculumId, campusId: planState.campusId });
+  if (r?.error) { $(".modal-body").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+  const conf = { haute: "p-ok", moyenne: "p-warn", faible: "p-off" };
+  $(".modal-body").innerHTML = `
+    <p class="muted" style="font-size:13.5px;">Proposition à partir des matières déjà déclarées et des libellés. <b>Rien n'est écrit sans ta validation.</b> Décoche ce qui ne convient pas.</p>
+    <div class="card" style="overflow-x:auto;margin-top:10px;"><table class="net-table">
+      <thead><tr><th></th><th>Module</th><th>Intervenants proposés</th><th>Confiance</th><th>Pourquoi</th></tr></thead><tbody>
+      ${r.assignments.map((a, i) => `<tr>
+        <td><input type="checkbox" class="as-ok" data-i="${i}" ${a.confidence !== "faible" ? "checked" : ""}></td>
+        <td><b>${esc(a.moduleLabel)}</b></td>
+        <td>${a.teachers.map((t) => esc(t.name)).join(", ")}</td>
+        <td><span class="pill ${conf[a.confidence]}">${esc(a.confidence)}</span></td>
+        <td class="muted" style="font-size:12.5px;">${esc(a.rationale)}</td></tr>`).join("")
+        || '<tr><td colspan="5" class="muted">Aucune correspondance proposée.</td></tr>'}
+    </tbody></table></div>
+    ${r.unmatched?.length ? `<div class="card" style="border-left:3px solid #8A4B4B;padding:12px;margin-top:10px;">
+      <b>Modules sans intervenant identifié</b>${r.unmatched.map((u) => `<div class="muted" style="font-size:13px;">${esc(u.moduleLabel || "")} — ${esc(u.reason || "")}</div>`).join("")}
+      <p class="hint muted">C'est une information, pas un échec : il manque une compétence à recruter ou à déclarer.</p></div>` : ""}
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="as-save">Appliquer aux fiches cochées</button></div>`;
+  $("#as-save").onclick = async () => {
+    const keep = $$(".as-ok").filter((c) => c.checked).map((c) => r.assignments[+c.dataset.i]);
+    if (!keep.length) { closeModals(); return; }
+    const out = await api.post("/api/schedule/apply-assignments", { assignments: keep });
+    alert(`${out.updated} fiche(s) enrichie(s). Le générateur saura désormais qui peut enseigner quoi.`);
+    closeModals(); renderReferentiels();
   };
 }

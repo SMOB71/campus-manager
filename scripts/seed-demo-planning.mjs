@@ -130,6 +130,9 @@ async function seed() {
   for (const [nom, an, fil] of [["OL 1re année", 1, filieres[0]], ["OL 2e année", 2, filieres[1]]]) {
     classes.push(await post("/api/classes", {
       campusId: campus.id, curriculumId: cur.id, filiereId: fil.id, name: `${nom} — ${TAG}`, year: an,
+      modalite: fil.modalite,
+      rythme: fil.modalite === "alternance" ? "2 sem. école / 2 sem. entreprise" : "",
+      weeksAtSchool: fil.modalite === "alternance" ? 17 : null,
     }));
   }
   console.log(`   ${classes.length} promotions rattachées au référentiel « ${cur.name} »`);
@@ -147,8 +150,16 @@ async function seed() {
     { kind: "examens", label: "Épreuves blanches", from: "2027-03-15", to: "2027-03-19" },
     { kind: "stage", label: "Stage en magasin", from: "2027-01-11", to: "2027-02-05", classId: classes[1].id },
   ];
+  // Alternance : une semaine sur deux en entreprise pour la 2e année. Sans ces
+  // périodes, la récurrence poserait des cours pendant que la classe est en poste.
+  for (let i = 0; i < 17; i++) {
+    const d = new Date("2026-09-21T12:00:00Z"); d.setUTCDate(d.getUTCDate() + i * 28);
+    const a = d.toISOString().slice(0, 10);
+    d.setUTCDate(d.getUTCDate() + 11);
+    periods.push({ kind: "entreprise", label: "En entreprise", from: a, to: d.toISOString().slice(0, 10), classId: classes[1].id });
+  }
   for (const p of periods) await post("/api/periods", { campusId: campus.id, ...p });
-  console.log(`   ${periods.length} périodes (le stage ne concerne que la 2e année)`);
+  console.log(`   ${periods.length} périodes — dont ${periods.filter((p) => p.kind === "entreprise").length} semaines en entreprise pour la 2e année (alternance)`);
 
   step(7, "Génération de la semaine type");
   const gen = await post("/api/schedule/generate", { campusId: campus.id, seed: 2026, weekOf: "2026-09-07", sessionMinutes: 120, weeksInYear: 34 });
