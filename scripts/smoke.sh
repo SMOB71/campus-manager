@@ -12,7 +12,7 @@ for ep in /api/me /api/stats /api/network /api/finance /api/finance/annual /api/
           /api/notifications /api/campuses /api/actions /api/openings /api/scenarios \
           /api/documents /api/audit /api/backups /api/report /api/export/network \
           /api/committees /api/si/overview \
-          /api/learners /api/teachers /api/curricula /api/rooms /api/classes /api/periods; do
+          /api/learners /api/candidates /api/teachers /api/curricula /api/rooms /api/classes /api/periods; do
   c=$(code "$BASE$ep")
   if [ "$c" = "200" ]; then echo "✓ $ep"; else echo "✗ $ep ($c)"; fail=1; fi
 done

@@ -1830,11 +1830,22 @@ function admForecast(a) {
   const optimiste = Math.round(central * 1.15);
   return { r1: Math.round(r1 * 100), r2: Math.round(r2 * 100), r3: Math.round(r3 * 100), central, prudent, optimiste, ecart: obj ? central - obj : null, manque: obj ? Math.max(0, obj - central) : 0, obj };
 }
+let admMode = "agregats";
 async function renderAdmissions() {
   $("#topbar-actions").innerHTML = "";
   const view = $("#view");
   state.campuses = await api.get("/api/campuses") || [];
   if (!state.campuses.length) { view.innerHTML = `<p class="empty">Ajoute des campus (onglet Campus) pour suivre les admissions.</p>`; return; }
+  view.innerHTML = `<div class="chips" style="margin-bottom:14px;" id="adm-tabs">
+    <button type="button" class="chip ${admMode === "agregats" ? "active" : ""}" data-m="agregats">Agrégats</button>
+    <button type="button" class="chip ${admMode === "funnel" ? "active" : ""}" data-m="funnel">Funnel candidatures</button>
+  </div><div id="adm-body"><p class="muted">Chargement…</p></div>`;
+  $$("#adm-tabs .chip").forEach((c) => c.addEventListener("click", () => { admMode = c.dataset.m; renderAdmissions(); }));
+  if (admMode === "funnel") return renderCandidatesInto($("#adm-body"));
+  return renderAdmissionsAgregatsInto($("#adm-body"));
+}
+
+async function renderAdmissionsAgregatsInto(view) {
   const num = (v) => (v == null ? "" : v);
   const rows = state.campuses.map((c) => {
     const a = c.admissions || {};
@@ -1876,6 +1887,135 @@ async function renderAdmissions() {
     await api.patch(`/api/campuses/${b.dataset.cid}/admissions`, patch);
     renderAdmissions();
   }));
+}
+
+// ---------- Vue : Funnel candidatures (admissions individuelles) ----------
+const STAGE_LABEL = { nouveau: "Nouveau", contacte: "Contacté", entretien: "Entretien", admis: "Admis", inscrit: "Inscrit", refuse: "Refusé", perdu: "Perdu" };
+const STAGE_ORDER = ["nouveau", "contacte", "entretien", "admis", "inscrit", "refuse", "perdu"];
+let candFilter = { campusId: "", stage: "" };
+async function renderCandidatesInto(view) {
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const qs = new URLSearchParams();
+  if (candFilter.campusId) qs.set("campusId", candFilter.campusId);
+  if (candFilter.stage) qs.set("stage", candFilter.stage);
+  const cands = await api.get("/api/candidates?" + qs.toString()) || [];
+  const sf = await api.get("/api/settings");
+  const counts = Object.fromEntries(STAGE_ORDER.map((s) => [s, cands.filter((c) => c.stage === s).length]));
+  const card = (c) => `<div class="item cand-card" data-id="${c.id}">
+    <div class="grow"><div class="ttl">${esc(c.prenom)} ${esc(c.nom.toUpperCase())} ${c.source === "salesforce" ? '<span class="pill" title="Synchronisé depuis Salesforce">☁︎ SF</span>' : ""}</div>
+      <div class="sub muted">${c.formationSouhaitee ? esc(c.formationSouhaitee) + " · " : ""}${esc(c.campusName || "sans campus")}${c.email ? " · " + esc(c.email) : ""}</div></div>
+    <select class="txt cand-stage" data-id="${c.id}" style="width:130px;">${STAGE_ORDER.filter((s) => !["refuse", "perdu"].includes(s) || s === c.stage).map((s) => `<option value="${s}" ${s === c.stage ? "selected" : ""}>${STAGE_LABEL[s]}</option>`).join("")}</select>
+    ${c.stage === "admis" ? `<button class="btn-primary btn-sm cand-convert" data-id="${c.id}">Convertir</button>` : ""}
+  </div>`;
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <p style="margin:0;">Funnel individuel des candidatures${sf?.salesforce?.configured ? "" : " — saisie manuelle."} <span class="muted">${sf?.salesforce?.configured ? (sf.salesforce.lastSync ? "Dernière synchro Salesforce : " + new Date(sf.salesforce.lastSync).toLocaleString("fr-FR") : "Connecté, jamais synchronisé") : ""}</span></p>
+        <div style="display:flex;gap:8px;">
+          ${isAdmin() && sf?.salesforce?.configured ? `<button class="btn-ghost btn-sm" id="cand-sync">⟳ Synchroniser Salesforce</button>` : ""}
+          ${isAdmin() ? `<button class="btn-ghost btn-sm" id="cand-sf-cfg">Connecteur Salesforce</button>` : ""}
+          <button class="btn-primary btn-sm" id="cand-add">${I.plus}<span>Candidature</span></button>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+      <select class="txt" id="cand-stage-f" style="max-width:180px;"><option value="">Toutes étapes</option>${STAGE_ORDER.map((s) => `<option value="${s}" ${candFilter.stage === s ? "selected" : ""}>${STAGE_LABEL[s]} (${counts[s]})</option>`).join("")}</select>
+      ${isAdmin() ? `<select class="txt" id="cand-campus-f" style="max-width:220px;"><option value="">Tous les campus</option>${state.campuses.map((c) => `<option value="${c.id}" ${candFilter.campusId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}
+    </div>
+    ${cands.length ? `<div class="list">${cands.map(card).join("")}</div>` : `<p class="empty">Aucune candidature${candFilter.stage || candFilter.campusId ? " pour ce filtre" : " — ajoute la première ou connecte Salesforce"}.</p>`}`;
+  $("#cand-stage-f").addEventListener("change", () => { candFilter.stage = $("#cand-stage-f").value; renderAdmissions(); });
+  $("#cand-campus-f")?.addEventListener("change", () => { candFilter.campusId = $("#cand-campus-f").value; renderAdmissions(); });
+  $("#cand-add").addEventListener("click", () => openCandidateForm(null, () => renderAdmissions()));
+  $("#cand-sf-cfg")?.addEventListener("click", () => openSalesforceConfig(sf?.salesforce, () => renderAdmissions()));
+  $("#cand-sync")?.addEventListener("click", async () => {
+    const btn = $("#cand-sync"); btn.disabled = true; btn.textContent = "Synchro…";
+    const r = await api.post("/api/salesforce/sync");
+    if (r.error) alert(r.error);
+    else alert(`Synchronisation Salesforce : ${r.created} créée(s), ${r.updated} mise(s) à jour${r.sansCampus ? `, ${r.sansCampus} sans campus (à affecter manuellement)` : ""} sur ${r.total} lead(s).`);
+    renderAdmissions();
+  });
+  $$(".cand-stage").forEach((s) => s.addEventListener("change", async () => { await api.patch(`/api/candidates/${s.dataset.id}`, { stage: s.value }); renderAdmissions(); }));
+  $$(".cand-convert").forEach((b) => b.addEventListener("click", async () => {
+    const c = cands.find((x) => x.id === b.dataset.id);
+    const year = prompt(`Année scolaire d'inscription de ${c.prenom} ${c.nom} (ex. 2026-2027) — laisser vide pour créer le dossier sans inscrire tout de suite :`, "");
+    const r = await api.post(`/api/candidates/${b.dataset.id}/convert`, { schoolYear: year || undefined });
+    if (r.error) { alert(r.error); return; }
+    alert(`Dossier ${r.learnerCreated ? "créé" : "existant lié"} pour ${r.learner.prenom} ${r.learner.nom}${r.enrollment ? " — inscrit " + r.enrollment.schoolYear : ""}.`);
+    renderAdmissions();
+  }));
+}
+
+function openCandidateForm(c, onDone) {
+  c = c || {};
+  openModal(c.id ? "Modifier la candidature" : "Nouvelle candidature", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Nom *</label><input class="txt" id="cf-nom" value="${esc(c.nom || "")}"></div>
+      <div class="field"><label class="field-label">Prénom *</label><input class="txt" id="cf-prenom" value="${esc(c.prenom || "")}"></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Email</label><input class="txt" id="cf-email" type="email" value="${esc(c.email || "")}"></div>
+      <div class="field"><label class="field-label">Téléphone</label><input class="txt" id="cf-tel" value="${esc(c.telephone || "")}"></div>
+    </div>
+    <div class="field"><label class="field-label">Formation souhaitée</label><input class="txt" id="cf-form" value="${esc(c.formationSouhaitee || "")}"></div>
+    <div class="field"><label class="field-label">Campus *</label><select class="txt" id="cf-campus">${campusOptions(c.campusId)}</select></div>
+    <div class="field"><label class="field-label">Notes</label><textarea id="cf-notes" rows="2">${esc(c.notes || "")}</textarea></div>
+    <div class="actions"><button class="btn-primary" id="cf-save">${c.id ? "Enregistrer" : "Créer"}</button> <span class="status" id="cf-msg"></span></div>`);
+  $("#cf-save").onclick = async () => {
+    const body = { nom: $("#cf-nom").value.trim(), prenom: $("#cf-prenom").value.trim(), email: $("#cf-email").value.trim(), telephone: $("#cf-tel").value.trim(), formationSouhaitee: $("#cf-form").value.trim(), campusId: $("#cf-campus").value, notes: $("#cf-notes").value.trim() };
+    if (!body.nom || !body.prenom || !body.campusId) { $("#cf-msg").textContent = "Nom, prénom et campus sont requis."; return; }
+    const r = c.id ? await api.patch(`/api/candidates/${c.id}`, body) : await api.post("/api/candidates", body);
+    if (r.error) { $("#cf-msg").textContent = r.error; return; }
+    document.querySelector(".modal-bg")?.remove();
+    await onDone();
+  };
+}
+
+function openSalesforceConfig(sf, onDone) {
+  sf = sf || {};
+  openModal("Connecteur Salesforce", `
+    <p class="sub muted" style="margin-top:0;">Connected App Salesforce, flux <b>OAuth « client credentials »</b> (serveur à serveur, pas de mot de passe utilisateur). ${sf.configured ? `<span class="pill done">Configuré</span>` : ""}</p>
+    <div class="field"><label class="field-label">URL de l'instance</label><input class="txt" id="sfc-url" value="${esc(sf.instanceUrl || "")}" placeholder="https://votreorg.my.salesforce.com"></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Client ID</label><input class="txt" id="sfc-cid" value="${esc(sf.clientId || "")}"></div>
+      <div class="field"><label class="field-label">Client Secret ${sf.secretMask ? "(" + esc(sf.secretMask) + " — vide = inchangé)" : ""}</label><input class="txt" id="sfc-secret" type="password" placeholder="${sf.secretMask ? "inchangé" : ""}"></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Objet</label><input class="txt" id="sfc-obj" value="${esc(sf.object || "Lead")}"></div>
+      <div class="field"><label class="field-label">Version API</label><input class="txt" id="sfc-api" value="${esc(sf.apiVersion || "v59.0")}"></div>
+    </div>
+    <div class="field"><label class="field-label">Filtre SOQL (WHERE) <span class="muted">optionnel</span></label><input class="txt" id="sfc-where" value="${esc(sf.where || "")}" placeholder="RecordType.Name = 'Candidat formation'"></div>
+    <div class="field"><label class="field-label">Champs <span class="muted">(une ligne par champ : nom = ApiName__c)</span></label><textarea id="sfc-fields" rows="3" placeholder="nom = LastName&#10;prenom = FirstName&#10;formation = Formation_souhaitee__c&#10;campus = Campus__c">${esc(sf.fieldsText || "")}</textarea></div>
+    <div class="field"><label class="field-label">Correspondance statuts <span class="muted">(valeur Salesforce = étape Campus Manager)</span></label><textarea id="sfc-statusmap" rows="2" placeholder="Qualified = entretien&#10;Closed - Converted = inscrit">${esc(sf.statusMapText || "")}</textarea></div>
+    <div class="field"><label class="field-label">Correspondance campus <span class="muted">(valeur Salesforce = nom du campus)</span></label><textarea id="sfc-campusmap" rows="2" placeholder="PAR = Paris 15">${esc(sf.campusMapText || "")}</textarea></div>
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0;"><input type="checkbox" id="sfc-enabled" ${sf.enabled !== false ? "checked" : ""}> <span>Synchronisation quotidienne active</span></label>
+    ${sf.lastError ? `<p class="sub" style="color:var(--bad);">Dernière erreur : ${esc(sf.lastError.message)}</p>` : ""}
+    <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-primary" id="sfc-save">Enregistrer</button>
+      <button class="btn-ghost" id="sfc-test">Tester la connexion</button>
+    </div>
+    <div id="sfc-msg" class="sub" style="margin-top:8px;"></div>`);
+  const msg = (t, ok) => { const m = $("#sfc-msg"); m.textContent = t; m.style.color = ok ? "var(--good)" : "var(--bad)"; };
+  const save = async () => {
+    const body = {
+      instanceUrl: $("#sfc-url").value.trim(), clientId: $("#sfc-cid").value.trim(),
+      object: $("#sfc-obj").value.trim(), apiVersion: $("#sfc-api").value.trim(), where: $("#sfc-where").value.trim(),
+      fieldsText: $("#sfc-fields").value, statusMapText: $("#sfc-statusmap").value, campusMapText: $("#sfc-campusmap").value,
+      enabled: $("#sfc-enabled").checked,
+    };
+    const secret = $("#sfc-secret").value.trim();
+    if (secret) body.clientSecret = secret;
+    const r = await api.put("/api/settings", { salesforce: body });
+    if (r.error) { msg(r.error, false); return null; }
+    return r;
+  };
+  $("#sfc-save").onclick = async () => { if (await save()) { msg("Configuration enregistrée.", true); setTimeout(async () => { document.querySelector(".modal-bg")?.remove(); await onDone(); }, 500); } };
+  $("#sfc-test").onclick = async () => {
+    if (!(await save())) return;
+    msg("Test en cours…", true);
+    const r = await api.post("/api/salesforce/test");
+    if (r.error) msg(r.error, false);
+    else msg(`Connexion OK — org ${esc(r.instanceUrl)}${r.latestApi ? ", API la plus récente " + r.latestApi : ""}.`, true);
+  };
 }
 
 // ---------- Vue : Timeline ----------
@@ -4377,9 +4517,9 @@ async function renderReferentiels() {
         <div><b style="font-size:16px;">${esc(c.name)}</b>${c.diploma ? ` <span class="pill">${esc(c.diploma)}</span>` : ""}</div>
         <span><button class="btn-ghost btn-sm rf-assign" data-id="${c.id}">✨ Qui enseigne quoi</button>
         <button class="btn-ghost btn-sm rf-edit" data-id="${c.id}">✎</button></span></div>
-      <div class="muted" style="font-size:13px;margin:6px 0;">${(c.modules || []).length} modules · <b>${c.totalHours || 0} h</b>${(c.modules || []).some((m) => m.heures == null) ? ` · <span class="neg">${(c.modules || []).filter((m) => m.heures == null).length} sans volume</span>` : ""}</div>
-      <div class="list">${(c.modules || []).slice(0, 6).map((m) => `<div class="item"><span class="grow">${esc(m.code ? m.code + " · " : "")}${esc(m.label)}</span><span class="${m.heures == null ? "neg" : "muted"}">${m.heures == null ? "à renseigner" : m.heures + " h"}</span></div>`).join("")}
-        ${(c.modules || []).length > 6 ? `<p class="muted" style="font-size:12px;">+ ${(c.modules || []).length - 6} autres</p>` : ""}</div>
+      <div class="muted" style="font-size:13px;margin:6px 0;">${(c.modules || []).length} modules · <b>${c.weeklyByYear?.[1] || 0} h/sem</b> en 1re · <b>${c.weeklyByYear?.[2] || 0} h/sem</b> en 2e${(c.modules || []).some((m) => m.heuresSemaine == null && m.heures == null) ? ` · <span class="neg">${(c.modules || []).filter((m) => m.heuresSemaine == null && m.heures == null).length} sans volume</span>` : ""}</div>
+      <div class="list">${(c.modules || []).slice(0, 8).map((m) => `<div class="item"><span class="grow">${esc(m.code ? m.code + " · " : "")}${esc(m.label)}${m.year ? ` <span class="muted">(${m.year}re/e)</span>` : ""}</span><span class="${m.heuresSemaine == null && m.heures == null ? "neg" : "muted"}">${m.heuresSemaine != null ? m.heuresSemaine + " h/sem" : m.heures != null ? m.heures + " h/an" : "à renseigner"}</span></div>`).join("")}
+        ${(c.modules || []).length > 8 ? `<p class="muted" style="font-size:12px;">+ ${(c.modules || []).length - 8} autres</p>` : ""}</div>
     </div>`).join("")}</div>` : '<p class="empty">Aucun référentiel.<br><span class="muted">Crée-en un, ou dépose le référentiel officiel : les modules et volumes seront proposés à ta validation.</span></p>'}`;
   $("#rf-add").onclick = () => openCurriculumForm();
   $$(".rf-assign").forEach((b) => b.addEventListener("click", () => openAssignments(b.dataset.id)));
@@ -4414,10 +4554,11 @@ function proposalBox(p) {
 function openCurriculumForm(c) {
   const e = c || { modules: [] };
   const row = (m = {}) => `<tr>
-    <td><input class="txt cm" data-f="code" value="${esc(m.code || "")}" placeholder="M1"></td>
+    <td><input class="txt cm" data-f="code" value="${esc(m.code || "")}" placeholder="U1"></td>
     <td><input class="txt cm" data-f="label" value="${esc(m.label || "")}" placeholder="Intitulé"></td>
-    <td><input class="txt cm" data-f="heures" type="number" value="${m.heures ?? ""}" placeholder="h"></td>
-    <td><input class="txt cm" data-f="year" type="number" value="${m.year ?? ""}" placeholder="1"></td>
+    <td><input class="txt cm cm-w" data-f="heuresSemaine" type="number" step="0.5" value="${m.heuresSemaine ?? ""}" placeholder="h/sem"></td>
+    <td><input class="txt cm" data-f="year" type="number" min="1" max="3" value="${m.year ?? ""}" placeholder="1"></td>
+    <td><input class="txt cm" data-f="heures" type="number" value="${m.heures ?? ""}" placeholder="annuel"></td>
     <td><input class="txt cm" data-f="requiresRoom" value="${esc(m.requiresRoom || "")}" placeholder="salle exigée"></td>
     <td><button class="btn-ghost btn-sm cm-del">×</button></td></tr>`;
   openModal(c ? "Modifier le référentiel" : "Nouveau référentiel", `
@@ -4426,13 +4567,30 @@ function openCurriculumForm(c) {
       <div><label class="field-label">Diplôme</label><input class="txt cf" data-f="diploma" value="${esc(e.diploma || "")}" placeholder="BTS"></div>
       <div><label class="field-label">Niveau</label><input class="txt cf" data-f="level" value="${esc(e.level || "")}"></div>
     </div>
-    <p class="field-label" style="margin-top:12px;">Modules et volumes horaires</p>
-    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Code</th><th>Module</th><th>Heures</th><th>Année</th><th>Salle exigée</th><th></th></tr></thead>
+    <p class="field-label" style="margin-top:12px;">Maquette horaire</p>
+    <p class="hint muted">Saisis les <b>heures par semaine</b> — c'est la forme officielle d'une maquette de BTS (33 h en 1re année, 34 en 2e). La colonne « annuel » ne sert qu'aux formations décrites en volume global ; si les deux sont remplies, l'hebdomadaire fait foi.</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Code</th><th>Module</th><th>h / semaine</th><th>Année</th><th>Annuel <span class="muted">(optionnel)</span></th><th>Salle exigée</th><th></th></tr></thead>
       <tbody id="cm-body">${(e.modules || []).map(row).join("") || row()}</tbody></table></div>
-    <button class="btn-ghost btn-sm" id="cm-add" style="margin-top:6px;">+ Module</button>
+    <div class="row" style="gap:14px;margin-top:6px;align-items:center;">
+      <button class="btn-ghost btn-sm" id="cm-add">+ Module</button>
+      <span class="muted" id="cm-tot"></span>
+    </div>
     <div class="actions" style="margin-top:14px;">${c ? `<button class="btn-ghost btn-sm btn-danger" id="cf-del">Supprimer</button>` : ""}<button class="btn-primary" id="cf-save">Enregistrer</button></div>`);
-  $("#cm-add").onclick = () => $("#cm-body").insertAdjacentHTML("beforeend", row());
-  $("#cm-body").addEventListener("click", (ev) => { if (ev.target.closest(".cm-del")) ev.target.closest("tr").remove(); });
+  // Total hebdomadaire vivant, par année : le chiffre qu'un directeur vérifie.
+  const totaux = () => {
+    const par = {};
+    $$("#cm-body tr").forEach((tr) => {
+      const h = parseFloat($(".cm-w", tr)?.value || "");
+      const y = $('.cm[data-f="year"]', tr)?.value || "?";
+      if (!isNaN(h)) par[y] = Math.round(((par[y] || 0) + h) * 10) / 10;
+    });
+    const txt = Object.entries(par).sort().map(([y, h]) => `${y === "?" ? "sans année" : y + "re/e année"} : ${h} h/semaine`).join("  ·  ");
+    $("#cm-tot").textContent = txt || "";
+  };
+  $("#cm-add").onclick = () => { $("#cm-body").insertAdjacentHTML("beforeend", row()); totaux(); };
+  $("#cm-body").addEventListener("click", (ev) => { if (ev.target.closest(".cm-del")) { ev.target.closest("tr").remove(); totaux(); } });
+  $("#cm-body").addEventListener("input", totaux);
+  totaux();
   $("#cf-save").onclick = async () => {
     const b = {}; $$(".cf").forEach((i) => (b[i.dataset.f] = i.value));
     if (!String(b.name || "").trim()) return;

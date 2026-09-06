@@ -73,24 +73,44 @@ async function seed() {
   const filieres = (await get("/api/campuses")).find((c) => c.id === campus.id).filieres;
   console.log(`   ${campus.name} — ${filieres.length} filières, ${filieres.reduce((a, f) => a + (f.effectif || 0), 0)} étudiants`);
 
-  step(2, "Référentiel (volumes ILLUSTRATIFS — à remplacer par l'import du PDF officiel)");
+  step(2, "Référentiel — maquette officielle du BTS Opticien-Lunetier");
+  // Structure des unités d'après le référentiel officiel (arrêté du 3 septembre 1997
+  // modifié) : U1 français, U2 LV1, U3 économie-gestion, U41 mathématiques,
+  // U42 optique géométrique et physique, U43 étude technique des systèmes optiques,
+  // U61 examen de vue / prise de mesures, U62 contrôle d'équipement et réalisation
+  // technique, U63 activités professionnelles, UF1 LV2 facultative.
+  // Volumes hebdomadaires ~33 h en 1re année et ~34 h en 2e : à confirmer avec la
+  // grille de TON établissement (l'import du PDF officiel les remplacera).
   const cur = await post("/api/curricula", {
-    name: `BTS Opticien-Lunetier — ${TAG}`, diploma: "BTS", level: "Niveau 5",
-    source: "Saisie de démonstration",
+    name: `BTS Opticien-Lunetier — ${TAG}`, diploma: "BTS", level: "Niveau 5 (bac+2)",
+    source: "Structure officielle ; volumes à confirmer par import du référentiel",
     modules: [
-      { code: "U1", label: "Culture générale et expression", heures: 120, year: 1 },
-      { code: "U2", label: "Langue vivante (anglais)", heures: 90, year: 1 },
-      { code: "U3", label: "Mathématiques et sciences physiques", heures: 150, year: 1 },
-      { code: "U41", label: "Optique géométrique et physique", heures: 180, year: 1 },
-      { code: "U42", label: "Travaux pratiques d'optique", heures: 120, year: 1, requiresRoom: "optique" },
-      { code: "U51", label: "Analyse de la vision", heures: 140, year: 2, requiresRoom: "optique" },
-      { code: "U52", label: "Contactologie", heures: 110, year: 2, requiresRoom: "optique" },
-      { code: "U6", label: "Gestion et développement commercial", heures: 100, year: 2 },
-      { code: "U7", label: "Atelier de montage-usinage", heures: 90, year: 1, requiresRoom: "atelier" },
+      // --- 1re année ---
+      { code: "U1", label: "Culture générale et expression", heuresSemaine: 2, year: 1 },
+      { code: "U2", label: "Langue vivante 1 — anglais", heuresSemaine: 3, year: 1 },
+      { code: "U3", label: "Économie et gestion de l'entreprise", heuresSemaine: 4, year: 1 },
+      { code: "U41", label: "Mathématiques", heuresSemaine: 2, year: 1 },
+      { code: "U42", label: "Optique géométrique et physique", heuresSemaine: 5, year: 1 },
+      { code: "U43", label: "Étude technique des systèmes optiques", heuresSemaine: 4, year: 1, requiresRoom: "optique" },
+      { code: "U61", label: "Examen de vue et prise de mesures", heuresSemaine: 6, year: 1, requiresRoom: "optique" },
+      { code: "U62", label: "Contrôle d'équipement et réalisation technique", heuresSemaine: 6, year: 1, requiresRoom: "atelier" },
+      { code: "UF1", label: "Langue vivante 2 (facultatif)", heuresSemaine: 1, year: 1 },
+      // --- 2e année ---
+      { code: "U1", label: "Culture générale et expression", heuresSemaine: 2, year: 2 },
+      { code: "U2", label: "Langue vivante 1 — anglais", heuresSemaine: 3, year: 2 },
+      { code: "U3", label: "Économie, gestion et droit de l'optique", heuresSemaine: 4, year: 2 },
+      { code: "U41", label: "Mathématiques", heuresSemaine: 2, year: 2 },
+      { code: "U42", label: "Optique physiologique", heuresSemaine: 4, year: 2 },
+      { code: "U43", label: "Étude technique des systèmes optiques", heuresSemaine: 3, year: 2, requiresRoom: "optique" },
+      { code: "U61", label: "Analyse de la vision et contactologie", heuresSemaine: 7, year: 2, requiresRoom: "optique" },
+      { code: "U62", label: "Réalisation technique et montage", heuresSemaine: 6, year: 2, requiresRoom: "atelier" },
+      { code: "U63", label: "Activités professionnelles et communication", heuresSemaine: 2, year: 2 },
+      { code: "UF1", label: "Langue vivante 2 (facultatif)", heuresSemaine: 1, year: 2 },
     ],
   });
-  const tot = (await get("/api/curricula")).find((c) => c.id === cur.id).totalHours;
-  console.log(`   ${cur.modules.length} modules, ${tot} h au total`);
+  const meta = (await get("/api/curricula")).find((c) => c.id === cur.id);
+  console.log(`   ${cur.modules.length} unités — ${meta.weeklyByYear[1]} h/semaine en 1re année, ${meta.weeklyByYear[2]} h/semaine en 2e`);
+  console.log("   (structure officielle ; les volumes exacts se remplacent par l'import du PDF)");
 
   step(3, "Salles — avec leurs spécificités");
   const rooms = [];
@@ -98,32 +118,53 @@ async function seed() {
     { name: "A101 — Amphi", places: 80, kind: "standard" },
     { name: "B201", places: 32, kind: "standard" },
     { name: "B202", places: 32, kind: "standard" },
-    { name: "Salle d'optique", places: 24, kind: "optique", equipment: ["banc d'optique", "réfracteur", "frontofocomètre"] },
-    { name: "Atelier montage", places: 20, kind: "atelier", equipment: ["meuleuse", "poste de montage"] },
+    { name: "Salle d'optique", places: 28, kind: "optique", equipment: ["banc d'optique", "réfracteur", "frontofocomètre"] },
+    { name: "Salle d'optique 2", places: 28, kind: "optique", equipment: ["réfracteur"] },
+    { name: "Atelier montage", places: 28, kind: "atelier", equipment: ["meuleuse", "poste de montage"] },
   ]) rooms.push(await post("/api/rooms", { campusId: campus.id, ...r }));
   console.log(`   ${rooms.length} salles dont ${rooms.filter((r) => r.kind !== "standard").length} spécialisées`);
+
+  // Horaires d'ouverture réels : le mercredi après-midi est fermé, le vendredi
+  // s'arrête plus tôt. La grille de génération s'y cale au lieu d'un 8 h–18 h partout.
+  await call("PUT", `/api/campuses/${campus.id}/hours`, { hours: {
+    lun: [["08:00", "18:00"]], mar: [["08:00", "18:00"]],
+    mer: [["08:00", "12:30"]], jeu: [["08:00", "18:00"]], ven: [["08:00", "17:00"]], sam: [],
+  } });
+  console.log("   horaires : lun-jeu 8h-18h, mer matin seulement, ven jusqu'à 17h, samedi fermé");
 
   step(4, "Professeurs et prestataires");
   const dispoLarge = { lun: [["08:00", "18:00"]], mar: [["08:00", "18:00"]], mer: [["08:00", "18:00"]], jeu: [["08:00", "18:00"]], ven: [["08:00", "17:00"]] };
   const teachers = [];
   for (const t of [
     { name: `Marie Dupont — ${TAG}`, status: "permanent", heuresAnnuelles: 620, tauxHoraire: 48,
-      subjects: ["Optique géométrique et physique", "Travaux pratiques d'optique"], availability: dispoLarge, email: "demo.dupont@example.org" },
+      subjects: ["Optique géométrique et physique", "Optique physiologique", "Étude technique des systèmes optiques"], availability: dispoLarge, email: "demo.dupont@example.org" },
     { name: `Paul Roy — ${TAG}`, status: "permanent", heuresAnnuelles: 580, tauxHoraire: 46,
-      subjects: ["Analyse de la vision", "Contactologie"], availability: dispoLarge, email: "demo.roy@example.org" },
+      subjects: ["Examen de vue et prise de mesures", "Analyse de la vision et contactologie"], availability: dispoLarge, email: "demo.roy@example.org" },
     { name: `Sophie Bernard — ${TAG}`, status: "vacataire", heuresAnnuelles: 220, tauxHoraire: 52,
-      subjects: ["Mathématiques et sciences physiques"],
+      subjects: ["Mathématiques"],
       // Un vacataire n'est là que deux jours : c'est la contrainte qui coince en premier.
       availability: { mar: [["09:00", "17:00"]], jeu: [["09:00", "17:00"]] } },
     { name: `Claire Moreau — ${TAG}`, status: "vacataire", heuresAnnuelles: 200, tauxHoraire: 44,
-      subjects: ["Culture générale et expression", "Langue vivante (anglais)"],
+      subjects: ["Culture générale et expression", "Langue vivante 1 — anglais", "Langue vivante 2 (facultatif)"],
       availability: { lun: [["09:00", "16:00"]], mer: [["09:00", "16:00"]], ven: [["09:00", "16:00"]] } },
     { name: `Cabinet Optic Formation — ${TAG}`, status: "prestataire", company: "Optic Formation SARL",
       contractRef: "BC-2026-114", heuresAnnuelles: 180, tauxHoraire: 85,
-      subjects: ["Atelier de montage-usinage", "Gestion et développement commercial"],
+      subjects: ["Contrôle d'équipement et réalisation technique", "Réalisation technique et montage",
+                 "Économie et gestion de l'entreprise", "Économie, gestion et droit de l'optique",
+                 "Activités professionnelles et communication"],
       availability: { mer: [["08:00", "18:00"]], ven: [["08:00", "18:00"]] } },
+    { name: `Julien Faure — ${TAG}`, status: "permanent", heuresAnnuelles: 600, tauxHoraire: 47,
+      subjects: ["Examen de vue et prise de mesures", "Analyse de la vision et contactologie", "Étude technique des systèmes optiques"], availability: dispoLarge },
+    { name: `Nadia Bensaïd — ${TAG}`, status: "permanent", heuresAnnuelles: 590, tauxHoraire: 46,
+      subjects: ["Contrôle d'équipement et réalisation technique", "Réalisation technique et montage"], availability: dispoLarge },
+    { name: `Thomas Leroy — ${TAG}`, status: "vacataire", heuresAnnuelles: 300, tauxHoraire: 50,
+      subjects: ["Économie et gestion de l'entreprise", "Économie, gestion et droit de l'optique", "Activités professionnelles et communication"],
+      availability: { lun: [["08:00", "18:00"]], mar: [["08:00", "18:00"]], jeu: [["08:00", "18:00"]] } },
+    { name: `Hélène Girard — ${TAG}`, status: "vacataire", heuresAnnuelles: 280, tauxHoraire: 45,
+      subjects: ["Mathématiques", "Optique géométrique et physique"],
+      availability: { lun: [["08:00", "18:00"]], mer: [["08:00", "18:00"]], ven: [["08:00", "17:00"]] } },
   ]) teachers.push(await post("/api/teachers", { ...t, campusIds: [campus.id] }));
-  console.log(`   ${teachers.length} intervenants, dont 1 prestataire (${teachers.find((t) => t.status === "prestataire").company})`);
+  console.log(`   ${teachers.length} intervenants (${teachers.filter((t) => t.status === "permanent").length} permanents, ${teachers.filter((t) => t.status === "vacataire").length} vacataires, 1 prestataire)`);
 
   step(5, "Classes — c'est ICI que le campus est relié au diplôme");
   const classes = [];
@@ -162,7 +203,7 @@ async function seed() {
   console.log(`   ${periods.length} périodes — dont ${periods.filter((p) => p.kind === "entreprise").length} semaines en entreprise pour la 2e année (alternance)`);
 
   step(7, "Génération de la semaine type");
-  const gen = await post("/api/schedule/generate", { campusId: campus.id, seed: 2026, weekOf: "2026-09-07", sessionMinutes: 120, weeksInYear: 34 });
+  const gen = await post("/api/schedule/generate", { campusId: campus.id, seed: 2026, weekOf: "2026-09-07", sessionMinutes: 120, weeksInYear: 36, maxHoursPerDayClass: 8, maxHoursPerDayTeacher: 7, restarts: 20 });
   console.log(`   ${gen.stats.placed}/${gen.stats.demanded} séances placées (${gen.stats.coverage} %) — semaine du ${gen.weekOf}`);
   console.log(`   confort : ${gen.score.classGaps} h de trous étudiants, écart de charge ${gen.score.loadStdev}`);
   for (const d of gen.diagnosis || []) { console.log(`   ⚠ ${d.message}`); console.log(`     → ${d.remedy}`); }
@@ -174,7 +215,7 @@ async function seed() {
   step(9, "Contrôle");
   for (const k of classes) {
     const cov = await get(`/api/schedule/coverage?classId=${k.id}`);
-    console.log(`   ${k.name} : ${cov.total.planned} h posées / ${cov.total.due} h dues (${cov.total.pct} %)`);
+    console.log(`   ${k.name} : ${cov.weeklyDue} h/semaine dues — ${cov.total.planned} h posées / ${cov.total.due} h sur ${cov.weeks} semaines (${cov.total.pct} %)`);
   }
   const svc = await get(`/api/schedule/service?campusId=${campus.id}`);
   console.log(`   coût du planning : ${Math.round(svc.cost).toLocaleString("fr-FR")} € — écart de charge ${svc.equity.stdev} h`);

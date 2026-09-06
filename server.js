@@ -27,6 +27,7 @@ import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRat
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
 import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
+import { testConnection as sfTestConnection, fetchCandidates as sfFetchCandidates } from "./lib/salesforce.js";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 
@@ -1263,6 +1264,112 @@ app.delete("/api/documents/:id", requireAuth, (req, res) => {
 });
 
 // ===== Centre de notifications (agrégat proactif) =====
+// ===== Candidatures (funnel admissions) + connecteur Salesforce =====
+function candidateGuard(req, res) {
+  const c = store.getCandidate(req.params.id);
+  if (!c) { res.status(404).json({ error: "candidature introuvable" }); return null; }
+  if (c.campusId && !assertCampus(req, res, c.campusId)) return null;
+  return c;
+}
+
+app.get("/api/candidates", requireAuth, (req, res) => {
+  const { campusId, stage, q } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let items = store.listCandidates({ campusId, stage, q });
+  if (!campusId) items = items.filter((c) => !c.campusId ? req.user?.role === "admin" : canCampus(req, c.campusId));
+  const names = new Map(store.listCampuses().map((c) => [c.id, c.name]));
+  res.json(items.map((c) => ({ ...c, campusName: names.get(c.campusId) || null })));
+});
+
+app.post("/api/candidates", requireAuth, (req, res) => {
+  const { campusId, nom, prenom } = req.body || {};
+  if (!String(nom || "").trim() || !String(prenom || "").trim()) return res.status(400).json({ error: "nom et prénom requis" });
+  if (campusId && !assertCampus(req, res, campusId)) return;
+  if (!campusId && req.user?.role !== "admin") return res.status(400).json({ error: "campus requis" });
+  const c = store.addCandidate({ ...req.body, source: "manuel" });
+  logAudit(req, "create", "candidature", `${c.prenom} ${c.nom}`);
+  res.json(c);
+});
+
+app.patch("/api/candidates/:id", requireAuth, (req, res) => {
+  const c = candidateGuard(req, res);
+  if (!c) return;
+  if (req.body?.campusId && req.body.campusId !== c.campusId && !assertCampus(req, res, req.body.campusId)) return;
+  const upd = store.updateCandidate(c.id, req.body || {});
+  logAudit(req, "update", "candidature", `${upd.prenom} ${upd.nom} (${upd.stage})`);
+  res.json(upd);
+});
+
+app.delete("/api/candidates/:id", requireAuth, (req, res) => {
+  const c = candidateGuard(req, res);
+  if (!c) return;
+  store.deleteCandidate(c.id);
+  logAudit(req, "delete", "candidature", `${c.prenom} ${c.nom}`);
+  res.json({ ok: true });
+});
+
+// Conversion admis → dossier apprenant (sans re-saisie)
+app.post("/api/candidates/:id/convert", requireAuth, (req, res) => {
+  const c = candidateGuard(req, res);
+  if (!c) return;
+  const r = store.convertCandidate(c.id, { classId: req.body?.classId, schoolYear: req.body?.schoolYear });
+  if (!r) return res.status(404).json({ error: "candidature introuvable" });
+  if (r.error) return res.status(409).json(r);
+  logAudit(req, "create", "apprenant", `${r.learner.prenom} ${r.learner.nom} (conversion candidature${r.learnerCreated ? "" : " — dossier existant lié"})`);
+  res.json(r);
+});
+
+function sfConfig() {
+  const sf = store.getSettings().salesforce || {};
+  return sf.instanceUrl && sf.clientId && sf.clientSecret ? sf : null;
+}
+
+async function syncSalesforce() {
+  const cfg = sfConfig();
+  if (!cfg || cfg.enabled === false) return null;
+  const campuses = store.listCampuses();
+  try {
+    const rows = await sfFetchCandidates({ ...cfg, fields: Object.fromEntries(Object.entries(sfParsedFields(cfg)).filter(([, v]) => v)) }, campuses);
+    const report = { created: 0, updated: 0, sansCampus: 0, total: rows.length };
+    for (const row of rows) {
+      if (!row.sfId) continue;
+      if (!row.campusId) report.sansCampus++;
+      const r = store.upsertCandidateFromSf(row);
+      report[r.action === "created" ? "created" : "updated"]++;
+    }
+    store.updateSettings({ salesforce: { ...cfg, lastSync: new Date().toISOString(), lastError: null } });
+    return report;
+  } catch (e) {
+    store.updateSettings({ salesforce: { ...cfg, lastError: { message: e.message, at: new Date().toISOString() } } });
+    throw e;
+  }
+}
+// fieldsText « cle = ChampSF » → objet fields du client
+function sfParsedFields(cfg) {
+  const out = {};
+  for (const line of String(cfg.fieldsText || "").split(/\r?\n/)) {
+    const i = line.indexOf("=");
+    if (i < 1) continue;
+    out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
+app.post("/api/salesforce/test", requireAuth, requireAdmin, async (req, res) => {
+  const cfg = sfConfig();
+  if (!cfg) return res.status(400).json({ error: "connecteur non configuré (URL + client id + secret requis)" });
+  try { res.json(await sfTestConnection(cfg)); } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+app.post("/api/salesforce/sync", requireAuth, requireAdmin, async (req, res) => {
+  if (!sfConfig()) return res.status(400).json({ error: "connecteur non configuré (URL + client id + secret requis)" });
+  try {
+    const report = await syncSalesforce();
+    logAudit(req, "seed", "salesforce", `sync : ${report.created} créées, ${report.updated} mises à jour, ${report.sansCampus} sans campus`);
+    res.json(report);
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // ===== Apprenants & inscriptions (ERP Bloc 1) =====
 // Cloisonnement : un directeur ne voit que les apprenants de ses campus.
 function learnerGuard(req, res) {
@@ -2565,12 +2672,36 @@ const DEFAULT_THRESHOLDS = { occupancy: 70, qualiopiMonths: 3, admissionsWarn: 8
 function thresholds() { return { ...DEFAULT_THRESHOLDS, ...(store.getSettings().thresholds || {}) }; }
 app.get("/api/settings", requireAuth, requireAdmin, (req, res) => {
   const s = store.getSettings();
-  res.json({ thresholds: { ...DEFAULT_THRESHOLDS, ...(s.thresholds || {}) }, board: s.board || { enabled: false, recipients: "" } });
+  const sf = s.salesforce || {};
+  res.json({ thresholds: { ...DEFAULT_THRESHOLDS, ...(s.thresholds || {}) }, board: s.board || { enabled: false, recipients: "" },
+    salesforce: { configured: !!(sf.instanceUrl && sf.clientId && sf.clientSecret), enabled: sf.enabled ?? true,
+      instanceUrl: sf.instanceUrl || "", clientId: sf.clientId || "", secretMask: sf.clientSecret ? "•••" + String(sf.clientSecret).slice(-4) : "",
+      object: sf.object || "Lead", where: sf.where || "", apiVersion: sf.apiVersion || "v59.0",
+      fieldsText: sf.fieldsText || "", statusMapText: sf.statusMapText || "", campusMapText: sf.campusMapText || "",
+      lastSync: sf.lastSync || null, lastError: sf.lastError || null } });
 });
 app.put("/api/settings", requireAuth, requireAdmin, (req, res) => {
   const patch = {};
   if (req.body?.thresholds) { const t = {}; for (const k of Object.keys(DEFAULT_THRESHOLDS)) if (req.body.thresholds[k] != null && req.body.thresholds[k] !== "") t[k] = Number(req.body.thresholds[k]); patch.thresholds = t; }
   if (req.body?.board) patch.board = { enabled: !!req.body.board.enabled, recipients: String(req.body.board.recipients || "").trim() };
+  if (req.body?.salesforce) {
+    const prev = store.getSettings().salesforce || {};
+    const b = req.body.salesforce;
+    if (b.instanceUrl && !/^https:\/\//.test(String(b.instanceUrl))) return res.status(400).json({ error: "URL Salesforce invalide (https attendu)" });
+    patch.salesforce = {
+      ...prev,
+      instanceUrl: String(b.instanceUrl ?? prev.instanceUrl ?? "").trim().replace(/\/+$/, ""),
+      clientId: String(b.clientId ?? prev.clientId ?? "").trim(),
+      clientSecret: b.clientSecret ? String(b.clientSecret).trim() : (prev.clientSecret || ""),
+      object: String(b.object ?? prev.object ?? "Lead").trim() || "Lead",
+      where: String(b.where ?? prev.where ?? "").trim(),
+      apiVersion: String(b.apiVersion ?? prev.apiVersion ?? "v59.0").trim(),
+      fieldsText: String(b.fieldsText ?? prev.fieldsText ?? ""),
+      statusMapText: String(b.statusMapText ?? prev.statusMapText ?? ""),
+      campusMapText: String(b.campusMapText ?? prev.campusMapText ?? ""),
+      enabled: b.enabled !== undefined ? !!b.enabled : (prev.enabled ?? true),
+    };
+  }
   const s = store.updateSettings(patch);
   logAudit(req, "update", "settings", "seuils / board pack");
   res.json(s);
@@ -2753,6 +2884,7 @@ function conflictCtx(s) {
     module: s.moduleId ? modules.get(s.moduleId) : null,
     classSize: k ? store.classSize(k) : null,
     periods: store.listPeriods({ campusId: s.campusId }),
+    amplitude: s.campusId ? store.campusAmplitude(s.campusId) : undefined,
   };
 }
 // Un directeur ne voit et ne touche que ses campus.
@@ -2805,7 +2937,10 @@ app.post("/api/teachers/import-contacts", requireAuth, requireAdmin, (req, res) 
 
 // --- Référentiels (réseau) ---
 app.get("/api/curricula", requireAuth, (req, res) => {
-  res.json(store.listCurricula().map((c) => ({ ...c, totalHours: store.curriculumHours(c) })));
+  res.json(store.listCurricula().map((c) => ({
+    ...c, totalHours: store.curriculumHours(c),
+    weeklyByYear: { 1: store.curriculumWeekly(c, 1), 2: store.curriculumWeekly(c, 2) },
+  })));
 });
 app.post("/api/curricula", requireAuth, requireAdmin, (req, res) => {
   if (!String(req.body?.name || "").trim()) return res.status(400).json({ error: "intitulé requis" });
@@ -2873,6 +3008,15 @@ app.post("/api/curricula/proposal/discard", requireAuth, requireAdmin, (req, res
   store.clearCurriculumProposal(req.user.id);
   logAudit(req, "discard", "curriculum", "proposition écartée");
   res.json({ ok: true });
+});
+
+// Horaires d'ouverture du campus — l'amplitude réelle, jour par jour.
+app.get("/api/campuses/:id/hours", campusGuard, (req, res) => res.json(store.getCampusHours(req.params.id)));
+app.put("/api/campuses/:id/hours", campusGuard, (req, res) => {
+  const h = store.setCampusHours(req.params.id, req.body?.hours || {});
+  if (h == null) return res.status(404).json({ error: "introuvable" });
+  logAudit(req, "update", "campus", "horaires d'ouverture");
+  res.json(h);
 });
 
 // --- Salles, classes, périodes (par campus) ---
@@ -3010,6 +3154,7 @@ app.post("/api/schedule/generate", requireAuth, requireAdmin, (req, res) => {
     classes, curricula: store.listCurricula(),
     teachers: store.listTeachers({ campusId }).filter((t) => t.active !== false),
     rooms: store.listRooms({ campusId }), sizes, probeDates,
+    openingHours: campusId ? store.getCampusHours(campusId) : null,
     limits: SERVICE_LIMITS,
   }, opts);
   res.json({ ...out, weekOf: monday, options: { ...GEN_DEFAULTS, ...opts } });
@@ -3053,7 +3198,14 @@ app.get("/api/schedule/coverage", requireAuth, (req, res) => {
   const cur = store.getCurriculum(k.curriculumId);
   if (!cur) return res.status(400).json({ error: "aucun référentiel rattaché à cette classe" });
   const sessions = sessionstore.listSessions({ classId: k.id });
-  res.json({ classId: k.id, className: k.name, curriculum: cur.name, ...coverage(cur, sessions, { today: new Date().toISOString().slice(0, 10), endDate: req.query.endDate, year: k.year }) });
+  // Semaines de cours reelles de CETTE classe : c'est ce qui convertit la maquette
+  // hebdomadaire en volume annuel du. Une alternance en a deux fois moins.
+  const weeks = k.weeksAtSchool || (k.modalite === "alternance" ? 18 : 36);
+  res.json({
+    classId: k.id, className: k.name, curriculum: cur.name, weeks,
+    weeklyDue: store.curriculumWeekly(cur, k.year),
+    ...coverage(cur, sessions, { today: new Date().toISOString().slice(0, 10), endDate: req.query.endDate, year: k.year, weeks }),
+  });
 });
 app.get("/api/schedule/service", requireAuth, (req, res) => {
   const campusId = req.query.campusId;
@@ -3238,6 +3390,18 @@ if (process.env.SI_SYNC !== "off" && cron.validate(siCron)) {
     }
   }, { timezone: "Europe/Paris" });
   console.log(`[si] sync planifiee (${siCron}, Europe/Paris)`);
+}
+
+// --- Sync Salesforce quotidienne (funnel admissions) ---
+const sfCron = process.env.SF_CRON || "45 6 * * *";
+if (process.env.SF_SYNC !== "off" && cron.validate(sfCron)) {
+  cron.schedule(sfCron, async () => {
+    try {
+      const r = await syncSalesforce();
+      if (r) console.log(`[salesforce] sync : ${r.created} creees, ${r.updated} maj, ${r.sansCampus} sans campus`);
+    } catch (e) { console.error("[salesforce] echec :", e?.message || e); }
+  }, { timezone: "Europe/Paris" });
+  console.log(`[salesforce] sync planifiee (${sfCron}, Europe/Paris)`);
 }
 
 app.listen(PORT, () => {
