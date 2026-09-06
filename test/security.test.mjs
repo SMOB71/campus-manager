@@ -122,6 +122,28 @@ test("SI campus : config admin-only, jeton jamais renvoyé, overview scopé", as
   assert.equal(dOver.length, 0);
 });
 
+test("apprenants : cloisonnement directeur + garde-fous", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Apprenants" } })).json();
+  // création sans nom → 400 ; complète → 200
+  assert.equal((await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id } })).status, 400);
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Test", prenom: "Eleve" } })).json();
+  assert.ok(l.id);
+  // inscription sans année → 400 ; puis doublon actif → 409
+  assert.equal((await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: {} })).status, 400);
+  assert.equal((await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } })).status, 200);
+  assert.equal((await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } })).status, 409);
+  // un directeur sans campus assigné ne voit rien et ne touche à rien
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await (await req("/api/learners", { cookie: d.cookie })).json()).length, 0);
+  assert.equal((await req(`/api/learners/${l.id}`, { cookie: d.cookie })).status, 403);
+  assert.equal((await req(`/api/learners/${l.id}`, { method: "PATCH", cookie: d.cookie, csrf: d.csrf, json: { nom: "Pirate" } })).status, 403);
+  // suppression réservée à l'admin
+  assert.equal((await req(`/api/learners/${l.id}`, { method: "DELETE", cookie: d.cookie, csrf: d.csrf })).status, 403);
+  assert.equal((await req(`/api/learners/${l.id}`, { method: "DELETE", ...opts })).status, 200);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

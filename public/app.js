@@ -38,6 +38,7 @@ const I = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
   net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
   funnel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18l-7 8v7l-4 2v-9z"/></svg>',
+  grad: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4L2 9l10 5 10-5z"/><path d="M6 11.5V16c0 1.5 2.7 3 6 3s6-1.5 6-3v-4.5"/><path d="M22 9v5"/></svg>',
   plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5"/></svg>',
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6M21 20a6 6 0 0 0-4-5.6"/></svg>',
@@ -315,6 +316,7 @@ const NAV = [
   { id: "revues", label: "Revues mensuelles", icon: I.hist, admin: true, group: "Décisions" },
   { id: "reseau", label: "Réseau", icon: I.net, admin: true, group: "Réseau" },
   { id: "campus", label: "Campus", icon: I.campus, group: "Réseau" },
+  { id: "apprenants", label: "Apprenants", icon: I.grad, group: "Réseau" },
   { id: "directeurs", label: "Directeurs", icon: I.users, admin: true, group: "Réseau" },
   { id: "tournee", label: "Tournée", icon: I.route, group: "Réseau" },
   { id: "ouvertures", label: "Ouvertures", icon: I.rocket, admin: true, group: "Réseau" },
@@ -386,7 +388,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, planning: renderPlanning, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, planning: renderPlanning, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -3181,6 +3183,162 @@ async function renderTournee() {
     await api.post("/api/visits", { campusId: b.dataset.id, date, type });
     renderTournee();
   }));
+}
+
+// ---------- Vue : Apprenants (dossiers & inscriptions) ----------
+const ENR_BADGE = { inscrit: ["Inscrit", "done"], sorti: ["Sorti", ""], diplome: ["Diplômé", "done"], rupture: ["Rupture", "overdue"], abandon: ["Abandon", "overdue"] };
+let appFilter = { campusId: "", q: "" };
+async function renderApprenants() {
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="add-learner">${I.plus}<span>Apprenant</span></button>`;
+  $("#add-learner").addEventListener("click", () => openLearnerForm(null));
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const qs = new URLSearchParams();
+  if (appFilter.campusId) qs.set("campusId", appFilter.campusId);
+  if (appFilter.q) qs.set("q", appFilter.q);
+  const rows = await api.get("/api/learners?" + qs.toString()) || [];
+  const actifs = rows.filter((l) => l.enrollment?.statut === "inscrit").length;
+  const ruptures = rows.filter((l) => ["rupture", "abandon"].includes(l.enrollment?.statut)).length;
+  const row = (l) => {
+    const e = l.enrollment;
+    const [lbl, cls] = ENR_BADGE[e?.statut] || ["Sans inscription", "warn"];
+    return `<div class="item">
+      <div class="grow"><div class="ttl">${esc(l.nom.toUpperCase())} ${esc(l.prenom)} <span class="pill ${cls}">${lbl}</span>${l.rqth ? ' <span class="pill" title="Reconnaissance de la qualité de travailleur handicapé">RQTH</span>' : ""}</div>
+        <div class="sub muted">${e ? esc(e.schoolYear) + (e.className ? " · " + esc(e.className) : "") + " · " : ""}${l.ine ? "INE " + esc(l.ine) + " · " : ""}${esc(state.campuses.find((c) => c.id === l.campusId)?.name || "")}</div></div>
+      <button class="btn-ghost btn-sm lr-open" data-id="${l.id}">Dossier</button>
+    </div>`;
+  };
+  view.innerHTML = `
+    <div class="kpis" style="margin-bottom:12px;">
+      <div class="k"><div class="v">${rows.length}</div><div class="l">dossiers</div></div>
+      <div class="k"><div class="v">${actifs}</div><div class="l">inscrits</div></div>
+      <div class="k${ruptures ? " k-bad" : ""}"><div class="v">${ruptures}</div><div class="l">ruptures / abandons</div></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+      <input class="txt" id="lr-q" placeholder="Rechercher (nom, INE, email…)" value="${esc(appFilter.q)}" style="max-width:280px;">
+      ${isAdmin() ? `<select class="txt" id="lr-campus" style="max-width:220px;"><option value="">Tous les campus</option>${state.campuses.map((c) => `<option value="${c.id}" ${appFilter.campusId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}
+    </div>
+    ${rows.length ? `<div class="list">${rows.map(row).join("")}</div>` : `<p class="empty">Aucun dossier apprenant${appFilter.q ? " pour cette recherche" : " — crée le premier avec « + Apprenant »"}.</p>`}`;
+  let qTimer;
+  $("#lr-q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(() => { appFilter.q = $("#lr-q").value.trim(); renderApprenants(); }, 300); });
+  $("#lr-campus")?.addEventListener("change", () => { appFilter.campusId = $("#lr-campus").value; renderApprenants(); });
+  $$(".lr-open").forEach((b) => b.addEventListener("click", () => openLearnerFiche(b.dataset.id)));
+}
+
+function openLearnerForm(learner, onDone) {
+  const l = learner || {};
+  openModal(l.id ? `Modifier — ${l.prenom} ${l.nom}` : "Nouvel apprenant", `
+    <div class="grid" style="grid-template-columns:110px 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Civilité</label><select class="txt" id="lf-civ">${["", "M.", "Mme", "Autre"].map((c) => `<option ${c === (l.civilite || "") ? "selected" : ""}>${c}</option>`).join("")}</select></div>
+      <div class="field"><label class="field-label">Nom *</label><input class="txt" id="lf-nom" value="${esc(l.nom || "")}"></div>
+      <div class="field"><label class="field-label">Prénom *</label><input class="txt" id="lf-prenom" value="${esc(l.prenom || "")}"></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Né(e) le</label><input class="txt" id="lf-ddn" type="date" value="${esc(l.dateNaissance || "")}"></div>
+      <div class="field"><label class="field-label">Lieu de naissance</label><input class="txt" id="lf-ldn" value="${esc(l.lieuNaissance || "")}"></div>
+      <div class="field"><label class="field-label">INE</label><input class="txt" id="lf-ine" value="${esc(l.ine || "")}" placeholder="requis pour SIFA"></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Email</label><input class="txt" id="lf-email" type="email" value="${esc(l.email || "")}"></div>
+      <div class="field"><label class="field-label">Téléphone</label><input class="txt" id="lf-tel" value="${esc(l.telephone || "")}"></div>
+    </div>
+    <div class="field"><label class="field-label">Adresse</label><input class="txt" id="lf-adr" value="${esc(l.adresse || "")}"></div>
+    <div class="field"><label class="field-label">Campus *</label><select class="txt" id="lf-campus">${campusOptions(l.campusId)}</select></div>
+    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;"><input type="checkbox" id="lf-rqth" ${l.rqth ? "checked" : ""}> <span>RQTH <span class="muted">(déclenche le suivi référent handicap)</span></span></label>
+    <details style="margin:8px 0;"><summary class="muted" style="cursor:pointer;">Représentant légal (si mineur)</summary>
+      <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:8px;">
+        <div class="field"><label class="field-label">Nom</label><input class="txt" id="lf-rlnom" value="${esc(l.repLegalNom || "")}"></div>
+        <div class="field"><label class="field-label">Téléphone</label><input class="txt" id="lf-rltel" value="${esc(l.repLegalTel || "")}"></div>
+        <div class="field"><label class="field-label">Email</label><input class="txt" id="lf-rlemail" value="${esc(l.repLegalEmail || "")}"></div>
+      </div></details>
+    <div class="field"><label class="field-label">Notes internes</label><textarea id="lf-notes" rows="2">${esc(l.notes || "")}</textarea></div>
+    <div class="actions"><button class="btn-primary" id="lf-save">${l.id ? "Enregistrer" : "Créer le dossier"}</button> <span class="status" id="lf-msg"></span></div>`);
+  $("#lf-save").onclick = async () => {
+    const body = {
+      civilite: $("#lf-civ").value, nom: $("#lf-nom").value.trim(), prenom: $("#lf-prenom").value.trim(),
+      dateNaissance: $("#lf-ddn").value, lieuNaissance: $("#lf-ldn").value.trim(), ine: $("#lf-ine").value.trim(),
+      email: $("#lf-email").value.trim(), telephone: $("#lf-tel").value.trim(), adresse: $("#lf-adr").value.trim(),
+      campusId: $("#lf-campus").value, rqth: $("#lf-rqth").checked,
+      repLegalNom: $("#lf-rlnom").value.trim(), repLegalTel: $("#lf-rltel").value.trim(), repLegalEmail: $("#lf-rlemail").value.trim(),
+      notes: $("#lf-notes").value.trim(),
+    };
+    if (!body.nom || !body.prenom || !body.campusId) { $("#lf-msg").textContent = "Nom, prénom et campus sont requis."; return; }
+    const r = l.id ? await api.patch(`/api/learners/${l.id}`, body) : await api.post("/api/learners", body);
+    if (r.error) { $("#lf-msg").textContent = r.error; return; }
+    document.querySelector(".modal-bg")?.remove();
+    if (onDone) await onDone(r); else await renderApprenants();
+  };
+}
+
+async function openLearnerFiche(lid) {
+  const l = await api.get(`/api/learners/${lid}`);
+  if (!l || l.error) { alert(l?.error || "Dossier introuvable"); return; }
+  const classes = await api.get(`/api/classes?campusId=${l.campusId}`) || [];
+  const enrRow = (e) => {
+    const [lbl, cls] = ENR_BADGE[e.statut] || [e.statut, ""];
+    return `<div class="item"><div class="grow"><div class="ttl">${esc(e.schoolYear)} <span class="pill ${cls}">${lbl}</span></div>
+      <div class="sub muted">${e.className ? esc(e.className) + " · " : ""}${e.dateDebut ? "du " + esc(e.dateDebut) : ""}${e.dateSortie ? " au " + esc(e.dateSortie) : ""}${e.motifSortie ? " · " + esc(e.motifSortie) : ""}</div></div>
+      <button class="btn-ghost btn-sm en-ed" data-id="${e.id}">Modifier</button></div>`;
+  };
+  const tlRow = (ev) => `<div class="item"><span class="pill">${esc(ev.date || "?")}</span><div class="grow"><div class="ttl" style="font-weight:500;">${esc(ev.label)}</div></div></div>`;
+  openModal(`${l.prenom} ${l.nom.toUpperCase()}`, `
+    <div class="sub muted" style="margin-bottom:10px;">${l.civilite ? esc(l.civilite) + " · " : ""}${l.dateNaissance ? "né(e) le " + esc(l.dateNaissance) + " · " : ""}${l.ine ? "INE " + esc(l.ine) + " · " : '<span class="pill warn">INE manquant (SIFA)</span> · '}${l.email ? esc(l.email) + " · " : ""}${esc(l.telephone || "")}${l.rqth ? ' · <span class="pill">RQTH</span>' : ""}</div>
+    <div class="section-title" style="margin-top:0;">Inscriptions <button class="btn-ghost btn-sm" id="en-add" style="float:right;">+ Inscription</button></div>
+    <div class="list" id="en-list">${l.enrollments.length ? l.enrollments.map(enrRow).join("") : `<p class="muted" style="padding:8px;">Aucune inscription.</p>`}</div>
+    <div class="section-title">Documents <label class="btn-ghost btn-sm" style="float:right;cursor:pointer;">+ Pièce<input type="file" id="lr-doc" hidden></label></div>
+    <div class="list">${l.documents.length ? l.documents.map((d) => `<div class="item"><div class="grow"><div class="ttl" style="font-weight:500;">${esc(d.name)}</div><div class="sub muted">${(d.createdAt || "").slice(0, 10)}</div></div><a class="btn-ghost btn-sm" href="/api/documents/${d.id}/download">⬇</a></div>`).join("") : `<p class="muted" style="padding:8px;">Aucune pièce au dossier.</p>`}</div>
+    <div class="section-title">Historique</div>
+    <div class="list">${l.timeline.length ? l.timeline.map(tlRow).join("") : `<p class="muted" style="padding:8px;">—</p>`}</div>
+    <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-ghost btn-sm" id="lr-edit">Modifier le dossier</button>
+      ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger" id="lr-del">Supprimer (RGPD)</button>` : ""}
+    </div>`);
+  const reopen = async () => { document.querySelector(".modal-bg")?.remove(); await openLearnerFiche(lid); };
+  $("#lr-edit").onclick = () => { document.querySelector(".modal-bg")?.remove(); openLearnerForm(l, reopen); };
+  $("#lr-del")?.addEventListener("click", async () => {
+    if (!confirm(`Supprimer définitivement le dossier de ${l.prenom} ${l.nom} (inscriptions comprises) ?`)) return;
+    await api.del(`/api/learners/${lid}`);
+    document.querySelector(".modal-bg")?.remove();
+    await renderApprenants();
+  });
+  $("#en-add").onclick = () => openEnrollmentForm(l, null, classes, reopen);
+  $$(".en-ed").forEach((b) => b.addEventListener("click", () => openEnrollmentForm(l, l.enrollments.find((e) => e.id === b.dataset.id), classes, reopen)));
+  $("#lr-doc").addEventListener("change", async () => {
+    const file = $("#lr-doc").files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await (await fetch(`/api/learners/${lid}/documents`, { method: "POST", headers: { "X-CSRF-Token": csrfToken() }, body: fd })).json();
+    if (r.error) { alert(r.error); return; }
+    await reopen();
+  });
+}
+
+function openEnrollmentForm(l, enr, classes, onDone) {
+  const e = enr || {};
+  const yearDefault = (() => { const d = new Date(); const y = d.getMonth() >= 7 ? d.getFullYear() : d.getFullYear() - 1; return `${y}-${y + 1}`; })();
+  document.querySelector(".modal-bg")?.remove();
+  openModal(`${enr ? "Modifier l'inscription" : "Nouvelle inscription"} — ${l.prenom} ${l.nom}`, `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Année scolaire *</label><input class="txt" id="ef-year" value="${esc(e.schoolYear || yearDefault)}" placeholder="2026-2027"></div>
+      <div class="field"><label class="field-label">Classe</label><select class="txt" id="ef-class"><option value="">—</option>${classes.map((k) => `<option value="${k.id}" ${k.id === e.classId ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Statut</label><select class="txt" id="ef-statut">${Object.entries(ENR_BADGE).map(([k, [lbl]]) => `<option value="${k}" ${k === (e.statut || "inscrit") ? "selected" : ""}>${lbl}</option>`).join("")}</select></div>
+      <div class="field"><label class="field-label">Début</label><input class="txt" id="ef-deb" type="date" value="${esc(e.dateDebut || "")}"></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Sortie <span class="muted">(si sorti/rupture)</span></label><input class="txt" id="ef-fin" type="date" value="${esc(e.dateSortie || "")}"></div>
+      <div class="field"><label class="field-label">Motif de sortie</label><input class="txt" id="ef-motif" value="${esc(e.motifSortie || "")}"></div>
+    </div>
+    <div class="actions"><button class="btn-primary" id="ef-save">Enregistrer</button> <span class="status" id="ef-msg"></span></div>`);
+  $("#ef-save").onclick = async () => {
+    const body = { schoolYear: $("#ef-year").value.trim(), classId: $("#ef-class").value || null, statut: $("#ef-statut").value, dateDebut: $("#ef-deb").value, dateSortie: $("#ef-fin").value, motifSortie: $("#ef-motif").value.trim() };
+    if (!body.schoolYear) { $("#ef-msg").textContent = "Année scolaire requise."; return; }
+    const r = enr ? await api.patch(`/api/learners/${l.id}/enrollments/${enr.id}`, body) : await api.post(`/api/learners/${l.id}/enrollments`, body);
+    if (r.error) { $("#ef-msg").textContent = r.error; return; }
+    if (onDone) await onDone();
+  };
 }
 
 // ---------- Vue : SI campus (connecteur ERP) ----------

@@ -1251,6 +1251,108 @@ app.delete("/api/documents/:id", requireAuth, (req, res) => {
 });
 
 // ===== Centre de notifications (agrégat proactif) =====
+// ===== Apprenants & inscriptions (ERP Bloc 1) =====
+// Cloisonnement : un directeur ne voit que les apprenants de ses campus.
+function learnerGuard(req, res) {
+  const l = store.getLearner(req.params.id);
+  if (!l) { res.status(404).json({ error: "apprenant introuvable" }); return null; }
+  if (!assertCampus(req, res, l.campusId)) return null;
+  return l;
+}
+
+app.get("/api/learners", requireAuth, (req, res) => {
+  const { campusId, q } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let items = store.listLearners({ campusId, q });
+  if (!campusId) items = scopeByCampus(req, items);
+  // Inscription en cours jointe pour l'affichage liste (classe + statut)
+  const enr = store.listEnrollments({});
+  const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+  const byLearner = new Map();
+  for (const e of enr) if (!byLearner.has(e.learnerId)) byLearner.set(e.learnerId, e);
+  res.json(items.map((l) => {
+    const e = byLearner.get(l.id) || null;
+    return { ...l, enrollment: e ? { ...e, className: classes.get(e.classId) || null } : null };
+  }));
+});
+
+app.post("/api/learners", requireAuth, (req, res) => {
+  const { campusId, nom, prenom } = req.body || {};
+  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campusId requis" });
+  if (!String(nom || "").trim() || !String(prenom || "").trim()) return res.status(400).json({ error: "nom et prénom requis" });
+  const l = store.addLearner(req.body);
+  logAudit(req, "create", "apprenant", `${l.prenom} ${l.nom}`);
+  res.json(l);
+});
+
+app.get("/api/learners/:id", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+  res.json({
+    ...l,
+    enrollments: store.listEnrollments({ learnerId: l.id }).map((e) => ({ ...e, className: classes.get(e.classId) || null })),
+    documents: store.listDocuments(l.campusId, null, l.id),
+    timeline: store.learnerTimeline(l.id),
+  });
+});
+
+app.patch("/api/learners/:id", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  if (req.body?.campusId && req.body.campusId !== l.campusId && !assertCampus(req, res, req.body.campusId)) return;
+  const upd = store.updateLearner(l.id, req.body || {});
+  logAudit(req, "update", "apprenant", `${upd.prenom} ${upd.nom}`);
+  res.json(upd);
+});
+
+app.delete("/api/learners/:id", requireAuth, requireAdmin, (req, res) => {
+  const l = store.getLearner(req.params.id);
+  if (l) { store.deleteLearner(l.id); logAudit(req, "delete", "apprenant", `${l.prenom} ${l.nom}`); }
+  res.json({ ok: true });
+});
+
+app.post("/api/learners/:id/enrollments", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  if (!String(req.body?.schoolYear || "").trim()) return res.status(400).json({ error: "année scolaire requise (ex. 2026-2027)" });
+  const e = store.addEnrollment({ ...req.body, learnerId: l.id, campusId: l.campusId });
+  if (e?.error) return res.status(409).json(e);
+  logAudit(req, "create", "inscription", `${l.prenom} ${l.nom} — ${e.schoolYear}`);
+  res.json(e);
+});
+
+app.patch("/api/learners/:id/enrollments/:eid", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const e = store.updateEnrollment(req.params.eid, req.body || {});
+  if (!e) return res.status(404).json({ error: "inscription introuvable" });
+  logAudit(req, "update", "inscription", `${l.prenom} ${l.nom} — ${e.schoolYear} (${e.statut})`);
+  res.json(e);
+});
+
+app.delete("/api/learners/:id/enrollments/:eid", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  store.deleteEnrollment(req.params.eid);
+  res.json({ ok: true });
+});
+
+app.post("/api/learners/:id/documents", requireAuth, uploadDoc, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  if (!req.file) return res.status(400).json({ error: "fichier manquant" });
+  const fname = crypto.randomUUID();
+  fs.writeFileSync(path.join(DOCS_DIR, fname), encryptBuffer(req.file.buffer));
+  const doc = store.addDocument({
+    campusId: l.campusId, campusName: store.listCampuses().find((c) => c.id === l.campusId)?.name || null,
+    name: req.file.originalname, size: req.file.size, mime: req.file.mimetype,
+    category: req.body?.category || "apprenant", learnerId: l.id, file: fname,
+  });
+  logAudit(req, "upload", "document", `${doc.name} (apprenant ${l.prenom} ${l.nom})`);
+  res.json(doc);
+});
+
 // ===== Connecteur SI campus (ERP de gestion) =====
 // Le jeton est créé côté campus dans le module « prestataires webservices REST »
 // du SI ; il n'est jamais renvoyé au client (tokenMask).
