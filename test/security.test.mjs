@@ -169,6 +169,26 @@ test("apprenants : import CSV en masse + export Excel", async () => {
   assert.equal(buf.slice(0, 2).toString(), "PK");
 });
 
+test("candidatures : cloisonnement, conversion, config Salesforce jamais fuitée", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Cand" } })).json();
+  const cand = await (await req("/api/candidates", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Test", prenom: "Cand" } })).json();
+  assert.ok(cand.id);
+  await req(`/api/candidates/${cand.id}`, { method: "PATCH", ...opts, json: { stage: "admis" } });
+  const conv = await (await req(`/api/candidates/${cand.id}/convert`, { method: "POST", ...opts, json: {} })).json();
+  assert.ok(conv.learner?.id);
+  // config Salesforce : le secret n'est jamais renvoyé, un directeur ne peut pas la lire/écrire
+  await req("/api/settings", { method: "PUT", ...opts, json: { salesforce: { instanceUrl: "https://org.my.salesforce.com", clientId: "cid", clientSecret: "topsecret4242" } } });
+  const settings = await (await req("/api/settings", { cookie: a.cookie })).json();
+  assert.ok(!JSON.stringify(settings).includes("topsecret4242"));
+  assert.equal(settings.salesforce.configured, true);
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req("/api/settings", { cookie: d.cookie })).status, 403);
+  assert.equal((await (await req("/api/candidates", { cookie: d.cookie })).json()).length, 0);
+  assert.equal((await req(`/api/candidates/${cand.id}`, { method: "PATCH", cookie: d.cookie, csrf: d.csrf, json: { stage: "perdu" } })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };
