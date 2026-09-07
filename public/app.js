@@ -3547,6 +3547,7 @@ async function openLearnerFiche(lid) {
       <button class="btn-ghost btn-sm" id="lr-edit">Modifier le dossier</button>
       <button class="btn-ghost btn-sm" id="lr-portal">🔗 Lien portail</button>
       <button class="btn-ghost btn-sm" id="lr-consent">🛡 Autorisations</button>
+      <button class="btn-ghost btn-sm" id="lr-certif">📜 Certificat de réalisation</button>
       <button class="btn-ghost btn-sm" id="lr-export">⬇ Export RGPD</button>
       ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger" id="lr-del">Supprimer (RGPD)</button>` : ""}
     </div>`);
@@ -3555,6 +3556,7 @@ async function openLearnerFiche(lid) {
   $("#lr-portal").onclick = () => openPortalLink("learner", l.id, l.campusId, `${l.prenom} ${l.nom}`);
   $("#lr-consent").onclick = () => openConsentForm(l, reopen);
   $("#lr-export").onclick = () => window.open(`/api/learners/${l.id}/export`, "_blank");
+  $("#lr-certif").onclick = () => openCertificat(l);
   $("#lr-del")?.addEventListener("click", async () => {
     if (!confirm(`Supprimer définitivement le dossier de ${l.prenom} ${l.nom} (inscriptions comprises) ?`)) return;
     await api.del(`/api/learners/${lid}`);
@@ -4396,6 +4398,45 @@ function openConsentForm(l, onDone) {
     document.querySelector(".modal-bg")?.remove();
     await onDone();
   })));
+}
+
+// Certificat de réalisation — le justificatif que le financeur attend pour
+// libérer les fonds. La durée réalisée n'est jamais saisie à la main : elle est
+// calculée sur les feuilles d'émargement closes, seule base défendable.
+async function openCertificat(l) {
+  const d = new Date(); const an = d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1;
+  const defFrom = `${an}-09-01`, defTo = d.toISOString().slice(0, 10);
+  const charger = async (from, to, issue) => api.get(`/api/learners/${l.id}/certificat-realisation?from=${from}&to=${to}${issue ? "&issue=" + issue : ""}`);
+  let info = await charger(defFrom, defTo);
+  if (info?.error) { alert(info.error); return; }
+  const h = (m) => `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+  openModal(`Certificat de réalisation — ${l.prenom} ${l.nom}`, `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Du</label><input class="txt" id="cr-from" type="date" value="${defFrom}"></div>
+      <div class="field"><label class="field-label">Au</label><input class="txt" id="cr-to" type="date" value="${defTo}"></div>
+    </div>
+    <div class="kpis" id="cr-kpis"></div>
+    <div class="field"><label class="field-label">Issue de l'action</label>
+      <select class="txt" id="cr-issue">${Object.entries(info.issues).map(([k, v]) => `<option value="${k}">${v.charAt(0).toUpperCase() + v.slice(1)}</option>`).join("")}</select>
+      <div class="sub muted">Proposée d'après l'assiduité constatée. C'est l'organisme qui signe et qui tranche.</div></div>
+    <div id="cr-alerte"></div>
+    <div class="actions"><button class="btn-primary" id="cr-print">Éditer le certificat</button></div>
+    <p class="hint muted">Document destiné au <b>financeur</b> pour justifier la réalisation de l'action — distinct de l'attestation remise au stagiaire. La durée est calculée sur les feuilles d'émargement closes, jamais saisie à la main.</p>`);
+  const rendre = () => {
+    $("#cr-kpis").innerHTML = `
+      <div class="k"><div class="v">${h(info.heuresRealisees)}</div><div class="l">réalisées</div></div>
+      <div class="k"><div class="v">${h(info.heuresPrevues)}</div><div class="l">prévues</div></div>
+      <div class="k${info.feuilles ? "" : " k-bad"}"><div class="v">${info.feuilles}</div><div class="l">séances closes</div></div>`;
+    $("#cr-issue").value = info.issueProposee;
+    $("#cr-alerte").innerHTML = info.manquantes?.length
+      ? `<div class="card card-pad" style="border-left:4px solid var(--bad);"><b>Non conforme en l'état</b><ul style="margin:6px 0 0;padding-left:18px;font-size:13px;">${info.manquantes.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>`
+      : `<div class="card card-pad" style="border-left:4px solid var(--good);"><b>✓ Mentions obligatoires réunies</b></div>`;
+  };
+  rendre();
+  const recharger = async () => { info = await charger($("#cr-from").value, $("#cr-to").value); if (!info.error) rendre(); };
+  $("#cr-from").addEventListener("change", recharger);
+  $("#cr-to").addEventListener("change", recharger);
+  $("#cr-print").onclick = () => window.open(`/api/learners/${l.id}/certificat-realisation?format=html&from=${$("#cr-from").value}&to=${$("#cr-to").value}&issue=${$("#cr-issue").value}`, "_blank");
 }
 
 // ---------- Vue : Contrats d'alternance ----------

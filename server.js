@@ -4088,6 +4088,103 @@ app.get("/api/attendance/verify", requireAuth, (req, res) => {
 });
 
 // Attestation d'assiduité imprimable (période × classe) — la pièce financeur.
+// ===== Certificat de réalisation =====
+//
+// C'est LE justificatif attendu par un financeur (opérateur de compétences,
+// Caisse des dépôts, France Travail) pour libérer les fonds. Il est distinct de
+// l'attestation de formation, qui est remise au stagiaire : le certificat est
+// remis au FINANCEUR et engage le responsable de l'organisme, qui le signe.
+//
+// Mentions obligatoires : art. D. 6353-4 du code du travail (dans sa rédaction
+// issue du décret du 30 décembre 2021) — identité du représentant légal de
+// l'organisme et du stagiaire, intitulé de l'action, dates et durée de
+// réalisation, et signature. Le modèle est harmonisé entre opérateurs.
+//
+// ⚠️ À revérifier à chaque évolution réglementaire (veille trimestrielle).
+const CERTIFICAT_ISSUES = {
+  totalite: "suivi l'action de formation dans sa totalité",
+  partielle: "suivi partiellement l'action de formation",
+  abandon: "abandonné l'action de formation",
+};
+
+app.get("/api/learners/:id/certificat-realisation", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const { from, to, issue } = req.query;
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut)) || store.listEnrollments({ learnerId: l.id })[0];
+  const classe = enr?.classId ? store.getClass(enr.classId) : null;
+  const cur = classe?.curriculumId ? store.getCurriculum(classe.curriculumId) : null;
+  const campus = store.listCampuses().find((c) => c.id === l.campusId);
+
+  // Heures réellement réalisées, tirées des feuilles d'émargement CLOSES : c'est
+  // la seule base défendable en contrôle. Une durée saisie à la main ne prouve rien.
+  const sheets = attendancestore.listSheets({ campusId: l.campusId, classId: enr?.classId, from, to, status: "locked" });
+  let prevu = 0, absent = 0;
+  for (const s of sheets) {
+    const st = sheetStats(s);
+    const e = effectiveEntries(s).find((x) => x.learnerId === l.id);
+    if (!e) continue;
+    prevu += st.durationMinutes;
+    if (e.status === "absent" || e.status === "excuse") absent += st.durationMinutes;
+    else if (e.status === "retard") absent += Math.min(Number(e.minutesLate) || 0, st.durationMinutes);
+  }
+  const realise = Math.max(0, prevu - absent);
+  const h = (m) => `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+  // L'issue est proposée d'après les faits, mais reste un choix de l'organisme :
+  // c'est lui qui signe et qui engage sa responsabilité.
+  const propose = realise === 0 ? "abandon" : absent === 0 ? "totalite" : "partielle";
+  const retenue = CERTIFICAT_ISSUES[issue] ? issue : propose;
+  const manquantes = [];
+  if (!campus?.name) manquantes.push("nom de l'organisme");
+  if (!campus?.numeroDeclaration) manquantes.push("numéro de déclaration d'activité");
+  if (!campus?.dirigeant) manquantes.push("nom du représentant légal de l'organisme");
+  if (!cur?.name && !classe?.name) manquantes.push("intitulé de l'action de formation");
+  if (!sheets.length) manquantes.push("aucune feuille d'émargement close sur la période — la durée réalisée n'est pas justifiable");
+
+  if (req.query.format !== "html") {
+    return res.json({ issueProposee: propose, issues: CERTIFICAT_ISSUES, manquantes,
+      heuresPrevues: prevu, heuresRealisees: realise, feuilles: sheets.length });
+  }
+
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const chain = attendancestore.verifyCampusChain(l.campusId);
+  logAudit(req, "export", "certificat", `certificat de réalisation — ${l.prenom} ${l.nom}`);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Certificat de réalisation</title>
+<style>body{font:13.5px/1.6 -apple-system,Segoe UI,sans-serif;color:#0D1B2A;max-width:820px;margin:0 auto;padding:32px;}
+h1{font-family:Georgia,serif;font-size:22px;margin:0 0 6px;}
+.band{background:#0B6E5F;color:#fff;padding:14px 18px;border-radius:6px;margin-bottom:20px;}
+.band .eyebrow{color:#FFD9CF;font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px;}
+.bloc{margin:16px 0;}.bloc b{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#0B6E5F;margin-bottom:3px;}
+.corps{background:#f7f4ec;border-left:4px solid #0B6E5F;padding:14px 18px;border-radius:5px;margin:18px 0;font-size:14px;}
+.sign{margin-top:34px;display:flex;justify-content:space-between;gap:30px;}
+.sign div{flex:1;}.sign .ligne{border-bottom:1px solid #0D1B2A;height:56px;margin-top:6px;}
+.alerte{background:#F7E4E0;border-left:4px solid #B03A2E;padding:10px 14px;border-radius:5px;margin:14px 0;font-size:12.5px;}
+.foot{margin-top:26px;padding-top:10px;border-top:1px solid #e3ded3;font-size:11px;color:#4A5568;}
+@media print{body{padding:0;}}</style></head><body>
+<div class="band"><div class="eyebrow">Certificat de réalisation — art. D. 6353-4 du code du travail</div>
+<h1>Action de formation</h1></div>
+${manquantes.length ? `<div class="alerte"><b>Mentions manquantes — ce certificat n'est pas conforme en l'état :</b><ul style="margin:6px 0 0;padding-left:18px;">${manquantes.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>` : ""}
+<div class="bloc"><b>Organisme de formation</b>${esc(campus?.name || "—")}${campus?.address ? `<br>${esc(campus.address)}` : ""}
+${campus?.siret ? `<br>SIRET : ${esc(campus.siret)}` : ""}${campus?.numeroDeclaration ? `<br>Déclaration d'activité n° ${esc(campus.numeroDeclaration)}` : ""}</div>
+<div class="bloc"><b>Représentant légal</b>${esc(campus?.dirigeant || "—")}</div>
+<div class="corps">Je soussigné(e) <b>${esc(campus?.dirigeant || "…………………………")}</b>, représentant légal de l'organisme <b>${esc(campus?.name || "…………………………")}</b>,
+atteste que <b>${esc(l.prenom)} ${esc(l.nom)}</b> a <b>${esc(CERTIFICAT_ISSUES[retenue])}</b>
+intitulée <b>${esc(cur?.intitulePrecis || cur?.name || classe?.name || "…………………………")}</b>${cur?.codeRncp ? ` (RNCP ${esc(cur.codeRncp)})` : ""}
+${from || to ? `du <b>${esc(from || "…")}</b> au <b>${esc(to || "…")}</b>` : ""}
+pour une durée réalisée de <b>${h(realise)}</b>${prevu ? ` sur ${h(prevu)} prévues` : ""}.</div>
+<div class="sign">
+  <div><b style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#0B6E5F;">Le stagiaire</b>
+  <div>${esc(l.prenom)} ${esc(l.nom)}</div><div class="ligne"></div></div>
+  <div><b style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#0B6E5F;">Pour l'organisme</b>
+  <div>${esc(campus?.dirigeant || "—")}</div><div class="ligne"></div></div>
+</div>
+<div class="foot"><b>Nature du document.</b> Certificat de réalisation destiné au financeur de l'action, distinct de l'attestation de formation remise au stagiaire.
+La durée réalisée est calculée à partir des <b>feuilles d'émargement closes</b> de la période (${sheets.length} séance(s)), scellées par empreinte chaînée — contrôle d'intégrité à l'édition : ${chain.ok ? "chaîne intègre" : "CHAÎNE ROMPUE"}.
+<br>Édité le ${new Date().toLocaleDateString("fr-FR")}. Mentions conformes à l'art. D. 6353-4 du code du travail, à revérifier à chaque évolution réglementaire.</div>
+</body></html>`);
+});
+
 app.get("/api/attendance/proof", requireAuth, (req, res) => {
   const { campusId, classId, from, to } = req.query;
   if (!campusId || !assertCampus(req, res, campusId)) return;

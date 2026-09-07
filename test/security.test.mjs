@@ -711,6 +711,57 @@ test("routes statiques sous /api/contracts : non capturées par la route :id", a
   assert.equal((await wage.json()).rate, 0.43);
 });
 
+test("certificat de réalisation : durée tirée des émargements, mentions contrôlées", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "OF Certif" } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "Groupe A" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Cert", prenom: "Ifi" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  // Sans feuille close, la durée n'est pas justifiable : le certificat le dit
+  const vide = await (await req(`/api/learners/${l.id}/certificat-realisation?from=2026-09-01&to=2027-06-30`, { cookie: a.cookie })).json();
+  assert.equal(vide.heuresRealisees, 0);
+  assert.ok(vide.manquantes.some((m) => /émargement/.test(m)));
+  assert.ok(vide.manquantes.some((m) => /déclaration d'activité/.test(m)));
+  assert.ok(vide.manquantes.some((m) => /représentant légal/.test(m)));
+
+  // Deux séances de 3 h, l'apprenant absent à l'une : 3 h réalisées sur 6 prévues
+  for (const [i, statut] of [["2026-09-14", "present"], ["2026-09-15", "absent"]].entries()) {
+    const s = await (await req("/api/sessions", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, date: statut[0], start: "09:00", end: "12:00" } })).json();
+    const sh = await (await req(`/api/sessions/${s.id}/attendance`, { method: "POST", ...opts, json: {} })).json();
+    await req(`/api/attendance/sheets/${sh.id}/entries`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: l.id, status: statut[1] }] } });
+    await req(`/api/attendance/sheets/${sh.id}/lock`, { method: "POST", ...opts, json: {} });
+    void i;
+  }
+  // Mentions obligatoires complétées
+  await req(`/api/campuses/${campus.id}`, { method: "PATCH", ...opts, json: { numeroDeclaration: "11 75 12345 75", dirigeant: "Marie Durand", siret: "73282932000074" } });
+
+  const info = await (await req(`/api/learners/${l.id}/certificat-realisation?from=2026-09-01&to=2027-06-30`, { cookie: a.cookie })).json();
+  assert.equal(info.heuresPrevues, 360);
+  assert.equal(info.heuresRealisees, 180, "seules les heures réellement suivies comptent");
+  assert.equal(info.issueProposee, "partielle", "l'issue se déduit des faits");
+  assert.deepEqual(info.manquantes, [], `mentions manquantes : ${info.manquantes.join(", ")}`);
+
+  // Édition : mentions de l'art. D. 6353-4 présentes
+  const html = await (await req(`/api/learners/${l.id}/certificat-realisation?format=html&from=2026-09-01&to=2027-06-30`, { cookie: a.cookie })).text();
+  assert.match(html, /Certificat de réalisation/);
+  assert.match(html, /D\. 6353-4/);
+  assert.match(html, /Marie Durand/);          // représentant légal
+  assert.match(html, /11 75 12345 75/);        // déclaration d'activité
+  assert.match(html, /Ifi/);                   // stagiaire
+  assert.match(html, /partiellement/);         // issue
+  assert.match(html, /3 h 00/);                // durée réalisée
+  assert.match(html, /distinct de l'attestation/); // périmètre dit explicitement
+
+  // L'organisme peut retenir une autre issue que celle proposée : il signe
+  const force = await (await req(`/api/learners/${l.id}/certificat-realisation?format=html&from=2026-09-01&to=2027-06-30&issue=totalite`, { cookie: a.cookie })).text();
+  assert.match(force, /dans sa totalité/);
+
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req(`/api/learners/${l.id}/certificat-realisation`, { cookie: d.cookie })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };
