@@ -44,6 +44,11 @@
   .msg.ok { color: var(--good); } .msg.ko { color: var(--bad); }
   .empty { color: var(--muted); text-align: center; padding: 20px; }
   canvas { width: 100%; border: 2px dashed var(--line); border-radius: 10px; background: #fff; touch-action: none; }
+  #mentions { max-width: 700px; margin: 0 auto; padding: 0 16px; }
+  #mentions summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 12px 0; }
+  #mentions .mentions-body { font-size: 12.5px; color: var(--muted); line-height: 1.6; border-top: 1px solid var(--line); padding-top: 10px; }
+  #mentions .mentions-body p { margin: 0 0 8px; }
+  #mentions .lien-secu { font-weight: 600; color: var(--ink); }
   @media (prefers-color-scheme: dark) {
     :root { --cream: #10192B; --surface: #182338; --ink: #EDF0F4; --line: #2B3A55; --muted: #9AA9BF; --teal: #35B39A; }
     canvas { background: #fff; }
@@ -53,6 +58,20 @@
 <body>
 <header><h1 class="who" id="who">Mon espace</h1><p class="sub" id="whosub"></p></header>
 <main id="app"><p class="empty">Chargement…</p></main>
+<footer id="mentions">
+  <details>
+    <summary>Vos données personnelles</summary>
+    <div class="mentions-body">
+      <p><b>Qui traite vos données ?</b> Votre établissement de formation, responsable de traitement. Cet espace est édité par Campus Manager, qui agit comme sous-traitant.</p>
+      <p><b>Pourquoi ?</b> Assurer le suivi de votre formation : planning, présence, résultats, contrat d'alternance. Base légale : l'exécution de votre contrat de formation, et les obligations légales de l'établissement (preuve de réalisation de la formation, contrôles des financeurs).</p>
+      <p><b>Combien de temps ?</b> Vos données de scolarité sont conservées pendant votre formation puis pendant la durée légale de conservation des titres et diplômes. Les feuilles d'émargement sont conservées cinq ans, les images de signature treize mois.</p>
+      <p><b>Qui y a accès ?</b> Vous, l'équipe pédagogique et administrative de votre campus, et le financeur en cas de contrôle. Votre tuteur en entreprise voit votre assiduité et votre planning, pas vos données personnelles.</p>
+      <p><b>Vos droits.</b> Vous pouvez demander l'accès à vos données, leur rectification, leur effacement ou leur portabilité, et vous opposer à un traitement. Certaines données ne peuvent pas être effacées avant leur échéance légale : c'est le cas des feuilles d'émargement, qui prouvent la réalisation de votre formation.</p>
+      <p><b>Comment faire ?</b> Adressez votre demande au secrétariat de votre campus, ou au délégué à la protection des données de votre établissement. Vous pouvez également saisir la CNIL.</p>
+      <p class="lien-secu">Ce lien d'accès vous est personnel : ne le transmettez à personne. En cas de perte, demandez-en un nouveau à votre campus — l'ancien cesse alors immédiatement de fonctionner.</p>
+    </div>
+  </details>
+</footer>
 
 <script src="/portail.js"></script>
 </body>
