@@ -8,6 +8,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "cmatt-"));
 process.env.DATA_KEY = "test-key-attendance";
 const att = await import("../lib/attendancestore.js");
 const { canonical, hashSheet, verifyChain, sheetStats, periodStats, sessionMinutes, generateSessionCode, effectiveEntries, GENESIS_HASH } = await import("../lib/attendance.js");
+const { schoolYearOf } = att;
 
 // ---------- Logique pure ----------
 
@@ -180,6 +181,47 @@ test("periodStats : agrège prévu/réalisé sur les feuilles closes", () => {
   assert.equal(agg.lockedSheets, sheets.length);
   assert.ok(agg.plannedMinutes > 0);
   assert.ok(agg.realizedMinutes <= agg.plannedMinutes);
+});
+
+test("partitionnement : un fichier par campus et par année scolaire", () => {
+  const fsx = fs, pathx = path;
+  const dir = pathx.join(process.env.DATA_DIR, "attendance");
+  // Deux campus, deux années scolaires → quatre partitions distinctes
+  for (const [campus, date] of [["pA", "2026-10-05"], ["pA", "2027-03-05"], ["pB", "2026-10-05"]]) {
+    const s = att.openSheet({ session: { id: `p-${campus}-${date}`, campusId: campus, classId: "c", date, start: "09:00", end: "12:00" }, learners: LEARNERS });
+    att.lockSheet(s.id, "prof");
+  }
+  const fichiers = fsx.readdirSync(dir).filter((f) => f.endsWith(".json"));
+  // L'année scolaire court de septembre à août : octobre 2026 et mars 2027 sont
+  // dans la MÊME année scolaire (2026), donc la même partition.
+  assert.equal(schoolYearOf("2026-10-05"), "2026");
+  assert.equal(schoolYearOf("2027-03-05"), "2026");
+  assert.equal(schoolYearOf("2027-09-01"), "2027");
+  assert.ok(fichiers.includes("pA__2026.json"), `partition pA attendue, vu : ${fichiers.join(", ")}`);
+  assert.ok(fichiers.includes("pB__2026.json"));
+
+  // Les campus restent étanches
+  assert.equal(att.listSheets({ campusId: "pA" }).length, 2);
+  assert.equal(att.listSheets({ campusId: "pB" }).length, 1);
+  // et leurs chaînes sont indépendantes et intègres
+  assert.equal(att.verifyCampusChain("pA").ok, true);
+  assert.equal(att.verifyCampusChain("pA").count, 2);
+  assert.equal(att.verifyCampusChain("pB").count, 1);
+});
+
+test("chaîne d'un campus : elle traverse les années scolaires", () => {
+  const a1 = att.openSheet({ session: { id: "sy1", campusId: "pC", classId: "c", date: "2026-11-02", start: "09:00", end: "12:00" }, learners: LEARNERS });
+  const l1 = att.lockSheet(a1.id, "prof");
+  // Année scolaire suivante, MÊME campus : la chaîne continue, elle ne repart pas.
+  const a2 = att.openSheet({ session: { id: "sy2", campusId: "pC", classId: "c", date: "2027-11-02", start: "09:00", end: "12:00" }, learners: LEARNERS });
+  const l2 = att.lockSheet(a2.id, "prof");
+  assert.equal(l2.seq, 2, "la séquence continue d'une année sur l'autre");
+  assert.equal(l2.prevHash, l1.hash, "le maillon pointe vers l'année précédente");
+  assert.equal(att.verifyCampusChain("pC").ok, true);
+  // Un avenant sur la feuille de l'an dernier reste dans SA partition
+  att.amendSheet(a1.id, { learnerId: "l1", status: "absent", reason: "justificatif tardif", by: "dir" });
+  assert.equal(att.verifyCampusChain("pC").ok, true);
+  assert.equal(att.listAmendments("pC").length, 1);
 });
 
 test("chaînes de campus indépendantes", () => {
