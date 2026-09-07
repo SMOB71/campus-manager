@@ -25,6 +25,7 @@ import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LA
 import { learnerReport, ranking, classStats, mention, blockReport, certificationSummary } from "./lib/grades.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
+import { buildSifa, buildBpf, toCsv, SIFA_COLUMNS, BPF_FINANCEURS, sifaObservationDate } from "./lib/declarations.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
 import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
@@ -3755,6 +3756,98 @@ ${r.blocs.map((b) => `<tr><td>${esc(b.code ? b.code + " — " : "")}${esc(b.labe
 </tbody></table>
 <p style="font-size:12.5px;">${r.certification.titreComplet ? "<b style=\"color:#0B6E5F;\">Tous les blocs sont acquis.</b>" : `<b>${r.certification.acquis}/${r.certification.total} bloc(s) acquis.</b> Reste à valider : ${esc(r.certification.resteAValider.join(", ")) || "—"}`}</p>` : ""}
 <div class="foot">Les moyennes sont pondérées par les coefficients du référentiel ; les notes sont ramenées sur 20. Une absence non convertie en note n'entre pas dans le calcul (elle est signalée séparément). Document édité par Campus Manager.</div>
+</body></html>`);
+});
+
+// ===== Déclarations annuelles (SIFA, BPF) =====
+// Ces modules PRÉPARENT la déclaration et signalent nommément ce qui bloque ; ils
+// ne se substituent pas au dépôt sur le portail officiel. Formats et
+// nomenclatures à revérifier à chaque campagne.
+
+app.get("/api/declarations/sifa", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!campusId || !assertCampus(req, res, campusId)) return;
+  const annee = Number(req.query.annee) || new Date().getFullYear();
+  const d = buildSifa({
+    annee,
+    learners: store.listLearners({ campusId }),
+    enrollments: store.listEnrollments({ campusId }),
+    contracts: store.listContracts({ campusId }),
+    classes: store.listClasses({ campusId }),
+    curricula: store.listCurricula(),
+    companies: store.listPartners(campusId),
+  });
+  if (req.query.format === "csv") {
+    if (!d.deposable && req.query.force !== "1") {
+      return res.status(409).json({ error: `${d.anomalies.length} ligne(s) incomplète(s) — corriger avant de déposer`, anomalies: d.anomalies.slice(0, 50) });
+    }
+    logAudit(req, "export", "sifa", `export SIFA ${annee} — ${d.total} apprenti(s)`);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="sifa-${annee}.csv"`);
+    return res.send(toCsv(SIFA_COLUMNS, d.lignes));
+  }
+  res.json({ ...d, colonnes: SIFA_COLUMNS, lignes: undefined, apercu: d.lignes.slice(0, 10) });
+});
+
+app.get("/api/declarations/bpf", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!campusId || !assertCampus(req, res, campusId)) return;
+  // L'exercice comptable, pas l'année scolaire : c'est une confusion fréquente.
+  const exerciceDebut = req.query.from || `${new Date().getFullYear() - 1}-01-01`;
+  const exerciceFin = req.query.to || `${new Date().getFullYear() - 1}-12-31`;
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  // Heures-stagiaires : durée de chaque séance × nombre de présents effectifs.
+  const sheets = attendancestore.listSheets({ campusId, from: exerciceDebut, to: exerciceFin, status: "locked" }).map((s) => {
+    const st = sheetStats(s);
+    return { date: s.date, durationMinutes: st.durationMinutes, presents: st.present + st.retard };
+  });
+  const stagiaires = new Set(
+    store.listEnrollments({ campusId }).filter((e) => !e.dateSortie || e.dateSortie >= exerciceDebut).map((e) => e.learnerId),
+  ).size;
+  const d = buildBpf({ exerciceDebut, exerciceFin, campus, stagiaires,
+    invoices: store.listInvoices({ campusId }), fundings: store.listFundings({ campusId }), sheets });
+
+  if (req.query.format !== "html") return res.json({ ...d, financeurs: BPF_FINANCEURS });
+
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const eur = (v) => Number(v || 0).toLocaleString("fr-FR") + " €";
+  logAudit(req, "export", "bpf", `BPF ${exerciceDebut} → ${exerciceFin}`);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Bilan pédagogique et financier</title>
+<style>body{font:13px/1.55 -apple-system,Segoe UI,sans-serif;color:#0D1B2A;max-width:880px;margin:0 auto;padding:28px;}
+h1{font-family:Georgia,serif;font-size:21px;margin:0 0 4px;}h2{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:#0B6E5F;margin:22px 0 6px;}
+.band{background:#0B6E5F;color:#fff;padding:13px 17px;border-radius:6px;margin-bottom:16px;}
+.band .eyebrow{color:#FFD9CF;font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:3px;}
+table{border-collapse:collapse;width:100%;font-size:12.5px;margin:8px 0;}
+th{background:#0B6E5F;color:#fff;text-align:left;padding:6px 9px;}td{padding:6px 9px;border-bottom:1px solid #e3ded3;}
+td.num{text-align:right;font-variant-numeric:tabular-nums;}tr.total td{font-weight:700;background:#f4efe6;}
+.alerte{background:#F7E4E0;border-left:4px solid #B03A2E;padding:10px 14px;border-radius:5px;margin:12px 0;font-size:12.5px;}
+.foot{margin-top:22px;padding-top:10px;border-top:1px solid #e3ded3;font-size:11px;color:#4A5568;}
+@media print{body{padding:0;}}</style></head><body>
+<div class="band"><div class="eyebrow">Bilan pédagogique et financier — Cerfa 10443</div>
+<h1>${esc(d.organisme.nom)}</h1></div>
+${d.manquantes.length ? `<div class="alerte"><b>À compléter avant dépôt :</b><ul style="margin:6px 0 0;padding-left:18px;">${d.manquantes.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>` : ""}
+<h2>Cadre A — Identification</h2>
+<table><tbody>
+<tr><td>Raison sociale</td><td>${esc(d.organisme.nom)}</td></tr>
+<tr><td>SIRET</td><td>${esc(d.organisme.siret) || "—"}</td></tr>
+<tr><td>Numéro de déclaration d'activité</td><td>${esc(d.organisme.numeroDeclaration) || "—"}</td></tr>
+<tr><td>Représentant légal</td><td>${esc(d.organisme.dirigeant) || "—"}</td></tr>
+<tr><td>Exercice comptable</td><td>du ${esc(d.exerciceDebut)} au ${esc(d.exerciceFin)}</td></tr>
+</tbody></table>
+<h2>Cadre B — Bilan pédagogique</h2>
+<table><tbody>
+<tr><td>Nombre de stagiaires</td><td class="num">${d.cadreB.stagiaires}</td></tr>
+<tr><td>Heures-stagiaires réalisées</td><td class="num">${d.cadreB.heuresStagiaires.toLocaleString("fr-FR")}</td></tr>
+</tbody></table>
+<h2>Cadre C — Bilan financier (produits hors taxes)</h2>
+<table><thead><tr><th>Origine des produits</th><th style="text-align:right;">Montant HT</th></tr></thead><tbody>
+${Object.entries(BPF_FINANCEURS).map(([k, lbl]) => `<tr><td>${esc(lbl)}</td><td class="num">${eur(d.cadreC.produits[k])}</td></tr>`).join("")}
+<tr class="total"><td>Total des produits</td><td class="num">${eur(d.cadreC.total)}</td></tr>
+</tbody></table>
+<div class="foot"><b>Nature de ce document.</b> Préparation du bilan pédagogique et financier destinée à la télédéclaration sur le portail de l'administration — elle ne s'y substitue pas. Le BPF est à déposer avant le 30 avril auprès de la DREETS.
+<br>Les heures-stagiaires sont calculées sur les feuilles d'émargement closes de l'exercice (durée de séance × présents), jamais déclarées à la main. Les montants sont hors taxes, arrondis à l'euro.
+<br>Édité le ${new Date().toLocaleDateString("fr-FR")}. Rubriques à revérifier contre la notice Cerfa en vigueur.</div>
 </body></html>`);
 });
 

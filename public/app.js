@@ -370,6 +370,7 @@ const NAV = [
   { id: "contrats", label: "Contrats d'alternance", icon: I.brief, group: "Réseau" },
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
+  { id: "declarations", label: "Déclarations (SIFA, BPF)", icon: I.journal, admin: true, group: "Conformité" },
   { id: "planning", label: "Emploi du temps", icon: I.agenda, group: "Enseignement" },
   { id: "emargement", label: "Émargement", icon: I.sign, group: "Enseignement" },
   { id: "notes", label: "Notes & bulletins", icon: I.note, group: "Enseignement" },
@@ -429,7 +430,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -4825,6 +4826,109 @@ async function openRuptureForm(cid, rupt) {
     document.querySelector(".modal-bg")?.remove();
     await openContractFiche(cid);
   });
+}
+
+// ---------- Vue : Déclarations annuelles (SIFA, BPF) ----------
+// PARTI PRIS — l'écran prépare la déclaration et NOMME ce qui bloque. Il ne
+// produit jamais un fichier « complet » à partir de données incomplètes : un
+// fichier SIFA rejeté se découvre en fin de campagne, quand il est trop tard.
+let decCampus = "";
+let decAnnee = 0;
+let decExercice = null;
+async function renderDeclarations() {
+  if (!decCampus) decCampus = state.campuses[0]?.id || "";
+  // SIFA porte sur l'année civile arrêtée au 31 décembre ; en début d'année, la
+  // campagne en cours est celle de l'année précédente.
+  if (!decAnnee) { const n = new Date(); decAnnee = n.getMonth() >= 11 ? n.getFullYear() : n.getFullYear() - 1; }
+  // Le BPF porte sur l'EXERCICE COMPTABLE — par défaut l'exercice civil clos.
+  if (!decExercice) decExercice = { from: `${decAnnee}-01-01`, to: `${decAnnee}-12-31` };
+
+  const view = $("#view");
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="dec-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${decCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [sifa, bpf] = await Promise.all([
+    api.get(`/api/declarations/sifa?campusId=${decCampus}&annee=${decAnnee}`),
+    api.get(`/api/declarations/bpf?campusId=${decCampus}&from=${decExercice.from}&to=${decExercice.to}`),
+  ]);
+  const eur = (v) => Number(v || 0).toLocaleString("fr-FR") + " €";
+
+  const anomalies = sifa.anomalies || [];
+  const sifaBloc = anomalies.length
+    ? `<div class="card card-pad" style="border-left:4px solid var(--bad);">
+        <div class="ttl" style="margin-bottom:6px;">${anomalies.length} ligne(s) rejetée(s) en l'état</div>
+        <p class="muted" style="margin-top:0;">La plateforme rejette toute ligne dont une donnée obligatoire manque — l'INE en premier lieu. Ces apprentis sont à compléter dans leur fiche avant dépôt.</p>
+        <div class="list">${anomalies.slice(0, 40).map((a) => `<div class="item"><div class="grow"><div class="ttl">${esc(a.apprenant)}</div><div class="sub muted">manque : ${a.manquants.map(esc).join(", ")}</div></div>
+          <button class="btn-ghost btn-sm dec-fiche" data-id="${esc(a.learnerId)}">Ouvrir la fiche</button></div>`).join("")}
+          ${anomalies.length > 40 ? `<div class="item"><div class="sub muted">… et ${anomalies.length - 40} autre(s).</div></div>` : ""}</div>
+      </div>`
+    : sifa.total
+      ? `<div class="card card-pad" style="border-left:4px solid var(--good);"><div class="ttl">Les ${sifa.total} ligne(s) sont complètes.</div>
+         <p class="muted" style="margin-bottom:0;">Le fichier peut être exporté, puis déposé sur la plateforme officielle.</p></div>`
+      : `<div class="card card-pad"><p class="muted" style="margin:0;">Aucun apprenti en formation au ${esc(sifa.dateObservation || "31 décembre")} sur ce campus. Il n'y a pas de fichier à déposer — vérifier que les inscriptions de l'année sont bien saisies.</p></div>`;
+
+  const apercu = (sifa.apercu || []).length
+    ? `<div class="card" style="overflow-x:auto;margin-top:10px;"><table class="net-table">
+        <thead><tr>${(sifa.colonnes || []).slice(0, 8).map((c) => `<th>${esc(c.label)}</th>`).join("")}</tr></thead>
+        <tbody>${sifa.apercu.map((l) => `<tr>${(sifa.colonnes || []).slice(0, 8).map((c) => `<td>${esc(l[c.key] ?? "")}</td>`).join("")}</tr>`).join("")}</tbody></table>
+        <div class="sub muted" style="padding:8px 12px;">Aperçu des ${Math.min(10, sifa.total)} premières lignes sur ${sifa.total} — l'export contient les ${(sifa.colonnes || []).length} colonnes.</div></div>`
+    : "";
+
+  const fin = bpf.financeurs || {};
+  const produits = bpf.cadreC?.produits || {};
+
+  view.innerHTML = `
+    <div class="section-title" style="margin-top:0;">SIFA — enquête annuelle des CFA</div>
+    <div class="card card-pad">
+      <p class="muted" style="margin-top:0;">Une ligne par apprenti présent au <b>31 décembre</b>. Un contrat rompu mais l'apprenti maintenu en formation compte : il est bien au CFA à cette date.</p>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+        <div><label class="field-label">Année d'observation</label><input class="txt" id="dec-annee" type="number" min="2020" max="2100" value="${decAnnee}" style="width:120px;"></div>
+        <button class="btn-ghost btn-sm" id="dec-sifa-csv">Exporter le fichier (CSV)</button>
+        <span class="sub muted">${sifa.total || 0} apprenti(s) au ${esc(sifa.dateObservation || "")}</span>
+      </div>
+      <div id="dec-sifa-msg" class="sub" style="margin-top:8px;"></div>
+    </div>
+    ${sifaBloc}
+    ${apercu}
+
+    <div class="section-title">BPF — bilan pédagogique et financier</div>
+    <div class="card card-pad">
+      <p class="muted" style="margin-top:0;">Déposé auprès de la DREETS avant le <b>30 avril</b>. Il porte sur l'<b>exercice comptable</b> — pas sur l'année scolaire — et ses montants sont hors taxes.</p>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+        <div><label class="field-label">Début d'exercice</label><input class="txt" id="dec-from" type="date" value="${esc(decExercice.from)}"></div>
+        <div><label class="field-label">Fin d'exercice</label><input class="txt" id="dec-to" type="date" value="${esc(decExercice.to)}"></div>
+        <button class="btn-ghost btn-sm" id="dec-bpf-open">Ouvrir le bilan imprimable</button>
+      </div>
+    </div>
+    ${(bpf.manquantes || []).length ? `<div class="card card-pad" style="border-left:4px solid var(--bad);margin-top:10px;">
+      <div class="ttl" style="margin-bottom:6px;">À compléter avant dépôt</div>
+      <ul class="muted" style="margin:0;padding-left:18px;">${bpf.manquantes.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>` : ""}
+    <div class="card" style="overflow-x:auto;margin-top:10px;"><table class="net-table">
+      <thead><tr><th>Cadre C — origine des produits</th><th style="text-align:right;">Montant HT</th></tr></thead>
+      <tbody>${Object.entries(fin).map(([k, label]) => `<tr><td>${esc(label)}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${eur(produits[k])}</td></tr>`).join("")}
+        <tr><td><b>Total des produits</b></td><td style="text-align:right;font-variant-numeric:tabular-nums;"><b>${eur(bpf.cadreC?.total)}</b></td></tr></tbody></table></div>
+    <div class="card card-pad" style="margin-top:10px;">
+      <div class="ttl">Cadre B — bilan pédagogique</div>
+      <p class="muted" style="margin-bottom:0;"><b>${(bpf.cadreB?.heuresStagiaires || 0).toLocaleString("fr-FR")}</b> heures-stagiaires, <b>${bpf.cadreB?.stagiaires || 0}</b> stagiaire(s).
+      Les heures ne sont comptées que sur les feuilles d'émargement <b>closes</b> : une feuille ouverte n'est pas une heure justifiable en contrôle.</p>
+    </div>
+    <p class="sub muted" style="margin-top:14px;">Campus Manager prépare ces déclarations et signale ce qui manque ; le dépôt reste à effectuer sur les portails officiels (SIFA, « Mon Activité Formation »). Formats et nomenclatures à revérifier à chaque campagne.</p>`;
+
+  $("#dec-campus")?.addEventListener("change", () => { decCampus = $("#dec-campus").value; renderDeclarations(); });
+  $("#dec-annee").addEventListener("change", () => { decAnnee = Number($("#dec-annee").value) || decAnnee; renderDeclarations(); });
+  const majExercice = () => { decExercice = { from: $("#dec-from").value, to: $("#dec-to").value }; renderDeclarations(); };
+  $("#dec-from").addEventListener("change", majExercice);
+  $("#dec-to").addEventListener("change", majExercice);
+  $$(".dec-fiche").forEach((b) => b.addEventListener("click", () => openLearnerFiche(b.dataset.id)));
+  $("#dec-bpf-open").onclick = () => window.open(`/api/declarations/bpf?campusId=${decCampus}&from=${decExercice.from}&to=${decExercice.to}&format=html`, "_blank");
+  $("#dec-sifa-csv").onclick = () => {
+    const msg = $("#dec-sifa-msg");
+    if (!sifa.total) { msg.textContent = "Aucun apprenti en périmètre : il n'y a pas de fichier à produire."; msg.style.color = "var(--bad)"; return; }
+    // Un export forcé reste possible, mais jamais par défaut et jamais sans que
+    // l'utilisateur sache qu'il dépose un fichier que la plateforme rejettera.
+    if (anomalies.length && !confirm(`${anomalies.length} ligne(s) sont incomplètes et seront rejetées au dépôt.\n\nExporter quand même (pour travail interne) ?`)) return;
+    location.href = `/api/declarations/sifa?campusId=${decCampus}&annee=${decAnnee}&format=csv${anomalies.length ? "&force=1" : ""}`;
+  };
 }
 
 // ---------- Vue : Facturation ----------
