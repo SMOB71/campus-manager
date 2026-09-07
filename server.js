@@ -24,6 +24,7 @@ import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STA
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention } from "./lib/grades.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
+import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
 import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
@@ -1397,9 +1398,13 @@ app.get("/api/learners", requireAuth, (req, res) => {
   const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
   const byLearner = new Map();
   for (const e of enr) if (!byLearner.has(e.learnerId)) byLearner.set(e.learnerId, e);
+  // Le RQTH est une donnée de santé (art. 9 RGPD) : elle n'a rien à faire dans une
+  // liste consultée par tout le campus. Elle reste sur la FICHE, accessible aux
+  // seuls profils qui en ont besoin, et sa consultation y est tracée.
   res.json(items.map((l) => {
     const e = byLearner.get(l.id) || null;
-    return { ...l, enrollment: e ? { ...e, className: classes.get(e.classId) || null } : null };
+    const { rqth, notes, repLegalNom, repLegalTel, repLegalEmail, ...publiques } = l;
+    return { ...publiques, enrollment: e ? { ...e, className: classes.get(e.classId) || null } : null };
   }));
 });
 
@@ -1416,8 +1421,14 @@ app.get("/api/learners/:id", requireAuth, (req, res) => {
   const l = learnerGuard(req, res);
   if (!l) return;
   const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+  // Accès à la donnée de santé : réservé aux profils qui en ont l'usage
+  // (direction, référent handicap), et journalisé — l'art. 9 impose de savoir
+  // qui a consulté quoi.
+  const peutVoirSante = req.user?.role === "admin" || req.user?.role === "directeur";
+  const { rqth, ...sansSante } = l;
+  if (peutVoirSante && rqth) logAudit(req, "read", "donnee-sante", `consultation RQTH — ${l.prenom} ${l.nom}`);
   res.json({
-    ...l,
+    ...(peutVoirSante ? l : sansSante),
     enrollments: store.listEnrollments({ learnerId: l.id }).map((e) => ({ ...e, className: classes.get(e.classId) || null })),
     documents: store.listDocuments(l.campusId, null, l.id),
     timeline: store.learnerTimeline(l.id),
@@ -2750,19 +2761,90 @@ app.put("/api/settings", requireAuth, requireAdmin, (req, res) => {
 });
 
 // ===== RGPD : registre des traitements, export & rétention =====
+// Registre par défaut, livré au client. Il doit décrire la RÉALITÉ des traitements :
+// un registre incomplet est celui que l'établissement présentera en contrôle.
+// Rubriques alignées sur l'art. 30 : personnes concernées, destinataires,
+// sous-traitants et transferts, en plus de la finalité, de la base et de la durée.
 const DEFAULT_RGPD_REGISTER = [
-  { data: "Comptes utilisateurs (nom, email)", purpose: "Gestion des accès et authentification", basis: "Intérêt légitime", retention: "Durée du compte + 12 mois" },
-  { data: "Données campus & indicateurs financiers", purpose: "Pilotage opérationnel du réseau", basis: "Intérêt légitime", retention: "Durée d'exploitation" },
-  { data: "Documents & preuves Qualiopi", purpose: "Conformité réglementaire (certification)", basis: "Obligation légale", retention: "3 ans après l'audit" },
-  { data: "Emails traités & briefs du matin", purpose: "Assistance opérationnelle", basis: "Intérêt légitime", retention: "14 derniers briefs" },
-  { data: "Incidents & réclamations", purpose: "Suivi qualité et sécurité", basis: "Intérêt légitime", retention: "3 ans" },
-  { data: "Décisions CODIR", purpose: "Gouvernance et traçabilité des arbitrages", basis: "Intérêt légitime", retention: "5 ans" },
-  { data: "Journal d'audit (actions utilisateurs)", purpose: "Traçabilité et sécurité", basis: "Intérêt légitime / obligation", retention: "12 mois" },
+  { data: "Dossiers apprenants (état civil, INE, coordonnées, représentant légal)", people: "Apprenants, dont mineurs", purpose: "Gestion de la scolarité et de l'alternance", basis: "Exécution du contrat de formation", retention: "Durée de la formation + prescription applicable aux titres", recipients: "Équipe pédagogique et administrative du campus", subprocessors: "Hébergeur (France)" },
+  { data: "Reconnaissance de la qualité de travailleur handicapé (RQTH)", people: "Apprenants", purpose: "Accompagnement et adaptations (Qualiopi ind. 26)", basis: "Obligation légale — donnée de santé, art. 9 RGPD", retention: "Durée de la formation", recipients: "Référent handicap et direction UNIQUEMENT", subprocessors: "—" },
+  { data: "Candidatures et prospects", people: "Candidats", purpose: "Recrutement et suivi des admissions", basis: "Intérêt légitime / consentement au dépôt de candidature", retention: "24 mois si non convertie", recipients: "Service admissions", subprocessors: "CRM du client si connecté (Salesforce)" },
+  { data: "Inscriptions, notes, bulletins", people: "Apprenants", purpose: "Suivi pédagogique et délivrance des résultats", basis: "Exécution du contrat de formation", retention: "Durée de la formation + prescription", recipients: "Équipe pédagogique, apprenant, représentant légal si mineur", subprocessors: "—" },
+  { data: "Feuilles d'émargement et signatures manuscrites", people: "Apprenants, formateurs", purpose: "Preuve de réalisation de l'action de formation", basis: "Obligation légale (contrôle financeur, Qualiopi)", retention: "Feuilles 5 ans ; images de signature 13 mois", recipients: "Administration, financeur en cas de contrôle", subprocessors: "—" },
+  { data: "Contrats d'alternance (rémunération, maître d'apprentissage, rupture)", people: "Apprentis, tuteurs en entreprise", purpose: "Gestion contractuelle et financement", basis: "Obligation légale et exécution du contrat", retention: "Durée du contrat + prescription", recipients: "Administration, entreprise, opérateur de compétences", subprocessors: "—" },
+  { data: "Accès aux portails (apprenant, formateur, tuteur)", people: "Apprenants, formateurs, tuteurs", purpose: "Consultation de leur propre dossier", basis: "Exécution du contrat", retention: "12 mois après révocation ou expiration", recipients: "La personne concernée uniquement", subprocessors: "—" },
+  { data: "Formateurs (disponibilités, service, société de rattachement)", people: "Formateurs salariés et prestataires", purpose: "Planification des enseignements", basis: "Exécution du contrat de travail ou de prestation", retention: "Durée de la collaboration + 12 mois", recipients: "Direction et planification", subprocessors: "—" },
+  { data: "Comptes utilisateurs (nom, email, moyens d'authentification)", people: "Personnel de l'établissement", purpose: "Gestion des accès et authentification", basis: "Intérêt légitime", retention: "Durée du compte + 12 mois", recipients: "Administrateurs", subprocessors: "—" },
+  { data: "Données campus et indicateurs financiers", people: "—", purpose: "Pilotage opérationnel du réseau", basis: "Intérêt légitime", retention: "Durée d'exploitation", recipients: "Direction", subprocessors: "—" },
+  { data: "Documents et preuves Qualiopi", people: "Apprenants, formateurs", purpose: "Conformité réglementaire (certification)", basis: "Obligation légale", retention: "3 ans après l'audit", recipients: "Certificateur en audit", subprocessors: "—" },
+  { data: "Incidents, réclamations et signalements de tuteurs", people: "Apprenants, tuteurs", purpose: "Suivi qualité et sécurité", basis: "Intérêt légitime", retention: "3 ans", recipients: "Direction", subprocessors: "—" },
+  { data: "Emails traités et briefs quotidiens", people: "Correspondants du dirigeant", purpose: "Assistance opérationnelle", basis: "Intérêt légitime", retention: "14 derniers briefs", recipients: "Le dirigeant", subprocessors: "Fournisseur de messagerie ; fournisseur d'IA si l'assistance IA est activée" },
+  { data: "Contenus soumis à l'assistance IA", people: "Personnes citées dans les contenus", purpose: "Aide à la rédaction et à l'analyse", basis: "Intérêt légitime", retention: "Non conservé par l'éditeur", recipients: "—", subprocessors: "Fournisseur d'IA (transfert hors UE possible — à encadrer, désactivable)" },
+  { data: "Décisions et arbitrages de direction", people: "Personnel", purpose: "Gouvernance et traçabilité", basis: "Intérêt légitime", retention: "5 ans", recipients: "Direction", subprocessors: "—" },
+  { data: "Journal d'audit applicatif", people: "Utilisateurs de l'application", purpose: "Traçabilité et sécurité", basis: "Intérêt légitime et obligation de sécurité", retention: "12 mois", recipients: "Administrateurs", subprocessors: "—" },
 ];
 function rgpdConfig() {
   const s = store.getSettings().rgpd || {};
   return { register: Array.isArray(s.register) && s.register.length ? s.register : DEFAULT_RGPD_REGISTER, retentionMonths: s.retentionMonths || 12 };
 }
+
+// --- Conservation : politique, application, purge ---
+// Les durées sont des défauts de l'éditeur, surchargeables par l'établissement
+// (c'est lui le responsable de traitement). Aucune purge sans durée définie.
+app.get("/api/rgpd/retention", requireAuth, requireAdmin, (req, res) => {
+  res.json({ policy: policyView(store.getSettings()), lastRun: store.getSettings().retentionLastRun || null });
+});
+
+app.put("/api/rgpd/retention", requireAuth, requireAdmin, (req, res) => {
+  const patch = {};
+  for (const k of RETENTION_KEYS) {
+    if (!(k in (req.body || {}))) continue;
+    const v = req.body[k];
+    if (v === null || v === "") { patch[k] = null; continue; } // « ne jamais purger », choix explicite
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 1 || n > 240) return res.status(400).json({ error: `Durée invalide pour ${k} (1 à 240 mois)` });
+    patch[k] = n;
+  }
+  const s = store.updateSettings({ retention: { ...(store.getSettings().retention || {}), ...patch } });
+  logAudit(req, "update", "rgpd", "durées de conservation");
+  res.json({ policy: policyView(s) });
+});
+
+// Purge effective. `dryRun` permet de voir ce qui partirait avant de le faire —
+// une purge irréversible ne doit jamais être une surprise.
+function runRetention({ dryRun = false } = {}) {
+  const settings = store.getSettings();
+  const out = {};
+  const cut = (k) => cutoffDate(k, settings);
+
+  const cSign = cut("signatures");
+  out.signatures = cSign ? (dryRun ? attendancestore.countSignaturesBefore(cSign) : attendancestore.purgeSignaturesBefore(cSign)) : null;
+
+  const cSheets = cut("attendanceSheets");
+  out.attendanceSheets = cSheets ? attendancestore.purgeSheetsBefore(cSheets, { dryRun }) : null;
+
+  const cCand = cut("candidates");
+  out.candidates = cCand ? store.purgeCandidatesBefore(cCand, { dryRun }) : null;
+
+  const cPortal = cut("portalAccessRevoked");
+  out.portalAccessRevoked = cPortal ? store.purgeRevokedPortalAccessBefore(cPortal, { dryRun }) : null;
+
+  const cAnchors = cut("anchors");
+  out.anchors = cAnchors ? store.purgeAnchorsBefore(cAnchors, { dryRun }) : null;
+
+  const cAudit = cut("audit");
+  out.audit = cAudit ? (dryRun ? null : store.purgeAuditBefore(cAudit)) : null;
+
+  if (!dryRun) store.updateSettings({ retentionLastRun: new Date().toISOString() });
+  return out;
+}
+
+app.post("/api/rgpd/retention/run", requireAuth, requireAdmin, (req, res) => {
+  const dryRun = req.body?.dryRun !== false;
+  const r = runRetention({ dryRun });
+  if (!dryRun) logAudit(req, "purge", "rgpd", `purge de conservation : ${JSON.stringify(r)}`);
+  res.json({ dryRun, resultats: r });
+});
 app.get("/api/rgpd", requireAuth, requireAdmin, (req, res) => res.json(rgpdConfig()));
 app.put("/api/rgpd", requireAuth, requireAdmin, (req, res) => {
   const rgpd = {};
@@ -2791,6 +2873,38 @@ app.get("/api/users/:id/export", requireAuth, requireAdmin, (req, res) => {
   res.send(JSON.stringify(payload, null, 2));
 });
 // Rétention : purge du journal d'audit au-delà de la durée configurée.
+// Art. 15 et 20 : accès et portabilité pour un apprenant. Renvoie TOUT ce que le
+// système détient sur lui, dans un format lisible et réutilisable.
+app.get("/api/learners/:id/export", requireAuth, requireAdmin, (req, res) => {
+  const l = store.getLearner(req.params.id);
+  if (!l) return res.status(404).json({ error: "apprenant introuvable" });
+  if (!assertCampus(req, res, l.campusId)) return;
+  const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+  const assessments = new Map(store.listAssessments({}).map((a) => [a.id, a]));
+  const emargements = [];
+  for (const s of attendancestore.listSheets({ campusId: l.campusId })) {
+    const e = effectiveEntries(s).find((x) => x.learnerId === l.id);
+    if (e) emargements.push({ date: s.date, debut: s.start, fin: s.end, statut: e.status, justifie: !!e.justified, signeLe: e.signedAt || null, corrige: !!e.amende });
+  }
+  const dossier = {
+    exportLe: new Date().toISOString(),
+    identite: { ...l },
+    inscriptions: store.listEnrollments({ learnerId: l.id }).map((e) => ({ ...e, classe: classes.get(e.classId) || null })),
+    contrats: store.listContracts({ learnerId: l.id }),
+    notes: store.listGrades({ learnerId: l.id }).map((g) => {
+      const a = assessments.get(g.assessmentId);
+      return { evaluation: a?.label || null, date: a?.date || null, note: g.score, sur: a?.maxScore ?? 20, absent: !!g.absent, commentaire: g.comment || "" };
+    }),
+    emargements,
+    candidature: store.listCandidates({}).find((c) => c.learnerId === l.id) || null,
+    documents: store.listDocuments(l.campusId, null, l.id).map((d) => ({ nom: d.name, depose: d.createdAt })),
+    accesPortail: store.listPortalAccess({ subjectId: l.id }).map(({ tokenHash, ...a }) => a),
+  };
+  logAudit(req, "export", "rgpd", `export du dossier de ${l.prenom} ${l.nom}`);
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`donnees-${l.nom}-${l.prenom}.json`)}`);
+  res.json(dossier);
+});
+
 app.post("/api/rgpd/purge", requireAuth, requireAdmin, (req, res) => {
   const months = rgpdConfig().retentionMonths;
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
@@ -4161,6 +4275,21 @@ if (process.env.ANCHOR !== "off" && cron.validate(anchorCron)) {
     } catch (e) { console.error("[ancrage] echec :", e?.message || e); }
   }, { timezone: "Europe/Paris" });
   console.log(`[ancrage] planifie (${anchorCron}, Europe/Paris)`);
+}
+
+// --- Purge de conservation (RGPD art. 5.1.e) ---
+// Sans execution automatique, une politique de conservation n'est qu'une
+// declaration d'intention : c'est le grief numero un des controles CNIL.
+const retentionCron = process.env.RETENTION_CRON || "0 4 * * 0";
+if (process.env.RETENTION !== "off" && cron.validate(retentionCron)) {
+  cron.schedule(retentionCron, () => {
+    try {
+      const r = runRetention({ dryRun: false });
+      const total = Object.values(r).filter((v) => typeof v === "number").reduce((a, b) => a + b, 0);
+      if (total) console.log("[retention] purge :", JSON.stringify(r));
+    } catch (e) { console.error("[retention] echec :", e?.message || e); }
+  }, { timezone: "Europe/Paris" });
+  console.log(`[retention] purge planifiee (${retentionCron}, Europe/Paris)`);
 }
 
 app.listen(PORT, () => {

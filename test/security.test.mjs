@@ -477,6 +477,66 @@ test("bulletins de classe : une requête, rangs cohérents, cloisonnée", async 
   assert.equal((await req(`/api/classes/${classe.id}/reports`, { cookie: d.cookie })).status, 403);
 });
 
+test("RGPD : RQTH protégé, export du dossier, conservation et purge", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus RGPD" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Sante", prenom: "Donnee", rqth: true, notes: "note interne" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } });
+
+  // RQTH (donnée de santé, art. 9) : absent des LISTES, présent sur la fiche pour
+  // un profil habilité. Les notes internes et le représentant légal aussi.
+  const liste = await (await req(`/api/learners?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  const enListe = liste.find((x) => x.id === l.id);
+  assert.equal(enListe.rqth, undefined, "le RQTH ne doit pas circuler dans les listes");
+  assert.equal(enListe.notes, undefined);
+  const fiche = await (await req(`/api/learners/${l.id}`, { cookie: a.cookie })).json();
+  assert.equal(fiche.rqth, true, "la fiche le montre à un profil habilité");
+  // et la consultation est tracée
+  const audit = await (await req("/api/audit", { cookie: a.cookie })).json();
+  assert.ok(audit.some((e) => e.target === "donnee-sante"));
+
+  // Export des droits (art. 15/20) pour une personne NON salariée
+  const exp = await req(`/api/learners/${l.id}/export`, { cookie: a.cookie });
+  assert.equal(exp.status, 200);
+  const dossier = await exp.json();
+  assert.equal(dossier.identite.nom, "Sante");
+  for (const cle of ["inscriptions", "contrats", "notes", "emargements", "documents", "accesPortail"]) {
+    assert.ok(Array.isArray(dossier[cle]), `l'export doit contenir ${cle}`);
+  }
+  assert.ok(!JSON.stringify(dossier.accesPortail).includes("tokenHash"), "l'export ne doit pas fuiter d'empreinte de jeton");
+
+  // Politique de conservation : durées lisibles, modifiables, bornées
+  const pol = await (await req("/api/rgpd/retention", { cookie: a.cookie })).json();
+  assert.ok(pol.policy.length >= 6);
+  const sign = pol.policy.find((x) => x.key === "signatures");
+  assert.equal(sign.months, 13);
+  assert.ok(sign.basisLabel && sign.why && sign.method, "chaque durée doit porter sa justification");
+  assert.equal((await req("/api/rgpd/retention", { method: "PUT", ...opts, json: { signatures: 999 } })).status, 400);
+  const maj = await (await req("/api/rgpd/retention", { method: "PUT", ...opts, json: { signatures: 6 } })).json();
+  assert.equal(maj.policy.find((x) => x.key === "signatures").months, 6);
+
+  // La purge tourne à blanc par défaut : une suppression irréversible ne surprend personne
+  const blanc = await (await req("/api/rgpd/retention/run", { method: "POST", ...opts, json: {} })).json();
+  assert.equal(blanc.dryRun, true);
+  const reel = await (await req("/api/rgpd/retention/run", { method: "POST", ...opts, json: { dryRun: false } })).json();
+  assert.equal(reel.dryRun, false);
+
+  // Le registre décrit bien les traitements ERP (il ne les mentionnait pas du tout)
+  const rgpd = await (await req("/api/rgpd", { cookie: a.cookie })).json();
+  const texte = JSON.stringify(rgpd.register);
+  for (const attendu of ["apprenants", "margement", "RQTH", "alternance", "ortail"]) {
+    assert.ok(texte.includes(attendu), `le registre doit mentionner : ${attendu}`);
+  }
+  assert.ok(rgpd.register.every((r) => r.people !== undefined && r.recipients !== undefined), "art. 30 : personnes concernées et destinataires");
+
+  // Cloisonnement : un directeur hors périmètre n'exporte rien, et la conservation est admin-only
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req(`/api/learners/${l.id}/export`, { cookie: d.cookie })).status, 403);
+  assert.equal((await req("/api/rgpd/retention", { cookie: d.cookie })).status, 403);
+  assert.equal((await req("/api/rgpd/retention/run", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: {} })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };
