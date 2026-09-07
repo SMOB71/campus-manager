@@ -843,6 +843,13 @@ test("comité : cycle complet et action rattachée à une séance", async () => 
   assert.equal(ko.status, 400);
 });
 
+test("déclarations : réservées aux administrateurs", async () => {
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");
+  const res = await req("/api/declarations/sifa?campusId=x", { cookie: d.cookie, csrf: d.csrf });
+  assert.equal(res.status, 403, "un directeur ne dépose pas les déclarations du réseau");
+});
+
 test("compte désactivé → login refusé", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const list = await (await req("/api/users", { cookie: a.cookie, csrf: a.csrf })).json();
@@ -852,4 +859,22 @@ test("compte désactivé → login refusé", async () => {
   // verifyUserPassword bloque déjà les comptes inactifs → login rejeté (pas de session émise).
   assert.notEqual(d.status, 200);
   assert.ok(!d.csrf, "aucune session émise pour un compte désactivé");
+});
+
+test("garde campus : une requête sans campusId reçoit 400, jamais le silence", async () => {
+  // Le motif `!id || !assertCampus(req, res, id)` court-circuitait la garde quand
+  // l'id manquait : aucune réponse n'était envoyée, et le client attendait son
+  // timeout sans jamais savoir ce qu'on lui reprochait.
+  const a = await login("admin@test.co", "pw12345678");
+  const routes = ["/api/declarations/sifa", "/api/declarations/bpf", "/api/attendance/verify", "/api/attendance/proof"];
+  for (const url of routes) {
+    const res = await req(url, { cookie: a.cookie, csrf: a.csrf });
+    assert.equal(res.status, 400, `${url} doit répondre 400 sans campusId`);
+    assert.match((await res.json()).error, /campusId requis/);
+  }
+  // Même exigence en écriture, où le silence laissait un bouton tourner sans fin.
+  for (const url of ["/api/events", "/api/sessions", "/api/sessions/series"]) {
+    const res = await req(url, { method: "POST", cookie: a.cookie, csrf: a.csrf, json: { date: "2026-09-01" } });
+    assert.equal(res.status, 400, `${url} doit répondre 400 sans campusId`);
+  }
 });

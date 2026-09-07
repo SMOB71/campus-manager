@@ -128,3 +128,4 @@ test("BPF : l'exercice comptable n'est pas l'année scolaire", () => {
   const decale = buildBpf({ exerciceDebut: "2026-09-01", exerciceFin: "2027-08-31", invoices, fundings, sheets: [] });
   assert.equal(decale.cadreC.total, 1500);
 });
+

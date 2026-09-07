@@ -193,6 +193,13 @@ function requireAdmin(req, res, next) {
 // null = admin (accès total) ; sinon liste blanche de campusIds
 function allowedCampusIds(req) { return req.user?.role === "admin" ? null : (req.user?.campusIds || []); }
 function canCampus(req, campusId) { const a = allowedCampusIds(req); return a === null || a.includes(campusId); }
+// Campus obligatoire ET autorisé. Écrit pour qu'AUCUN chemin ne sorte sans
+// réponse : `!id || !assertCampus(...)` court-circuitait assertCampus quand l'id
+// manquait, et la requête restait pendante jusqu'au timeout du client.
+function requireCampus(req, res, campusId) {
+  if (!campusId) { res.status(400).json({ error: "campusId requis" }); return false; }
+  return assertCampus(req, res, campusId);
+}
 function assertCampus(req, res, campusId) {
   if (canCampus(req, campusId)) return true;
   res.status(403).json({ error: "accès non autorisé à ce campus" });
@@ -1435,7 +1442,7 @@ app.get("/api/learners", requireAuth, (req, res) => {
 
 app.post("/api/learners", requireAuth, (req, res) => {
   const { campusId, nom, prenom } = req.body || {};
-  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campusId requis" });
+  if (!requireCampus(req, res, campusId)) return;
   if (!String(nom || "").trim() || !String(prenom || "").trim()) return res.status(400).json({ error: "nom et prénom requis" });
   const l = store.addLearner(req.body);
   logAudit(req, "create", "apprenant", `${l.prenom} ${l.nom}`);
@@ -2728,7 +2735,7 @@ app.get("/api/events", requireAuth, (req, res) => {
 });
 app.post("/api/events", requireAuth, (req, res) => {
   const cid = req.body?.campusId;
-  if (!cid || !assertCampus(req, res, cid)) return;
+  if (!requireCampus(req, res, cid)) return;
   const v = validateBody(req.body || {}); if (!v.ok) return res.status(400).json({ error: v.error });
   const campus = store.listCampuses().find((c) => c.id === cid);
   const e = store.addEvent({ ...req.body, campusName: campus?.name || null });
@@ -3505,7 +3512,7 @@ app.post("/api/portal/access", requireAuth, (req, res) => {
   const { kind, subjectId, campusId, label, days } = req.body || {};
   if (!PORTAL_KINDS.includes(kind)) return res.status(400).json({ error: "type d'accès inconnu" });
   if (!subjectId) return res.status(400).json({ error: "sujet requis" });
-  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  if (!requireCampus(req, res, campusId)) return;
   // Un accès en ligne ouvert à un mineur suppose l'accord du représentant légal.
   // On ne bloque pas l'établissement — il reste responsable de traitement — mais
   // on refuse de le faire en silence : l'autorisation doit être enregistrée.
@@ -3589,7 +3596,7 @@ app.get("/api/assessments", requireAuth, (req, res) => {
 
 app.post("/api/assessments", requireAuth, (req, res) => {
   const { campusId, classId, label } = req.body || {};
-  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  if (!requireCampus(req, res, campusId)) return;
   if (!classId) return res.status(400).json({ error: "classe requise" });
   if (!String(label || "").trim()) return res.status(400).json({ error: "intitulé requis" });
   const a = store.addAssessment(req.body);
@@ -3766,7 +3773,7 @@ ${r.blocs.map((b) => `<tr><td>${esc(b.code ? b.code + " — " : "")}${esc(b.labe
 
 app.get("/api/declarations/sifa", requireAuth, requireAdmin, (req, res) => {
   const campusId = req.query.campusId;
-  if (!campusId || !assertCampus(req, res, campusId)) return;
+  if (!requireCampus(req, res, campusId)) return;
   const annee = Number(req.query.annee) || new Date().getFullYear();
   const d = buildSifa({
     annee,
@@ -3791,7 +3798,7 @@ app.get("/api/declarations/sifa", requireAuth, requireAdmin, (req, res) => {
 
 app.get("/api/declarations/bpf", requireAuth, requireAdmin, (req, res) => {
   const campusId = req.query.campusId;
-  if (!campusId || !assertCampus(req, res, campusId)) return;
+  if (!requireCampus(req, res, campusId)) return;
   // L'exercice comptable, pas l'année scolaire : c'est une confusion fréquente.
   const exerciceDebut = req.query.from || `${new Date().getFullYear() - 1}-01-01`;
   const exerciceFin = req.query.to || `${new Date().getFullYear() - 1}-12-31`;
@@ -3907,7 +3914,7 @@ app.get("/api/fundings/modes", requireAuth, (req, res) => res.json(FUNDING_MODES
 
 app.post("/api/fundings", requireAuth, (req, res) => {
   const { campusId, montant, dateDebut, dateFin, mode } = req.body || {};
-  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  if (!requireCampus(req, res, campusId)) return;
   if (!dateDebut || !dateFin) return res.status(400).json({ error: "dates de début et de fin requises" });
   if (mode !== "heures" && !(Number(montant) > 0)) return res.status(400).json({ error: "montant de prise en charge requis" });
   const f = store.addFunding(req.body);
@@ -4028,7 +4035,7 @@ app.post("/api/invoices/:id/payments", requireAuth, (req, res) => {
 // client migré — ce n'est pas un script interne, c'est un écran du produit.
 app.post("/api/billing/compare", requireAuth, requireAdmin, (req, res) => {
   const { campusId, from, to, reference } = req.body || {};
-  if (!campusId || !assertCampus(req, res, campusId)) return;
+  if (!requireCampus(req, res, campusId)) return;
   if (!Array.isArray(reference)) return res.status(400).json({ error: "montants de référence attendus (périodes du système sortant)" });
   const nôtres = new Map();
   for (const i of store.listInvoices({ campusId })) {
@@ -4093,7 +4100,7 @@ app.get("/api/contracts", requireAuth, (req, res) => {
 
 app.post("/api/contracts", requireAuth, (req, res) => {
   const { campusId, learnerId, companyId } = req.body || {};
-  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  if (!requireCampus(req, res, campusId)) return;
   if (!learnerId) return res.status(400).json({ error: "apprenant requis" });
   if (!companyId) return res.status(400).json({ error: "entreprise requise" });
   const c = store.addContract(req.body);
@@ -4369,7 +4376,7 @@ app.post("/api/attendance/sheets/:id/amend", requireAuth, (req, res) => {
 // à un contrôleur, et celui qui révèle une altération du fichier.
 app.get("/api/attendance/verify", requireAuth, (req, res) => {
   const campusId = req.query.campusId;
-  if (!campusId || !assertCampus(req, res, campusId)) return;
+  if (!requireCampus(req, res, campusId)) return;
   const chain = attendancestore.verifyCampusChain(campusId);
   const avenants = attendancestore.listAmendments(campusId);
   res.json({ ...chain, amendments: avenants.length,
@@ -4476,7 +4483,7 @@ La durée réalisée est calculée à partir des <b>feuilles d'émargement close
 
 app.get("/api/attendance/proof", requireAuth, (req, res) => {
   const { campusId, classId, from, to } = req.query;
-  if (!campusId || !assertCampus(req, res, campusId)) return;
+  if (!requireCampus(req, res, campusId)) return;
   const sheets = attendancestore.listSheets({ campusId, classId, from, to, status: "locked" });
   const agg = periodStats(sheets);
   const chain = attendancestore.verifyCampusChain(campusId);
@@ -4537,7 +4544,7 @@ app.post("/api/sessions/check", requireAuth, (req, res) => {
 });
 app.post("/api/sessions", requireAuth, (req, res) => {
   const s = req.body || {};
-  if (!s.campusId || !assertCampus(req, res, s.campusId)) return;
+  if (!requireCampus(req, res, s.campusId)) return;
   if (!s.date || !s.start || !s.end) return res.status(400).json({ error: "date et horaires requis" });
   const others = sessionstore.listSessions({ from: s.date, to: s.date });
   const conflicts = conflictsFor(s, others, conflictCtx(s));
@@ -4552,7 +4559,7 @@ app.post("/api/sessions", requireAuth, (req, res) => {
 // Série récurrente : une seule écriture pour N séances.
 app.post("/api/sessions/series", requireAuth, (req, res) => {
   const { until, force, ...s } = req.body || {};
-  if (!s.campusId || !assertCampus(req, res, s.campusId)) return;
+  if (!requireCampus(req, res, s.campusId)) return;
   if (!s.date || !s.start || !s.end || !until) return res.status(400).json({ error: "date, horaires et date de fin requis" });
   const seriesId = sessionstore.id();
   const occ = expandWeekly({ ...s, seriesId }, until, store.listPeriods({ campusId: s.campusId }));
