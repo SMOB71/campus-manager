@@ -15,14 +15,50 @@ window.addEventListener("error", (ev) => {
 // ---------- API ----------
 const csrfToken = () => (document.cookie.match(/(?:^|;\s*)ac_csrf=([a-f0-9]+)/) || [])[1] || "";
 const jsonHeaders = () => ({ "Content-Type": "application/json", "X-CSRF-Token": csrfToken() });
+// Toute réponse passe par ici : une erreur serveur (500, 502, passerelle qui
+// renvoie du HTML au lieu de JSON) doit produire un objet {error} lisible, jamais
+// une exception silencieuse qui laisse la vue figée sur « Chargement… ».
+async function parseResponse(r) {
+  if (r.status === 401) return logout(true);
+  const brut = await r.text();
+  let data = null;
+  try { data = brut ? JSON.parse(brut) : {}; } catch { data = null; }
+  if (data && typeof data === "object") {
+    if (!r.ok && !data.error) data.error = `Erreur serveur (${r.status})`;
+    return data;
+  }
+  return { error: r.ok ? "Réponse illisible du serveur" : `Erreur serveur (${r.status}) — réessaie dans un instant` };
+}
+const netErr = (e) => ({ error: e?.name === "TypeError" ? "Connexion perdue — vérifie ton réseau" : `Erreur réseau : ${e?.message || e}` });
 const api = {
-  async get(u) { const r = await fetch(u); if (r.status === 401) return logout(true); return r.json(); },
-  async post(u, b) { const r = await fetch(u, { method: "POST", headers: jsonHeaders(), body: JSON.stringify(b || {}) }); return r.json(); },
-  async patch(u, b) { const r = await fetch(u, { method: "PATCH", headers: jsonHeaders(), body: JSON.stringify(b || {}) }); return r.json(); },
-  async put(u, b) { const r = await fetch(u, { method: "PUT", headers: jsonHeaders(), body: JSON.stringify(b || {}) }); return r.json(); },
-  async del(u) { const r = await fetch(u, { method: "DELETE", headers: { "X-CSRF-Token": csrfToken() } }); return r.json(); },
-  async upload(file) { const fd = new FormData(); fd.append("file", file); const r = await fetch("/api/upload", { method: "POST", headers: { "X-CSRF-Token": csrfToken() }, body: fd }); return r.json(); },
+  async get(u) { try { return await parseResponse(await fetch(u)); } catch (e) { return netErr(e); } },
+  async post(u, b) { try { return await parseResponse(await fetch(u, { method: "POST", headers: jsonHeaders(), body: JSON.stringify(b || {}) })); } catch (e) { return netErr(e); } },
+  async patch(u, b) { try { return await parseResponse(await fetch(u, { method: "PATCH", headers: jsonHeaders(), body: JSON.stringify(b || {}) })); } catch (e) { return netErr(e); } },
+  async put(u, b) { try { return await parseResponse(await fetch(u, { method: "PUT", headers: jsonHeaders(), body: JSON.stringify(b || {}) })); } catch (e) { return netErr(e); } },
+  async del(u) { try { return await parseResponse(await fetch(u, { method: "DELETE", headers: { "X-CSRF-Token": csrfToken() } })); } catch (e) { return netErr(e); } },
+  async upload(file) { const fd = new FormData(); fd.append("file", file); try { return await parseResponse(await fetch("/api/upload", { method: "POST", headers: { "X-CSRF-Token": csrfToken() }, body: fd })); } catch (e) { return netErr(e); } },
 };
+
+// Anti-double-clic : le bouton reste désactivé jusqu'à la FIN du handler, refetch
+// compris. Sans cela, un double-clic sur réseau lent crée deux dossiers apprenants,
+// ou envoie deux emails d'ancrage horodatés dans un dossier de contrôle.
+async function guard(btn, fn) {
+  if (!btn || btn.disabled) return;
+  const libelle = btn.innerHTML;
+  btn.disabled = true;
+  try { return await fn(); }
+  finally { btn.disabled = false; btn.innerHTML = libelle; }
+}
+
+// Une erreur non rattrapée ne doit jamais laisser l'écran muet.
+window.addEventListener("unhandledrejection", (e) => {
+  console.error("[promesse rejetée]", e.reason);
+  const v = document.querySelector("#view");
+  if (v && /Chargement/.test(v.textContent || "") && v.children.length <= 1) {
+    v.innerHTML = `<div class="card card-pad"><b>Impossible d'afficher cette page.</b><p class="sub muted">${esc(e.reason?.message || "Erreur inattendue")}</p><button class="btn-primary btn-sm" id="err-reload">Recharger</button></div>`;
+    document.querySelector("#err-reload")?.addEventListener("click", () => location.reload());
+  }
+});
 
 // ---------- Icônes ----------
 const I = {
@@ -1889,7 +1925,7 @@ async function renderAdmissionsAgregatsInto(view) {
     const tr = b.closest("tr"); const patch = {};
     $$(".ad", tr).forEach((i) => (patch[i.dataset.f] = i.value));
     await api.patch(`/api/campuses/${b.dataset.cid}/admissions`, patch);
-    renderAdmissions();
+    await renderAdmissions();
   }));
 }
 
@@ -1936,7 +1972,7 @@ async function renderCandidatesInto(view) {
     const r = await api.post("/api/salesforce/sync");
     if (r.error) alert(r.error);
     else alert(`Synchronisation Salesforce : ${r.created} créée(s), ${r.updated} mise(s) à jour${r.sansCampus ? `, ${r.sansCampus} sans campus (à affecter manuellement)` : ""} sur ${r.total} lead(s).`);
-    renderAdmissions();
+    await renderAdmissions();
   });
   $$(".cand-stage").forEach((s) => s.addEventListener("change", async () => { await api.patch(`/api/candidates/${s.dataset.id}`, { stage: s.value }); renderAdmissions(); }));
   $$(".cand-convert").forEach((b) => b.addEventListener("click", async () => {
@@ -1945,7 +1981,7 @@ async function renderCandidatesInto(view) {
     const r = await api.post(`/api/candidates/${b.dataset.id}/convert`, { schoolYear: year || undefined });
     if (r.error) { alert(r.error); return; }
     alert(`Dossier ${r.learnerCreated ? "créé" : "existant lié"} pour ${r.learner.prenom} ${r.learner.nom}${r.enrollment ? " — inscrit " + r.enrollment.schoolYear : ""}.`);
-    renderAdmissions();
+    await renderAdmissions();
   }));
 }
 
@@ -1964,14 +2000,14 @@ function openCandidateForm(c, onDone) {
     <div class="field"><label class="field-label">Campus *</label><select class="txt" id="cf-campus">${campusOptions(c.campusId)}</select></div>
     <div class="field"><label class="field-label">Notes</label><textarea id="cf-notes" rows="2">${esc(c.notes || "")}</textarea></div>
     <div class="actions"><button class="btn-primary" id="cf-save">${c.id ? "Enregistrer" : "Créer"}</button> <span class="status" id="cf-msg"></span></div>`);
-  $("#cf-save").onclick = async () => {
+  $("#cf-save").onclick = () => guard($("#cf-save"), async () => {
     const body = { nom: $("#cf-nom").value.trim(), prenom: $("#cf-prenom").value.trim(), email: $("#cf-email").value.trim(), telephone: $("#cf-tel").value.trim(), formationSouhaitee: $("#cf-form").value.trim(), campusId: $("#cf-campus").value, notes: $("#cf-notes").value.trim() };
     if (!body.nom || !body.prenom || !body.campusId) { $("#cf-msg").textContent = "Nom, prénom et campus sont requis."; return; }
     const r = c.id ? await api.patch(`/api/candidates/${c.id}`, body) : await api.post("/api/candidates", body);
     if (r.error) { $("#cf-msg").textContent = r.error; return; }
     document.querySelector(".modal-bg")?.remove();
     await onDone();
-  };
+  });
 }
 
 function openSalesforceConfig(sf, onDone) {
@@ -3437,7 +3473,7 @@ function openLearnerForm(learner, onDone) {
       </div></details>
     <div class="field"><label class="field-label">Notes internes</label><textarea id="lf-notes" rows="2">${esc(l.notes || "")}</textarea></div>
     <div class="actions"><button class="btn-primary" id="lf-save">${l.id ? "Enregistrer" : "Créer le dossier"}</button> <span class="status" id="lf-msg"></span></div>`);
-  $("#lf-save").onclick = async () => {
+  $("#lf-save").onclick = () => guard($("#lf-save"), async () => {
     const body = {
       civilite: $("#lf-civ").value, nom: $("#lf-nom").value.trim(), prenom: $("#lf-prenom").value.trim(),
       dateNaissance: $("#lf-ddn").value, lieuNaissance: $("#lf-ldn").value.trim(), ine: $("#lf-ine").value.trim(),
@@ -3451,7 +3487,7 @@ function openLearnerForm(learner, onDone) {
     if (r.error) { $("#lf-msg").textContent = r.error; return; }
     document.querySelector(".modal-bg")?.remove();
     if (onDone) await onDone(r); else await renderApprenants();
-  };
+  });
 }
 
 async function openLearnerFiche(lid) {
@@ -3518,13 +3554,13 @@ function openEnrollmentForm(l, enr, classes, onDone) {
       <div class="field"><label class="field-label">Motif de sortie</label><input class="txt" id="ef-motif" value="${esc(e.motifSortie || "")}"></div>
     </div>
     <div class="actions"><button class="btn-primary" id="ef-save">Enregistrer</button> <span class="status" id="ef-msg"></span></div>`);
-  $("#ef-save").onclick = async () => {
+  $("#ef-save").onclick = () => guard($("#ef-save"), async () => {
     const body = { schoolYear: $("#ef-year").value.trim(), classId: $("#ef-class").value || null, statut: $("#ef-statut").value, dateDebut: $("#ef-deb").value, dateSortie: $("#ef-fin").value, motifSortie: $("#ef-motif").value.trim() };
     if (!body.schoolYear) { $("#ef-msg").textContent = "Année scolaire requise."; return; }
     const r = enr ? await api.patch(`/api/learners/${l.id}/enrollments/${enr.id}`, body) : await api.post(`/api/learners/${l.id}/enrollments`, body);
     if (r.error) { $("#ef-msg").textContent = r.error; return; }
     if (onDone) await onDone();
-  };
+  });
 }
 
 // ---------- Vue : SI campus (connecteur ERP) ----------
@@ -4138,9 +4174,31 @@ async function renderBackups() {
 function openModal(title, bodyHtml, toolsHtml = "") {
   const bg = document.createElement("div");
   bg.className = "modal-bg";
-  bg.innerHTML = `<div class="modal"><div class="modal-head"><h2>${esc(title)}</h2><div style="display:flex;gap:8px;align-items:center;">${toolsHtml}<button class="btn-ghost btn-sm" id="modal-close">Fermer</button></div></div><div class="modal-body">${bodyHtml}</div></div>`;
-  bg.addEventListener("click", (e) => { if (e.target === bg || e.target.id === "modal-close") bg.remove(); });
+  const titleId = "modal-title-" + Math.random().toString(36).slice(2, 8);
+  // Rôle et libellé : sans eux, un lecteur d'écran ne voit qu'un div de plus.
+  bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"><div class="modal-head"><h2 id="${titleId}">${esc(title)}</h2><div style="display:flex;gap:8px;align-items:center;">${toolsHtml}<button class="btn-ghost btn-sm" id="modal-close">Fermer</button></div></div><div class="modal-body">${bodyHtml}</div></div>`;
+  const rendreFocus = document.activeElement;
+  const fermer = () => {
+    bg.remove();
+    document.removeEventListener("keydown", onKey);
+    if (rendreFocus && document.contains(rendreFocus)) rendreFocus.focus();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); fermer(); return; }
+    // Piège de focus : au clavier, on ne doit pas sortir de la modale par accident.
+    if (e.key !== "Tab") return;
+    const cibles = bg.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    if (!cibles.length) return;
+    const premier = cibles[0], dernier = cibles[cibles.length - 1];
+    if (e.shiftKey && document.activeElement === premier) { e.preventDefault(); dernier.focus(); }
+    else if (!e.shiftKey && document.activeElement === dernier) { e.preventDefault(); premier.focus(); }
+  };
+  bg.addEventListener("click", (e) => { if (e.target === bg || e.target.id === "modal-close") fermer(); });
+  document.addEventListener("keydown", onKey);
   document.body.appendChild(bg);
+  // Le focus entre dans la modale : premier champ si présent, sinon « Fermer ».
+  (bg.querySelector(".modal-body input, .modal-body select, .modal-body textarea") || bg.querySelector("#modal-close"))?.focus();
+  return bg;
 }
 
 // ---------- Command palette (Cmd/Ctrl+K) + recherche globale ----------
@@ -4353,7 +4411,7 @@ async function openContractForm(contract) {
   };
   ["#ctf-learner", "#ctf-debut", "#ctf-annee"].forEach((s) => $(s).addEventListener("change", refreshWage));
   refreshWage();
-  $("#ctf-save").onclick = async () => {
+  $("#ctf-save").onclick = () => guard($("#ctf-save"), async () => {
     const body = {
       campusId, learnerId: $("#ctf-learner").value, companyId: $("#ctf-company").value, type: $("#ctf-type").value,
       dateDebut: $("#ctf-debut").value, dateFin: $("#ctf-fin").value, dateSignature: $("#ctf-sign").value,
@@ -4369,7 +4427,7 @@ async function openContractForm(contract) {
     if (r.error) { $("#ctf-msg").textContent = r.error; return; }
     document.querySelector(".modal-bg")?.remove();
     if (c.id) openContractFiche(c.id); else renderContrats();
-  };
+  });
 }
 
 async function openContractFiche(cid) {
@@ -4406,8 +4464,9 @@ async function openContractFiche(cid) {
     document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
   });
   $("#ct-valide")?.addEventListener("click", async () => {
-    await api.patch(`/api/contracts/${cid}`, { status: "valide", dateValidation: new Date().toISOString().slice(0, 10) });
-    document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
+    const r = await api.patch(`/api/contracts/${cid}`, { status: "valide", dateValidation: new Date().toISOString().slice(0, 10) });
+    if (r.error) { alert(r.error); return; }
+    document.querySelector(".modal-bg")?.remove(); await openContractFiche(cid);
   });
   $("#ct-rupture")?.addEventListener("click", async () => {
     const motif = prompt("Que s'est-il passé ? (motif du signalement, obligatoire)");
@@ -4502,7 +4561,7 @@ async function openAssessmentForm(a, classes) {
       <div class="field"><label class="field-label">Barème (noté sur)</label><input class="txt" id="af-max" type="number" min="1" value="${a.maxScore ?? 20}"></div>
     </div>
     <div class="actions"><button class="btn-primary" id="af-save">${a.id ? "Enregistrer" : "Créer et saisir les notes"}</button> <span class="status" id="af-msg"></span></div>`);
-  $("#af-save").onclick = async () => {
+  $("#af-save").onclick = () => guard($("#af-save"), async () => {
     const body = { campusId: ntCampus, classId: $("#af-class").value, moduleId: $("#af-module").value || null,
       label: $("#af-label").value.trim(), type: $("#af-type").value, date: $("#af-date").value,
       coefficient: $("#af-coef").value, maxScore: $("#af-max").value };
@@ -4511,7 +4570,7 @@ async function openAssessmentForm(a, classes) {
     if (r.error) { $("#af-msg").textContent = r.error; return; }
     document.querySelector(".modal-bg")?.remove();
     if (!a.id) openGradeEntry(r.id); else renderNotes();
-  };
+  });
 }
 
 async function modulesForClass(classId, classes) {
@@ -4548,7 +4607,7 @@ async function openGradeEntry(aid) {
     if (score) score.disabled = c.checked;
     if (zero) zero.style.display = c.checked ? "flex" : "none";
   }));
-  $("#gr-save").onclick = async () => {
+  $("#gr-save").onclick = () => guard($("#gr-save"), async () => {
     const entries = $$(".grade-row").map((r) => {
       const lid = r.dataset.lid;
       return { learnerId: lid, score: $(`.gr-score[data-lid="${lid}"]`).value,
@@ -4557,8 +4616,8 @@ async function openGradeEntry(aid) {
     const r = await api.patch(`/api/assessments/${aid}/grades`, { entries });
     if (r.error) { $("#gr-msg").textContent = r.error; $("#gr-msg").style.color = "var(--bad)"; return; }
     document.querySelector(".modal-bg")?.remove();
-    renderNotes();
-  };
+    await renderNotes();
+  });
 }
 
 // ---------- Vue : Émargement (preuve de réalisation) ----------
@@ -4623,13 +4682,13 @@ async function renderEmargement() {
       </div>
     </div>` : ""}
     ${rows.length ? `<div class="list">${rows.map(line).join("")}</div>` : `<p class="empty">Aucune séance sur cette période — vérifie l'emploi du temps.</p>`}`;
-  $("#em-anchor")?.addEventListener("click", async () => {
+  $("#em-anchor")?.addEventListener("click", () => guard($("#em-anchor"), async () => {
     const r = await api.post("/api/attendance/anchors");
     if (r.error) { alert(r.error); return; }
     const mine = (r.results || []).find((x) => x.campusId === emCampus);
     alert(mine ? `Empreinte publiée : ${mine.count} feuille(s) close(s).\n${mine.sent ? "Email d'ancrage envoyé à " + r.sentTo : "⚠ Email NON envoyé — configure un destinataire (ALERT_TO ou board pack) pour que l'ancrage ait une valeur externe."}` : "Aucune feuille close à ancrer.");
-    renderEmargement();
-  });
+    await renderEmargement();
+  }));
   $("#em-campus").addEventListener("change", () => { emCampus = $("#em-campus").value; renderEmargement(); });
   $("#em-from").addEventListener("change", () => { emFrom = $("#em-from").value; renderEmargement(); });
   $("#em-to").addEventListener("change", () => { emTo = $("#em-to").value; renderEmargement(); });
@@ -4640,7 +4699,7 @@ async function renderEmargement() {
       if (r.error) { alert(r.error); return; }
       sheetId = r.id;
     }
-    openSheetModal(sheetId);
+    await openSheetModal(sheetId);
   }));
 }
 
@@ -4688,16 +4747,19 @@ async function openSheetModal(sheetId) {
     const r = await api.patch(`/api/attendance/sheets/${sheetId}/entries`, { entries: collect() });
     if (r.error) { alert(r.error); return; }
     document.querySelector(".modal-bg")?.remove();
-    openSheetModal(sheetId);
+    await openSheetModal(sheetId);
   });
-  $("#att-lock")?.addEventListener("click", async () => {
+  $("#att-lock")?.addEventListener("click", () => guard($("#att-lock"), async () => {
     if (!confirm("Clore et sceller cette feuille ?\n\nElle deviendra non modifiable : toute correction ultérieure devra passer par un avenant motivé, conservé et visible.")) return;
-    await api.patch(`/api/attendance/sheets/${sheetId}/entries`, { entries: collect() });
+    // Le résultat de l'enregistrement DOIT être vérifié : sceller sur un état non
+    // enregistré produirait une preuve d'assiduité fausse, affichée comme un succès.
+    const saved = await api.patch(`/api/attendance/sheets/${sheetId}/entries`, { entries: collect() });
+    if (saved.error) { alert("Les pointages n'ont pas pu être enregistrés — la feuille n'a PAS été close.\n\n" + saved.error); return; }
     const r = await api.post(`/api/attendance/sheets/${sheetId}/lock`, {});
     if (r.error) { alert(r.error); return; }
     document.querySelector(".modal-bg")?.remove();
-    renderEmargement();
-  });
+    await renderEmargement();
+  }));
   $$(".att-sign").forEach((b) => b.addEventListener("click", () => openSignaturePad(sheetId, b.dataset.lid, sh.entries.find((e) => e.learnerId === b.dataset.lid)?.learnerName || "")));
   $$(".att-amend").forEach((b) => b.addEventListener("click", async () => {
     const e = sh.entries.find((x) => x.learnerId === b.dataset.lid);
@@ -4708,7 +4770,7 @@ async function openSheetModal(sheetId) {
     const r = await api.post(`/api/attendance/sheets/${sheetId}/amend`, { learnerId: b.dataset.lid, status, reason });
     if (r.error) { alert(r.error); return; }
     document.querySelector(".modal-bg")?.remove();
-    openSheetModal(sheetId);
+    await openSheetModal(sheetId);
   }));
 }
 
@@ -4740,8 +4802,11 @@ function openSignaturePad(sheetId, learnerId, name) {
   const move = (ev) => { if (!drawing) return; ev.preventDefault(); const { x, y } = pos(ev); ctx.lineTo(x, y); ctx.stroke(); };
   const end = () => { drawing = false; };
   cv.addEventListener("pointerdown", start); cv.addEventListener("pointermove", move);
-  window.addEventListener("pointerup", end, { once: false });
-  pad.querySelector("#sig-close").addEventListener("click", () => pad.remove());
+  // Écouteur posé sur window : il DOIT être retiré à la fermeture, sinon une
+  // tablette en salle accumule un écouteur et un canvas par signature de la journée.
+  window.addEventListener("pointerup", end);
+  const fermerPad = () => { window.removeEventListener("pointerup", end); pad.remove(); };
+  pad.querySelector("#sig-close").addEventListener("click", fermerPad);
   pad.querySelector("#sig-clear").addEventListener("click", () => { ctx.clearRect(0, 0, cv.width, cv.height); dirty = false; });
   pad.querySelector("#sig-save").addEventListener("click", async () => {
     if (!dirty) { alert("Signature vide."); return; }
@@ -4749,7 +4814,7 @@ function openSignaturePad(sheetId, learnerId, name) {
     if (r.error) { alert(r.error); return; }
     pad.remove();
     document.querySelector(".modal-bg")?.remove();
-    openSheetModal(sheetId);
+    await openSheetModal(sheetId);
   });
 }
 
