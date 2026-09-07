@@ -47,18 +47,49 @@ test("inscription : apprenant inconnu → null, statut invalide → inscrit", ()
   assert.equal(e.statut, "inscrit");
 });
 
-test("suppression RGPD : dossier + inscriptions purgés, documents délestés", () => {
+test("effacement RGPD : cascade réelle sur toutes les données de l'apprenant", () => {
   const l = store.addLearner({ campusId: campus.id, nom: "Petit", prenom: "Emma" });
-  store.addEnrollment({ learnerId: l.id, schoolYear: "2026-2027" });
+  store.addEnrollment({ learnerId: l.id, schoolYear: "2026-2027", classId: classe.id });
   const doc = store.addDocument({ campusId: campus.id, name: "carte-identite.pdf", learnerId: l.id });
-  assert.equal(store.listDocuments(campus.id, null, l.id).length, 1);
-  store.deleteLearner(l.id);
+  const ev = store.addAssessment({ campusId: campus.id, classId: classe.id, label: "DS RGPD" });
+  store.setGrades(ev.id, [{ learnerId: l.id, score: 12 }]);
+  store.addContract({ campusId: campus.id, learnerId: l.id, companyId: "co-x", dateDebut: "2026-09-01", dateFin: "2028-08-31" });
+  store.addCandidate({ campusId: campus.id, nom: "Petit", prenom: "Emma", learnerId: l.id });
+  store.createPortalAccess({ kind: "learner", subjectId: l.id, campusId: campus.id, tokenHash: "abc" });
+
+  const r = store.deleteLearner(l.id);
+
+  // Plus AUCUNE donnée nominative ne subsiste dans le store
   assert.equal(store.getLearner(l.id), null);
   assert.equal(store.listEnrollments({ learnerId: l.id }).length, 0);
-  // le document reste au campus (pièce comptable) mais n'est plus rattaché
-  const kept = store.listDocuments(campus.id).find((d) => d.id === doc.id);
-  assert.ok(kept);
-  assert.equal(kept.learnerId, null);
+  assert.equal(store.listGrades({ learnerId: l.id }).length, 0, "les notes doivent partir");
+  assert.equal(store.listContracts({ learnerId: l.id }).length, 0, "les contrats doivent partir");
+  assert.equal(store.listCandidates({}).filter((c) => c.learnerId === l.id).length, 0, "la candidature d'origine doit partir");
+  assert.equal(store.listPortalAccess({ subjectId: l.id }).length, 0, "les accès portail doivent partir");
+  assert.equal(store.listDocuments(campus.id).find((d) => d.id === doc.id), undefined, "les pièces du dossier doivent partir");
+
+  // L'appelant reçoit de quoi supprimer les fichiers correspondants sur disque
+  assert.equal(r.contractIds.length, 1);
+  assert.equal(r.documentIds.length, 1);
+  assert.equal(r.name, "Emma Petit");
+});
+
+test("suppression d'une classe : inscriptions détachées, évaluations et notes purgées", () => {
+  const k = store.addClass({ campusId: campus.id, name: "Classe éphémère" });
+  const l = store.addLearner({ campusId: campus.id, nom: "Reste", prenom: "Ici" });
+  store.addEnrollment({ learnerId: l.id, schoolYear: "2027-2028", classId: k.id });
+  const ev = store.addAssessment({ campusId: campus.id, classId: k.id, label: "DS classe" });
+  store.setGrades(ev.id, [{ learnerId: l.id, score: 15 }]);
+
+  store.deleteClass(k.id);
+
+  // L'apprenant reste inscrit à l'établissement, mais sans classe
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.schoolYear === "2027-2028");
+  assert.ok(enr, "l'inscription ne doit pas disparaître avec la classe");
+  assert.equal(enr.classId, null);
+  // Les évaluations de la classe et leurs notes ne pointent plus dans le vide
+  assert.equal(store.listAssessments({ classId: k.id }).length, 0);
+  assert.equal(store.listGrades({ assessmentId: ev.id }).length, 0);
 });
 
 test("mise à jour : le campus et la date de création survivent au patch", () => {

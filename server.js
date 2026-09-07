@@ -1433,10 +1433,23 @@ app.patch("/api/learners/:id", requireAuth, (req, res) => {
   res.json(upd);
 });
 
+// Droit à l'effacement : la suppression doit ATTEINDRE les fichiers, pas seulement
+// les enregistrements. Les images de signature et les pièces du dossier vivent sur
+// disque et survivraient à une suppression en base.
 app.delete("/api/learners/:id", requireAuth, requireAdmin, (req, res) => {
   const l = store.getLearner(req.params.id);
-  if (l) { store.deleteLearner(l.id); logAudit(req, "delete", "apprenant", `${l.prenom} ${l.nom}`); }
-  res.json({ ok: true });
+  if (!l) return res.json({ ok: true });
+  if (!assertCampus(req, res, l.campusId)) return;
+  const r = store.deleteLearner(l.id);
+  let fichiers = 0;
+  for (const d of r.documentIds || []) {
+    if (!d.file) continue;
+    try { fs.unlinkSync(path.join(DOCS_DIR, d.file)); fichiers++; } catch { /* déjà absent */ }
+  }
+  const signatures = attendancestore.deleteSignaturesOfLearner(l.id);
+  attendancestore.removeLearnerFromOpenSheets(l.id);
+  logAudit(req, "delete", "apprenant", `${l.prenom} ${l.nom} — effacement RGPD : ${r.contractIds.length} contrat(s), ${fichiers} document(s), ${signatures} signature(s)`);
+  res.json({ ok: true, contrats: r.contractIds.length, documents: fichiers, signatures });
 });
 
 app.post("/api/learners/:id/enrollments", requireAuth, (req, res) => {
@@ -2692,6 +2705,7 @@ app.get("/api/settings", requireAuth, requireAdmin, (req, res) => {
   const s = store.getSettings();
   const sf = s.salesforce || {};
   res.json({ thresholds: { ...DEFAULT_THRESHOLDS, ...(s.thresholds || {}) }, board: s.board || { enabled: false, recipients: "" },
+    smicMensuel: s.smicMensuel ?? null, smicDefaut: SMIC_MENSUEL_DEFAUT,
     salesforce: { configured: !!(sf.instanceUrl && sf.clientId && sf.clientSecret), enabled: sf.enabled ?? true,
       instanceUrl: sf.instanceUrl || "", clientId: sf.clientId || "", secretMask: sf.clientSecret ? "•••" + String(sf.clientSecret).slice(-4) : "",
       object: sf.object || "Lead", where: sf.where || "", apiVersion: sf.apiVersion || "v59.0",
@@ -2702,6 +2716,16 @@ app.put("/api/settings", requireAuth, requireAdmin, (req, res) => {
   const patch = {};
   if (req.body?.thresholds) { const t = {}; for (const k of Object.keys(DEFAULT_THRESHOLDS)) if (req.body.thresholds[k] != null && req.body.thresholds[k] !== "") t[k] = Number(req.body.thresholds[k]); patch.thresholds = t; }
   if (req.body?.board) patch.board = { enabled: !!req.body.board.enabled, recipients: String(req.body.board.recipients || "").trim() };
+  // Le SMIC pilote tous les contrôles de rémunération : il DOIT être modifiable
+  // sans redéploiement, sinon chaque revalorisation rend l'outil faux en silence.
+  if (req.body?.smicMensuel !== undefined) {
+    if (req.body.smicMensuel === "" || req.body.smicMensuel === null) patch.smicMensuel = null;
+    else {
+      const v = Number(req.body.smicMensuel);
+      if (!Number.isFinite(v) || v <= 0 || v > 10000) return res.status(400).json({ error: "SMIC mensuel invalide" });
+      patch.smicMensuel = v;
+    }
+  }
   if (req.body?.salesforce) {
     const prev = store.getSettings().salesforce || {};
     const b = req.body.salesforce;
@@ -3628,7 +3652,7 @@ app.patch("/api/attendance/sheets/:id/entries", requireAuth, (req, res) => {
   const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
   if (entries.some((e) => e.status && !ATTENDANCE_STATUSES.includes(e.status))) return res.status(400).json({ error: "statut d'appel invalide" });
   const r = attendancestore.setEntries(sheet.id, entries);
-  if (r?.error) return res.status(409).json(r);
+  if (r?.error) return res.status(r.error.startsWith("apprenant") ? 400 : 409).json(r);
   res.json(hydrateSheet(r));
 });
 
@@ -3645,13 +3669,19 @@ app.post("/api/attendance/sheets/:id/sign", requireAuth, (req, res) => {
 // Signature par code de séance : l'apprenant saisit le code affiché en salle.
 // Route volontairement tolérante au rôle (le portail apprenant s'y branchera),
 // mais elle exige le code exact d'une feuille encore ouverte.
-app.post("/api/attendance/sign-by-code", requireAuth, (req, res) => {
+// Depuis un poste salarié, la signature par code est réservée à l'administration
+// (tablette partagée en salle) et tracée. Un apprenant signe depuis SON portail,
+// où le jeton détermine l'identité et où tout learnerId reçu est ignoré. Sans
+// cette restriction, n'importe quel compte du campus pourrait signer à la place
+// d'un apprenant — un émargement de ce genre ne vaut rien en contrôle.
+app.post("/api/attendance/sign-by-code", requireAuth, requireAdmin, (req, res) => {
   const { code, learnerId, signature } = req.body || {};
   const sheet = attendancestore.getSheetByCode(code);
   if (!sheet) return res.status(404).json({ error: "code invalide ou séance close" });
   if (!assertCampus(req, res, sheet.campusId)) return;
   const r = attendancestore.signEntry(sheet.id, learnerId, signature);
   if (r?.error) return res.status(409).json(r);
+  logAudit(req, "update", "emargement", `signature saisie depuis un poste salarié pour ${learnerId}`);
   res.json({ ok: true, sheetId: sheet.id });
 });
 
