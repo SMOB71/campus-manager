@@ -3812,6 +3812,10 @@ app.post("/api/contracts", requireAuth, (req, res) => {
   res.json(hydrateContract(c));
 });
 
+// ⚠️ ORDRE — cette route statique doit précéder /api/contracts/:id, sinon Express
+// la capture avec id="rupture-modes" et renvoie « contrat introuvable ».
+app.get("/api/contracts/rupture-modes", requireAuth, (req, res) => res.json(RUPTURE_MODES));
+
 app.get("/api/contracts/:id", requireAuth, (req, res) => {
   const c = contractGuard(req, res);
   if (!c) return;
@@ -3928,10 +3932,6 @@ ${nir ? "<br>Le NIR figurant sur ce document a été saisi à l'édition et n'es
 });
 
 // Simulateur de rémunération minimale (affiché à la saisie, pas seulement en contrôle)
-// Modes de rupture et procédure applicable à chacun : c'est ce que l'équipe doit
-// avoir sous les yeux au moment de qualifier.
-app.get("/api/contracts/rupture-modes", requireAuth, (req, res) => res.json(RUPTURE_MODES));
-
 app.get("/api/contracts/wage/simulate", requireAuth, (req, res) => {
   const { age, year } = req.query;
   const smic = Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT;

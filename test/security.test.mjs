@@ -697,6 +697,20 @@ test("SMIC paramétrable : borné, et réellement pris en compte par les contrô
   await req("/api/settings", { method: "PUT", ...opts, json: { smicMensuel: null } });
 });
 
+test("routes statiques sous /api/contracts : non capturées par la route :id", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  // Piège Express : une route statique déclarée APRÈS /api/contracts/:id est
+  // capturée avec id = le segment littéral, et renvoie « contrat introuvable ».
+  const modes = await req("/api/contracts/rupture-modes", { cookie: a.cookie });
+  assert.equal(modes.status, 200);
+  const d = await modes.json();
+  assert.ok(d.essai && d.accord && d.apprenti, `modes attendus, reçu : ${Object.keys(d).join(", ")}`);
+  assert.ok(d.apprenti.procedure.includes("médiateur"), "chaque mode porte sa procédure");
+  const wage = await req("/api/contracts/wage/simulate?age=19&year=1", { cookie: a.cookie });
+  assert.equal(wage.status, 200);
+  assert.equal((await wage.json()).rate, 0.43);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };
