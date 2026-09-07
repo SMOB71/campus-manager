@@ -4580,10 +4580,11 @@ async function renderEmargement() {
   view.innerHTML = `<p class="muted">Chargement…</p>`;
   const qs = new URLSearchParams({ from: emFrom, to: emTo });
   if (emCampus) qs.set("campusId", emCampus);
-  const [sheets, sessions, chain] = await Promise.all([
+  const [sheets, sessions, chain, anchors] = await Promise.all([
     api.get("/api/attendance/sheets?" + qs.toString()),
     api.get(`/api/sessions?${emCampus ? "campusId=" + emCampus + "&" : ""}from=${emFrom}&to=${emTo}`),
     emCampus ? api.get(`/api/attendance/verify?campusId=${emCampus}`) : Promise.resolve(null),
+    emCampus ? api.get(`/api/attendance/anchors?campusId=${emCampus}`) : Promise.resolve([]),
   ]);
   const bySession = new Map((sheets || []).map((s) => [s.sessionId, s]));
   const rows = (sessions || []).filter((s) => s.kind !== "reunion").sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.start || "").localeCompare(a.start || ""));
@@ -4615,8 +4616,20 @@ async function renderEmargement() {
     ${chain ? `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid var(--${chain.ok ? "good" : "bad"});">
       <b>${chain.ok ? "✓ Chaîne de preuve intègre" : "⚠ Chaîne rompue"}</b> — ${chain.ok ? `${chain.count} feuille(s) close(s), chaînées par empreinte SHA-256. Toute modification postérieure serait détectée.` : esc(chain.reason || "incohérence détectée")}
       ${chain.lastHash ? `<div class="sub muted" style="margin-top:4px;word-break:break-all;font-family:ui-monospace,monospace;font-size:11px;">tête : ${esc(chain.lastHash)}</div>` : ""}
+      <div class="sub muted" style="margin-top:6px;">
+        ${anchors?.length ? `Dernier ancrage externe : ${new Date(anchors[0].at).toLocaleString("fr-FR")}${anchors[0].sentTo ? ` (envoyé à ${esc(anchors[0].sentTo)})` : " — non transmis, destinataire non configuré"}. L'empreinte publiée hors de ce système rend une falsification détectable même avec un accès serveur.`
+          : `Aucun ancrage externe publié : la chaîne n'est vérifiable qu'en interne. Publie l'empreinte pour lui donner sa pleine valeur probante.`}
+        ${isAdmin() ? ` <button class="btn-ghost btn-sm" id="em-anchor" style="margin-left:6px;">Ancrer maintenant</button>` : ""}
+      </div>
     </div>` : ""}
     ${rows.length ? `<div class="list">${rows.map(line).join("")}</div>` : `<p class="empty">Aucune séance sur cette période — vérifie l'emploi du temps.</p>`}`;
+  $("#em-anchor")?.addEventListener("click", async () => {
+    const r = await api.post("/api/attendance/anchors");
+    if (r.error) { alert(r.error); return; }
+    const mine = (r.results || []).find((x) => x.campusId === emCampus);
+    alert(mine ? `Empreinte publiée : ${mine.count} feuille(s) close(s).\n${mine.sent ? "Email d'ancrage envoyé à " + r.sentTo : "⚠ Email NON envoyé — configure un destinataire (ALERT_TO ou board pack) pour que l'ancrage ait une valeur externe."}` : "Aucune feuille close à ancrer.");
+    renderEmargement();
+  });
   $("#em-campus").addEventListener("change", () => { emCampus = $("#em-campus").value; renderEmargement(); });
   $("#em-from").addEventListener("change", () => { emFrom = $("#em-from").value; renderEmargement(); });
   $("#em-to").addEventListener("change", () => { emTo = $("#em-to").value; renderEmargement(); });

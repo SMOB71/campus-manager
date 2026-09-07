@@ -407,6 +407,40 @@ test("portails : cloisonnement strict, révocation, pas de session ni de CSRF d�
   assert.equal((await portal("/api/portal/me")).status, 401);
 });
 
+test("ancrage émargement : empreinte publiée, journal consultable, cloisonné", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Ancrage" } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "BTS Anc" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Anc", prenom: "Test" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+  const s = await (await req("/api/sessions", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, date: "2026-09-28", start: "09:00", end: "12:00" } })).json();
+  const sheet = await (await req(`/api/sessions/${s.id}/attendance`, { method: "POST", ...opts, json: {} })).json();
+  const locked = await (await req(`/api/attendance/sheets/${sheet.id}/lock`, { method: "POST", ...opts, json: {} })).json();
+
+  // Ancrage : l'empreinte publiée est bien celle de la tête de chaîne
+  const r = await (await req("/api/attendance/anchors", { method: "POST", ...opts, json: {} })).json();
+  const mine = r.results.find((x) => x.campusId === campus.id);
+  assert.ok(mine, "le campus doit être ancré");
+  assert.equal(mine.hash, locked.hash);
+  assert.equal(mine.count, 1);
+
+  // Le journal d'ancrage est consultable et daté
+  const anchors = await (await req(`/api/attendance/anchors?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.equal(anchors.length, 1);
+  assert.equal(anchors[0].hash, locked.hash);
+  assert.ok(anchors[0].at);
+
+  // L'attestation mentionne l'ancrage
+  const proof = await (await req(`/api/attendance/proof?campusId=${campus.id}&from=2026-09-01&to=2026-09-30`, { cookie: a.cookie })).text();
+  assert.match(proof, /Ancrages externes/);
+
+  // Cloisonnement : un directeur hors périmètre ne voit ni n'ancre
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req(`/api/attendance/anchors?campusId=${campus.id}`, { cookie: d.cookie })).status, 403);
+  assert.equal((await req("/api/attendance/anchors", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: {} })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

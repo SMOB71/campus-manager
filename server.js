@@ -3071,6 +3071,51 @@ for (const [seg, api, listName] of [["rooms", "Room", "listRooms"], ["classes", 
 }
 
 // --- Séances ---
+// ===== Ancrage externe de la chaîne d'émargement (S-1) =====
+// Publie l'empreinte de tête hors de la machine. C'est l'ENVOI qui a la valeur
+// probante (horodatage par un tiers) ; le journal local n'en est que la trace.
+
+async function anchorAttendanceChains({ to }) {
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const results = [];
+  for (const c of store.listCampuses()) {
+    const chain = attendancestore.verifyCampusChain(c.id);
+    if (!chain.count) continue; // rien à ancrer tant qu'aucune feuille n'est close
+    let sent = false;
+    if (to && mailConfigured) {
+      const html = `<div style="font:14px/1.6 -apple-system,Segoe UI,sans-serif;color:#0D1B2A;">
+        <p style="background:#0B6E5F;color:#fff;padding:12px 16px;border-radius:6px;margin:0 0 14px;"><b>Ancrage de la chaîne d'émargement</b><br>${esc(c.name)} — ${new Date().toLocaleString("fr-FR")}</p>
+        <p><b>${chain.count}</b> feuille(s) close(s) · intégrité : <b style="color:${chain.ok ? "#0B6E5F" : "#B03A2E"}">${chain.ok ? "chaîne intègre" : "CHAÎNE ROMPUE — " + esc(chain.reason || "")}</b></p>
+        <p style="margin:14px 0 4px;">Empreinte de tête :</p>
+        <p style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-all;background:#F4EFE6;padding:10px;border-radius:6px;">${esc(chain.lastHash || "—")}</p>
+        <p style="color:#5A6779;font-size:12.5px;margin-top:16px;">Conservez cet email : son horodatage par un tiers atteste de l'état des feuilles d'émargement à cette date. Une modification postérieure d'une feuille ancienne produirait une empreinte différente de celle-ci.</p></div>`;
+      try {
+        await sendMail({ user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD, to,
+          subject: `[Campus Manager] Ancrage émargement — ${c.name} — ${new Date().toISOString().slice(0, 10)}`, html });
+        sent = true;
+      } catch (e) { console.error("[ancrage] envoi échoué :", e?.message || e); }
+    }
+    store.addAnchor({ campusId: c.id, hash: chain.lastHash, count: chain.count, sentTo: sent ? to : "", ok: chain.ok });
+    results.push({ campusId: c.id, campus: c.name, count: chain.count, ok: chain.ok, hash: chain.lastHash, sent });
+  }
+  return results;
+}
+
+app.get("/api/attendance/anchors", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !assertCampus(req, res, campusId)) return;
+  let items = store.listAnchors({ campusId });
+  if (!campusId) items = items.filter((a) => canCampus(req, a.campusId));
+  res.json(items);
+});
+
+app.post("/api/attendance/anchors", requireAuth, requireAdmin, async (req, res) => {
+  const to = alertCfg.to || store.getSettings().board?.recipients || "";
+  const results = await anchorAttendanceChains({ to });
+  logAudit(req, "export", "emargement", `ancrage manuel (${results.length} campus)`);
+  res.json({ results, sentTo: to || null, mailConfigured });
+});
+
 // ===== Portails externes (apprenant / formateur / tuteur) =====
 // Authentification par jeton porteur, totalement disjointe de la session salariée :
 // aucune route ci-dessous ne lit de cookie, et aucune ne peut retomber sur une
@@ -3643,6 +3688,7 @@ app.get("/api/attendance/proof", requireAuth, (req, res) => {
   const sheets = attendancestore.listSheets({ campusId, classId, from, to, status: "locked" });
   const agg = periodStats(sheets);
   const chain = attendancestore.verifyCampusChain(campusId);
+  const anchors = store.listAnchors({ campusId, limit: 10 });
   const campus = store.listCampuses().find((c) => c.id === campusId);
   const className = classId ? (store.getClass(classId)?.name || "") : "toutes classes";
   const names = new Map(store.listLearners({ campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
@@ -3680,7 +3726,8 @@ code{font-family:ui-monospace,monospace;word-break:break-all;}.ok{color:#0B6E5F;
   <div><b>${agg.attendanceRate ?? "—"} %</b>taux d'assiduité</div>
 </div>
 <table><thead><tr><th>Apprenant</th><th>Prévu</th><th>Réalisé</th><th>Absence</th><th>dont non justifiée</th><th>Assiduité</th></tr></thead><tbody>${rows || '<tr><td colspan="6">Aucune séance close sur la période.</td></tr>'}</tbody></table>
-<div class="seal"><b>Scellement</b> — chaque feuille close est horodatée par le serveur et chaînée à la précédente par empreinte SHA-256 ; toute modification postérieure rompt la chaîne et devient détectable. Contrôle d'intégrité à l'édition : <span class="${chain.ok ? "ok" : "ko"}">${chain.ok ? "chaîne intègre" : "CHAÎNE ROMPUE (" + esc(chain.reason || "") + ")"}</span> sur ${chain.count ?? 0} feuille(s).<br>Empreinte de tête : <code>${esc(chain.lastHash || "—")}</code><br>Les corrections postérieures à une clôture figurent en avenant sur la feuille concernée.</div>
+<div class="seal"><b>Scellement</b> — chaque feuille close est horodatée par le serveur et chaînée à la précédente par empreinte SHA-256 ; toute modification postérieure rompt la chaîne et devient détectable. Contrôle d'intégrité à l'édition : <span class="${chain.ok ? "ok" : "ko"}">${chain.ok ? "chaîne intègre" : "CHAÎNE ROMPUE (" + esc(chain.reason || "") + ")"}</span> sur ${chain.count ?? 0} feuille(s).<br>Empreinte de tête : <code>${esc(chain.lastHash || "—")}</code><br>Les corrections postérieures à une clôture figurent en avenant sur la feuille concernée.
+${anchors.length ? `<br><b>Ancrages externes</b> — l'empreinte de la chaîne est publiée hors de ce système (email horodaté par un tiers), ce qui rend une falsification postérieure détectable même avec un accès complet au serveur. Derniers ancrages : ${anchors.slice(0, 5).map((an) => `${new Date(an.at).toLocaleString("fr-FR")}${an.sentTo ? "" : " (non transmis)"}`).join(" · ")}.` : `<br><b>Ancrages externes</b> — aucun ancrage publié pour ce campus : la chaîne n'est vérifiable qu'en interne.`}</div>
 </body></html>`);
 });
 
@@ -4033,6 +4080,21 @@ if (process.env.SF_SYNC !== "off" && cron.validate(sfCron)) {
     } catch (e) { console.error("[salesforce] echec :", e?.message || e); }
   }, { timezone: "Europe/Paris" });
   console.log(`[salesforce] sync planifiee (${sfCron}, Europe/Paris)`);
+}
+
+// --- Ancrage quotidien de la chaine d'emargement (S-1) ---
+// Publie l'empreinte de tete hors de la machine : c'est ce qui rend une
+// falsification a posteriori detectable meme avec un acces serveur complet.
+const anchorCron = process.env.ANCHOR_CRON || "30 23 * * *";
+if (process.env.ANCHOR !== "off" && cron.validate(anchorCron)) {
+  cron.schedule(anchorCron, async () => {
+    try {
+      const to = alertCfg.to || store.getSettings().board?.recipients || "";
+      const r = await anchorAttendanceChains({ to });
+      if (r.length) console.log(`[ancrage] ${r.length} chaine(s) ancree(s)${to ? " et envoyee(s) a " + to : " (aucun destinataire configure)"}`);
+    } catch (e) { console.error("[ancrage] echec :", e?.message || e); }
+  }, { timezone: "Europe/Paris" });
+  console.log(`[ancrage] planifie (${anchorCron}, Europe/Paris)`);
 }
 
 app.listen(PORT, () => {

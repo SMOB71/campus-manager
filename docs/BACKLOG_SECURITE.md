@@ -5,7 +5,7 @@ Tenu à jour à chaque bloc. Priorités : P0 bloquant, P1 avant le bloc indiqué
 
 | # | Sujet | Prio | Échéance |
 |---|---|---|---|
-| S-1 | **Ancrage externe de la chaîne d'émargement** | P1 | avant Bloc 5 |
+| S-1 | **Ancrage externe de la chaîne d'émargement** | ✅ | traité avant le Bloc 5 |
 | S-2 | Conservation / purge RGPD des signatures | P2 | Bloc 4 |
 | S-3 | Portails : surface exposée (liens signés, rate-limit, cloisonnement) | ✅ | traité au Bloc 4 |
 | S-4 | Rotation des secrets de connecteurs | P2 | Bloc 7 |
@@ -26,9 +26,14 @@ Tenu à jour à chaque bloc. Priorités : P0 bloquant, P1 avant le bloc indiqué
 
 Une falsification postérieure exigerait alors de réécrire aussi ces témoins externes, ce qui n'est pas à la portée d'un accès serveur seul.
 
-**Coût.** ~½ session (le calcul de l'empreinte de tête existe déjà : `verifyCampusChain`).
+**✅ Traité le 7 septembre 2026.** Mise en œuvre :
 
-**Quand.** Avant le Bloc 5 — dès que la facturation se calcule sur ces heures, la valeur de la preuve devient financière.
+- Cron quotidien (23 h 30, `ANCHOR_CRON`) : pour chaque campus ayant des feuilles closes, l'empreinte de tête est envoyée par email au destinataire d'alertes — **l'horodatage par le serveur de messagerie tiers est le témoin externe**.
+- Journal d'ancrage local (`/api/attendance/anchors`) : trace de ce qui a été publié, avec date, nombre de feuilles et empreinte. Sa valeur vient de l'envoi, pas de lui-même — c'est explicite dans le code.
+- Bouton « Ancrer maintenant » dans la vue Émargement (admin), qui **avertit si aucun destinataire n'est configuré** : sans envoi, l'ancrage n'a pas de valeur externe.
+- L'attestation d'assiduité cite les derniers ancrages, ou signale leur absence.
+
+**Limite résiduelle assumée** : l'ancrage vaut ce que vaut sa conservation externe. Pour un client à fort enjeu, l'étape suivante est l'horodatage qualifié eIDAS auprès d'un tiers de confiance — à proposer au Bloc 7.
 
 ## S-2 — Signatures manuscrites
 
