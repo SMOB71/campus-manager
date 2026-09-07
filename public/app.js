@@ -4508,12 +4508,14 @@ async function openContractFiche(cid) {
     <div class="actions" style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-ghost btn-sm" id="ct-edit">Modifier</button>
       <button class="btn-ghost btn-sm" id="ct-portal">🔗 Lien tuteur</button>
+      <button class="btn-ghost btn-sm" id="ct-cerfa">📄 Dossier de dépôt</button>
       ${c.status !== "depose" && c.status !== "valide" && c.status !== "rompu" ? `<button class="btn-primary btn-sm" id="ct-depose" ${v.ok ? "" : "disabled title=\"Lever d'abord les points bloquants\""}>Marquer déposé</button>` : ""}
       ${c.status === "depose" ? `<button class="btn-primary btn-sm" id="ct-valide">Marquer validé</button>` : ""}
       ${!ruptOpen && c.status !== "rompu" ? `<button class="btn-ghost btn-sm btn-danger" id="ct-rupture">Signaler une rupture</button>` : ""}
     </div>`);
   $("#ct-edit").onclick = () => { document.querySelector(".modal-bg")?.remove(); openContractForm(c); };
   $("#ct-portal").onclick = () => openPortalLink("tutor", c.companyId, c.campusId, c.companyName || "Entreprise");
+  $("#ct-cerfa").onclick = () => openCerfaDossier(cid);
   $("#ct-depose")?.addEventListener("click", async () => {
     const r = await api.patch(`/api/contracts/${cid}`, { status: "depose", dateDepot: new Date().toISOString().slice(0, 10) });
     if (r.error) { alert(r.error + (r.errors ? "\n\n• " + r.errors.join("\n• ") : "")); return; }
@@ -4690,6 +4692,33 @@ async function openGradeEntry(aid) {
     document.querySelector(".modal-bg")?.remove();
     await renderNotes();
   });
+}
+
+// Dossier de dépôt du contrat. On montre d'abord ce qui MANQUE : éditer un
+// dossier incomplet, c'est un rejet et des semaines perdues.
+async function openCerfaDossier(cid) {
+  const d = await api.get(`/api/contracts/${cid}/cerfa`);
+  if (!d || d.error) { alert(d?.error || "Dossier indisponible"); return; }
+  openModal("Dossier de dépôt du contrat", `
+    <div class="card card-pad" style="border-left:4px solid var(--${d.ready ? "good" : "bad"});margin-bottom:12px;">
+      <b>${d.ready ? "✓ Dossier complet" : `${d.missing.length} rubrique(s) à compléter`}</b>
+      <div class="sub muted">Rempli à ${d.completeness} %${d.mineur ? " · apprenti mineur : la section représentant légal est exigée" : ""}</div>
+      ${d.missing.length ? `<ul style="margin:8px 0 0;padding-left:18px;font-size:13px;">${d.missing.slice(0, 10).map((m) => `<li>${esc(m.section)} — ${esc(m.label)}${m.hint ? ` <span class="muted">(${esc(m.hint)})</span>` : ""}</li>`).join("")}${d.missing.length > 10 ? `<li class="muted">… et ${d.missing.length - 10} autre(s)</li>` : ""}</ul>` : ""}
+    </div>
+    ${d.periods?.length ? `<div class="section-title" style="margin-top:0;">Rémunération par période</div>
+      <div class="list">${d.periods.map((p) => `<div class="item"><span class="pill">${esc(p.from)} → ${esc(p.to)}</span>
+        <div class="grow"><div class="ttl">${p.montantMinimum != null ? p.montantMinimum.toFixed(2).replace(".", ",") + " € minimum" : "—"}</div>
+        <div class="sub muted">année ${p.year ?? "—"} · ${p.age ?? "?"} ans${p.rate != null ? " · " + Math.round(p.rate * 100) + " % du " + (p.base || "SMIC") : ""}</div></div></div>`).join("")}</div>` : ""}
+    <div class="field" style="margin-top:12px;"><label class="field-label">NIR de l'apprenti <span class="muted">(facultatif — saisi pour l'édition, jamais conservé)</span></label>
+      <input class="txt" id="cf-nir" placeholder="13 chiffres + clé" autocomplete="off"></div>
+    <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-primary" id="cf-print">Éditer le dossier</button>
+    </div>
+    <p class="hint muted" style="margin-top:10px;">Ce dossier rassemble et contrôle toutes les rubriques exigées, pour la saisie sur le portail de l'opérateur de compétences ou le dépôt dématérialisé. Il ne remplace pas le formulaire Cerfa officiel.</p>`);
+  $("#cf-print").onclick = () => {
+    const nir = $("#cf-nir").value.trim();
+    window.open(`/api/contracts/${cid}/cerfa/print${nir ? "?nir=" + encodeURIComponent(nir) : ""}`, "_blank");
+  };
 }
 
 // ---------- Vue : Émargement (preuve de réalisation) ----------

@@ -606,6 +606,48 @@ test("mineurs : autorisation parentale, portail représentant légal en lecture"
   assert.equal(sign.status, 403);
 });
 
+test("dossier Cerfa : complétude, périodes de rémunération, NIR non persisté", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Cerfa", siret: "73282932000074", uai: "0123456A" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Depot", prenom: "Dossier", dateNaissance: "2006-05-10", ine: "1234C", sexe: "F", nationalite: 1, regimeSocial: 2, adresse: "1 rue du Test", deptNaissance: "75", lieuNaissance: "Paris", situationAvant: 1, dernierDiplomePrepare: "Bac pro", derniereClasse: "Terminale", diplomeLePlusEleve: "Bac pro" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } });
+  const co = await (await req("/api/partners", { method: "POST", ...opts, json: { campusId: campus.id, name: "Optique SARL", siret: "73282932000074", conventionCollective: "Optique", naf: "4778A", adresse: "2 rue X", codePostal: "75001", ville: "Paris", effectif: "12", typeEmployeur: 12, employeurSpecifique: 0, idcc: "1431" } })).json();
+  const c = await (await req("/api/contracts", { method: "POST", ...opts, json: { campusId: campus.id, learnerId: l.id, companyId: co.id, type: "apprentissage", dateDebut: "2026-09-01", dateFin: "2028-08-31", dateConclusion: "2026-08-20", maitreNom: "Paul Martin", maitreEmail: "p@o.fr", maitreDateNaissance: "1980-01-01", maitreFonction: "Opticien", maitreDiplome: "BTS OL", maitreNiveau: "5", maitreEligibilite: true, typeContrat: 11, dureeHebdoHeures: 35, remunerationMensuelle: 900, npec: 8200 } })).json();
+
+  const d = await (await req(`/api/contracts/${c.id}/cerfa`, { cookie: a.cookie })).json();
+  // Le dossier détaille ce qui manque plutôt que de produire un document faux
+  assert.ok(d.completeness > 0 && d.completeness <= 100);
+  assert.ok(Array.isArray(d.missing));
+  assert.ok(d.sections.some((s) => s.key === "employeur") && d.sections.some((s) => s.key === "formation"));
+  // Apprenti majeur au début du contrat : pas de section représentant légal
+  assert.equal(d.mineur, false);
+  assert.ok(!d.sections.some((s) => s.key === "representant"));
+
+  // Périodes de rémunération : coupées aux anniversaires du contrat ET aux
+  // changements de tranche d'âge (au 1er du mois suivant)
+  assert.ok(d.periods.length >= 2, `attendu au moins 2 périodes, reçu ${d.periods.length}`);
+  assert.equal(d.periods[0].from, "2026-09-01");
+  assert.ok(d.periods.every((p) => p.montantMinimum > 0));
+
+  // Édition : le NIR fourni apparaît mais n'est JAMAIS stocké
+  const html = await (await req(`/api/contracts/${c.id}/cerfa/print?nir=199057512345678`, { cookie: a.cookie })).text();
+  assert.match(html, /Dossier de dépôt/);
+  assert.match(html, /199057512345678/);
+  assert.match(html, /n'est pas conservé/);
+  const fiche = await (await req(`/api/learners/${l.id}`, { cookie: a.cookie })).json();
+  assert.ok(!JSON.stringify(fiche).includes("199057512345678"), "le NIR ne doit jamais être persisté");
+
+  // Nomenclatures officielles disponibles pour la saisie
+  const nom = await (await req("/api/cerfa/nomenclatures", { cookie: a.cookie })).json();
+  assert.ok(nom.typeEmployeur && nom.situationAvant && nom.derogation);
+
+  // Cloisonnement
+  const dir = await login("dir@test.co", "pw12345678");
+  assert.equal((await req(`/api/contracts/${c.id}/cerfa`, { cookie: dir.cookie })).status, 403);
+  assert.equal((await req(`/api/contracts/${c.id}/cerfa/print`, { cookie: dir.cookie })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

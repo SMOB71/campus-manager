@@ -23,6 +23,7 @@ import * as attendancestore from "./lib/attendancestore.js";
 import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention, blockReport, certificationSummary } from "./lib/grades.js";
+import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
 import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
@@ -3799,6 +3800,93 @@ app.delete("/api/contracts/:id", requireAuth, requireAdmin, (req, res) => {
   store.deleteContract(c.id);
   logAudit(req, "delete", "contrat", c.id);
   res.json({ ok: true });
+});
+
+// ===== Dossier Cerfa =====
+// PÉRIMÈTRE ASSUMÉ, et à dire tel quel au client : ceci produit un DOSSIER DE
+// DÉPÔT complet et contrôlé — toutes les rubriques du Cerfa, renseignées et
+// vérifiées — destiné à la saisie sur le portail de l'opérateur ou au dépôt
+// dématérialisé. Ce n'est PAS le formulaire officiel timbré, qui appartient à
+// l'administration : prétendre le contraire exposerait à un rejet de forme.
+//
+// Le NIR n'est jamais stocké (art. 30 loi Informatique et Libertés) : il est
+// fourni à la génération, apparaît sur le dossier, et disparaît avec la réponse.
+
+function cerfaContext(c) {
+  const learner = c.learnerId ? store.getLearner(c.learnerId) : null;
+  const company = c.companyId ? store.listPartners().find((p) => p.id === c.companyId) : null;
+  const campus = store.listCampuses().find((x) => x.id === c.campusId) || null;
+  const enr = learner ? store.listEnrollments({ learnerId: learner.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut)) : null;
+  const classe = enr?.classId ? store.getClass(enr.classId) : null;
+  const curriculum = classe?.curriculumId ? store.getCurriculum(classe.curriculumId) : null;
+  return { contract: c, learner, company, campus, curriculum,
+    smic: Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT };
+}
+
+// Complétude du dossier : ce qui manque, avant d'éditer quoi que ce soit.
+app.get("/api/contracts/:id/cerfa", requireAuth, (req, res) => {
+  const c = contractGuard(req, res);
+  if (!c) return;
+  const d = buildCerfa(cerfaContext(c));
+  res.json({ completeness: d.completeness, ready: d.ready, missing: d.missing, mineur: d.mineur,
+    sections: d.sections.map((s) => ({ key: s.key, title: s.title, fields: s.fields })), periods: d.periods });
+});
+
+// Nomenclatures officielles, pour les listes déroulantes de saisie.
+app.get("/api/cerfa/nomenclatures", requireAuth, (req, res) => {
+  res.json({ typeEmployeur: TYPE_EMPLOYEUR, employeurSpecifique: EMPLOYEUR_SPECIFIQUE,
+    nationalite: NATIONALITE, regimeSocial: REGIME_SOCIAL,
+    situationAvant: SITUATION_AVANT_CONTRAT, derogation: DEROGATION, typeContrat: TYPE_CONTRAT });
+});
+
+// Dossier imprimable. Le NIR passe en paramètre et n'est jamais persisté.
+app.get("/api/contracts/:id/cerfa/print", requireAuth, (req, res) => {
+  const c = contractGuard(req, res);
+  if (!c) return;
+  const ctx = cerfaContext(c);
+  const d = buildCerfa(ctx);
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (x) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[x]));
+  const nir = String(req.query.nir || "").trim();
+  const eur = (v) => (v == null ? "—" : Number(v).toFixed(2).replace(".", ",") + " €");
+  const section = (s) => `<h2>${esc(s.title)}${s.conditional ? ` <span class="cond">(${esc(s.conditional)})</span>` : ""}</h2>
+    <table><tbody>${s.fields.map((f) => {
+      const valeur = f.label.startsWith("NIR") && nir ? nir : f.value;
+      return `<tr><td class="lab">${esc(f.label)}${f.required ? "" : ' <span class="opt">facultatif</span>'}</td>
+        <td class="${valeur ? "" : f.required ? "manque" : "vide"}">${valeur ? esc(valeur) : (f.required ? "À COMPLÉTER" : "—")}
+        ${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</td></tr>`;
+    }).join("")}</tbody></table>`;
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Dossier de dépôt — contrat d'alternance</title>
+<style>body{font:13px/1.5 -apple-system,Segoe UI,sans-serif;color:#0D1B2A;max-width:940px;margin:0 auto;padding:26px;}
+h1{font-family:Georgia,serif;font-size:21px;margin:0 0 4px;}h2{font-size:14px;color:#0B6E5F;text-transform:uppercase;letter-spacing:.06em;margin:20px 0 6px;}
+.band{background:#0B6E5F;color:#fff;padding:13px 17px;border-radius:6px;margin-bottom:14px;}
+.band .eyebrow{color:#FFD9CF;font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:3px;}
+table{border-collapse:collapse;width:100%;font-size:12.5px;}
+td{padding:5px 9px;border-bottom:1px solid #e3ded3;vertical-align:top;}
+.lab{width:38%;color:#4A5568;}.manque{color:#B03A2E;font-weight:700;}.vide{color:#98A2B3;}
+.opt{color:#98A2B3;font-weight:400;font-size:11px;}.hint{color:#4A5568;font-size:11px;font-style:italic;margin-top:2px;}
+.cond{color:#4A5568;font-weight:400;text-transform:none;letter-spacing:0;}
+.alerte{background:#F7E4E0;border-left:4px solid #B03A2E;padding:10px 14px;border-radius:5px;margin:12px 0;}
+.ok{background:#E1EFEB;border-left:4px solid #0B6E5F;padding:10px 14px;border-radius:5px;margin:12px 0;}
+.foot{margin-top:22px;padding-top:10px;border-top:1px solid #e3ded3;font-size:11px;color:#4A5568;}
+th{background:#0B6E5F;color:#fff;text-align:left;padding:6px 9px;font-size:11.5px;}
+@media print{body{padding:0;}}</style></head><body>
+<div class="band"><div class="eyebrow">${esc(ctx.campus?.name || "Campus Manager")} · Dossier de dépôt</div>
+<h1>Contrat d'${c.type === "professionnalisation" ? "professionnalisation" : "apprentissage"} — ${esc(ctx.learner ? ctx.learner.prenom + " " + ctx.learner.nom : "")}</h1></div>
+${d.ready ? `<div class="ok"><b>Dossier complet</b> — toutes les rubriques exigées sont renseignées.</div>`
+  : `<div class="alerte"><b>${d.missing.length} rubrique(s) à compléter avant dépôt</b> (dossier rempli à ${d.completeness} %)
+     <ul style="margin:6px 0 0;padding-left:18px;">${d.missing.slice(0, 12).map((m) => `<li>${esc(m.section)} — ${esc(m.label)}</li>`).join("")}</ul></div>`}
+${d.sections.map(section).join("")}
+${d.periods.length ? `<h2>Rémunération par période</h2>
+<table><thead><tr><th>Du</th><th>Au</th><th>Année</th><th>Âge</th><th>% base</th><th>Minimum légal</th></tr></thead><tbody>
+${d.periods.map((p) => `<tr><td>${esc(p.from)}</td><td>${esc(p.to)}</td><td>${p.year ?? "—"}</td><td>${p.age ?? "—"}${p.ageRemuneration != null && p.ageRemuneration !== p.age ? ` <span class="hint">(tranche ${p.ageRemuneration} ans)</span>` : ""}</td>
+<td>${p.rate != null ? Math.round(p.rate * 100) + " %" : "—"}</td><td>${eur(p.montantMinimum)}</td></tr>`).join("")}
+</tbody></table>
+<p class="hint">Les périodes se coupent aux anniversaires du contrat ET au premier jour du mois suivant chaque changement de tranche d'âge de l'apprenti.</p>` : ""}
+<div class="foot"><b>Nature de ce document.</b> Dossier de dépôt destiné à la saisie sur le portail de l'opérateur de compétences ou au dépôt dématérialisé. Il ne remplace pas le formulaire Cerfa officiel, qui relève de l'administration.
+${nir ? "<br>Le NIR figurant sur ce document a été saisi à l'édition et n'est pas conservé par l'application." : ""}
+<br>Barème de rémunération : ${esc(d.periods[0]?.base || "SMIC")} — à revérifier à chaque revalorisation. Édité le ${new Date().toLocaleDateString("fr-FR")}.</div>
+</body></html>`);
 });
 
 // Simulateur de rémunération minimale (affiché à la saisie, pas seulement en contrôle)
