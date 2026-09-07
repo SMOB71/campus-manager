@@ -1660,13 +1660,19 @@ app.get("/api/notifications", requireAuth, (req, res) => {
     if (k.revenue) { const m = marginOf(k); if (m != null) { const mpct = Math.round((m / k.revenue) * 100); if (mpct < th.marginPct) notifs.push({ type: "marge", severity: mpct < th.marginPct - 5 ? "high" : "medium", campusId: r.id, campus: r.name, label: `Marge à ${mpct}% (seuil ${th.marginPct}%)`, date: null }); } }
   }
   // Contrats d'alternance : ruptures en cours, fins de période d'essai et de contrat
-  for (const c of scopeByCampus(req, store.listContracts({}))) {
-    const learner = c.learnerId ? store.getLearner(c.learnerId) : null;
-    const who = learner ? `${learner.prenom} ${learner.nom}` : "apprenant";
-    for (const al of contractAlerts(c, today)) {
-      notifs.push({ type: al.type === "rupture" ? "rupture_contrat" : "contrat", severity: al.severity,
-        campusId: c.campusId, campus: store.listCampuses().find((x) => x.id === c.campusId)?.name || "",
-        label: `${who} — ${al.label}`, date: al.date, contractId: c.id });
+  // Index construits UNE fois : la version précédente reconstruisait et triait la
+  // liste des campus, et balayait tous les apprenants, pour CHAQUE alerte.
+  const contrats = scopeByCampus(req, store.listContracts({}));
+  if (contrats.length) {
+    const nomCampus = new Map(store.listCampuses().map((x) => [x.id, x.name]));
+    const nomApprenant = new Map(store.listLearners({}).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
+    for (const c of contrats) {
+      const who = nomApprenant.get(c.learnerId) || "apprenant";
+      for (const al of contractAlerts(c, today)) {
+        notifs.push({ type: al.type === "rupture" ? "rupture_contrat" : "contrat", severity: al.severity,
+          campusId: c.campusId, campus: nomCampus.get(c.campusId) || "",
+          label: `${who} — ${al.label}`, date: al.date, contractId: c.id });
+      }
     }
   }
   // Signaux du SI campus : ruptures de contrat en cours, absentéisme, synchro en échec
@@ -3262,12 +3268,16 @@ app.post("/api/attendance/anchors", requireAuth, requireAdmin, async (req, res) 
 const portalLimiter = makeRateLimiter({ max: 30, windowMs: 60000 });
 
 function portalAuth(req, res, next) {
-  const ip = clientIp(req);
-  if (!portalLimiter.check(ip).allowed) return res.status(429).json({ error: "Trop de requêtes. Réessaie dans une minute." });
   const header = String(req.headers.authorization || "");
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
   if (!token) return res.status(401).json({ error: "Lien d'accès requis" });
   const access = store.findPortalAccessByHash(hashToken(token));
+  // Deux limites distinctes : un jeton VALIDE est limité par jeton — une classe
+  // entière sort sur l'IP publique du campus, et limiter par IP la bloquait dès le
+  // 30e appel. Un jeton inconnu reste limité par IP : c'est le cas d'une tentative
+  // de devinette, et c'est là que la limite doit mordre.
+  const cle = access ? "tok:" + access.id : "ip:" + clientIp(req);
+  if (!portalLimiter.check(cle).allowed) return res.status(429).json({ error: "Trop de requêtes. Réessaie dans une minute." });
   const state = accessState(access);
   if (!state.valid) return res.status(401).json({ error: `Lien d'accès ${state.reason}` });
   // Vérification à temps constant en plus de la recherche par empreinte.
@@ -3647,13 +3657,23 @@ function contractGuard(req, res) {
   if (!assertCampus(req, res, c.campusId)) return null;
   return c;
 }
-function contractContext(c) {
-  const learner = c.learnerId ? store.getLearner(c.learnerId) : null;
-  const company = c.companyId ? store.listPartners().find((p) => p.id === c.companyId) : null;
-  return { learner, company, smic: Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT };
+function contractContext(c, index) {
+  const learner = c.learnerId ? (index?.learners?.get(c.learnerId) ?? store.getLearner(c.learnerId)) : null;
+  const company = c.companyId ? (index?.companies?.get(c.companyId) ?? store.listPartners().find((p) => p.id === c.companyId)) : null;
+  return { learner, company, smic: index?.smic ?? (Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT) };
 }
-function hydrateContract(c) {
-  const ctx = contractContext(c);
+// Index partagé pour hydrater une LISTE de contrats sans refaire les mêmes
+// recherches à chaque ligne : getLearner balaie tous les apprenants et
+// listPartners reconstruit et trie tout le tableau à chaque appel.
+function contractIndex() {
+  return {
+    learners: new Map(store.listLearners({}).map((l) => [l.id, l])),
+    companies: new Map(store.listPartners().map((p) => [p.id, p])),
+    smic: Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT,
+  };
+}
+function hydrateContract(c, index) {
+  const ctx = contractContext(c, index);
   return {
     ...c,
     learnerName: ctx.learner ? `${ctx.learner.prenom} ${ctx.learner.nom}` : null,
@@ -3668,7 +3688,8 @@ app.get("/api/contracts", requireAuth, (req, res) => {
   if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
   let items = store.listContracts({ campusId, learnerId, companyId, status, enRupture: enRupture === "1" });
   if (!campusId) items = scopeByCampus(req, items);
-  res.json(items.map(hydrateContract));
+  const index = contractIndex();
+  res.json(items.map((c) => hydrateContract(c, index)));
 });
 
 app.post("/api/contracts", requireAuth, (req, res) => {
@@ -3696,6 +3717,7 @@ app.patch("/api/contracts/:id", requireAuth, (req, res) => {
     if (!v.ok) return res.status(409).json({ error: "contrat non conforme — dépôt impossible", errors: v.errors });
   }
   const upd = store.updateContract(c.id, req.body || {});
+  if (upd?.error) return res.status(409).json(upd);
   logAudit(req, "update", "contrat", `${upd.type} (${upd.status})`);
   res.json(hydrateContract(upd));
 });

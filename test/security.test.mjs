@@ -537,6 +537,28 @@ test("RGPD : RQTH protégé, export du dossier, conservation et purge", async ()
   assert.equal((await req("/api/rgpd/retention/run", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: {} })).status, 403);
 });
 
+test("machine à états : transitions de contrat et de rupture bornées", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus États" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Etat", prenom: "Machine", dateNaissance: "2006-01-01", ine: "1234E" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } });
+  const co = await (await req("/api/partners", { method: "POST", ...opts, json: { campusId: campus.id, name: "Boite", siret: "73282932000074", conventionCollective: "CCN" } })).json();
+  const c = await (await req("/api/contracts", { method: "POST", ...opts, json: { campusId: campus.id, learnerId: l.id, companyId: co.id, dateDebut: "2026-09-01", dateFin: "2028-08-31", maitreNom: "Chef", maitreEmail: "c@b.fr", npec: 8000 } })).json();
+
+  // brouillon → validé est interdit : il faut passer par le dépôt
+  assert.equal((await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "valide" } })).status, 409);
+  await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "depose" } });
+  await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "valide" } });
+
+  // Rupture confirmée : état terminal, on ne revient pas en arrière
+  await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: { motif: "abandon" } });
+  await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "confirmee", note: "actée" } });
+  assert.equal((await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "mediation" } })).status, 400);
+  // et un contrat rompu ne redevient pas valide
+  assert.equal((await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "valide" } })).status, 409);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

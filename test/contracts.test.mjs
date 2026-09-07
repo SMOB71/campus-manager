@@ -8,7 +8,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "cmctr-"));
 process.env.DATA_KEY = "test-key-contracts";
 const store = await import("../lib/store.js");
 const { validateContract, contractAlerts, minimumWage, isValidSiret, ageAt, effectiveDateOfBirthdayRaise,
-  trialPeriodEnd, practicalDaysCount, SMIC_MENSUEL_DEFAUT } = await import("../lib/contracts.js");
+  trialPeriodEnd, practicalDaysCount, startingExecutionYear, contractYears, SMIC_MENSUEL_DEFAUT } = await import("../lib/contracts.js");
 
 // ---------- Logique réglementaire (pure) ----------
 
@@ -193,6 +193,33 @@ test("contractAlerts : fin de contrat, contrat échu, rupture", () => {
 });
 
 // ---------- Store : workflow de rupture ----------
+
+test("contrat de durée réduite : l'année d'exécution ne repart pas à 1", () => {
+  // BTS (cycle de 2 ans) préparé en 1 an : l'apprenti est réputé avoir fait la
+  // 1re année, sa rémunération est celle de la 2e. Cas MAJORITAIRE en post-bac.
+  assert.equal(startingExecutionYear({ dureeCycleAnnees: 2, dureeContratAnnees: 1 }), 2);
+  // Cycle de 3 ans en 1 an : 3e année
+  assert.equal(startingExecutionYear({ dureeCycleAnnees: 3, dureeContratAnnees: 1 }), 3);
+  // Contrat couvrant tout le cycle : départ normal
+  assert.equal(startingExecutionYear({ dureeCycleAnnees: 2, dureeContratAnnees: 2 }), 1);
+  // Saisie explicite de l'année d'entrée : elle prime
+  assert.equal(startingExecutionYear({ dureeCycleAnnees: 3, dureeContratAnnees: 3, anneeEntree: 2 }), 2);
+  // Données absentes : on ne devine pas, on reste en année 1
+  assert.equal(startingExecutionYear({}), 1);
+
+  assert.equal(contractYears("2026-09-01", "2027-08-31"), 1);
+  assert.equal(contractYears("2026-09-01", "2028-08-31"), 2);
+  assert.equal(contractYears("2026-09-01", "2026-01-01"), null);
+
+  // Effet réel sur le contrôle : 19 ans, BTS en 1 an → taux de 2e année (51 %),
+  // et non de 1re (43 %). Un salaire calculé à 43 % serait sous le minimum légal.
+  const learner = { ...LEARNER, dateNaissance: "2007-01-10" };
+  const court = { ...BASE, dateFin: "2027-08-31", dureeCycleAnnees: 2, remunerationMensuelle: 774 };
+  const v = validateContract(court, { learner, company: COMPANY, smic: 1800 });
+  assert.equal(v.wage.year, 2);
+  assert.equal(v.wage.rate, 0.51);
+  assert.ok(v.errors.some((e) => /minimum légal/.test(e)), "774 € (43 %) doit être refusé pour une 2e année");
+});
 
 test("rupture : signalement unique, étapes tracées, confirmation répercutée sur l'inscription", () => {
   const campus = store.addCampus({ name: "Campus Contrat" });
