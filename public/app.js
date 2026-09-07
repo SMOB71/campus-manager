@@ -330,6 +330,7 @@ const NAV = [
   { id: "prevision", label: "Prévision consolidée", icon: I.chart, admin: true, group: "Performance" },
   { id: "indicateurs", label: "Indicateurs", icon: I.chart, group: "Performance" },
   { id: "insertion", label: "Insertion & satisfaction", icon: I.heart, group: "Performance" },
+  { id: "contrats", label: "Contrats d'alternance", icon: I.brief, group: "Réseau" },
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
   { id: "planning", label: "Emploi du temps", icon: I.agenda, group: "Enseignement" },
@@ -390,7 +391,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, planning: renderPlanning, emargement: renderEmargement, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, planning: renderPlanning, emargement: renderEmargement, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -3186,7 +3187,31 @@ function openPartnerForm(p) {
       <div><label class="field-label">Statut</label><select class="txt pf" data-f="status">${["actif", "prospect", "inactif"].map((s) => `<option ${e.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
       <div style="grid-column:1/-1;"><label class="field-label">Notes</label><input class="txt pf" data-f="notes" value="${esc(e.notes || "")}"></div>
     </div>
+    <details style="margin-top:10px;" ${e.siret ? "open" : ""}><summary class="muted" style="cursor:pointer;">Informations employeur <span class="sub">(requises pour les contrats d'alternance)</span></summary>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+        <div><label class="field-label">SIRET</label><input class="txt pf" data-f="siret" value="${esc(e.siret || "")}" placeholder="14 chiffres"><div class="sub muted" id="pf-siret-check"></div></div>
+        <div><label class="field-label">Code NAF</label><input class="txt pf" data-f="naf" value="${esc(e.naf || "")}"></div>
+        <div><label class="field-label">Forme juridique</label><input class="txt pf" data-f="formeJuridique" value="${esc(e.formeJuridique || "")}"></div>
+        <div><label class="field-label">Convention collective</label><input class="txt pf" data-f="conventionCollective" value="${esc(e.conventionCollective || "")}"></div>
+        <div style="grid-column:1/-1;"><label class="field-label">Adresse</label><input class="txt pf" data-f="adresse" value="${esc(e.adresse || "")}"></div>
+        <div><label class="field-label">Code postal</label><input class="txt pf" data-f="codePostal" value="${esc(e.codePostal || "")}"></div>
+        <div><label class="field-label">Ville</label><input class="txt pf" data-f="ville" value="${esc(e.ville || "")}"></div>
+        <div><label class="field-label">Effectif</label><input class="txt pf" data-f="effectif" value="${esc(e.effectif || "")}"></div>
+      </div></details>
     <div class="actions" style="margin-top:14px;"><button class="btn-primary" id="pf-save">Enregistrer</button></div>`);
+  // Contrôle immédiat de la clé du SIRET : une erreur de saisie ici bloque un dépôt plus tard.
+  const siretInput = $('.pf[data-f="siret"]');
+  const checkSiret = () => {
+    const v = siretInput.value.replace(/\s/g, "");
+    const el = $("#pf-siret-check");
+    if (!v) { el.textContent = ""; return; }
+    let ok = /^\d{14}$/.test(v) && !/^0+$/.test(v);
+    if (ok) { let sum = 0; for (let i = 0; i < 14; i++) { let d = Number(v[13 - i]); if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; } sum += d; } ok = sum % 10 === 0; }
+    el.textContent = ok ? "✓ SIRET valide" : "⚠ SIRET invalide (14 chiffres, clé de contrôle)";
+    el.style.color = ok ? "var(--good)" : "var(--bad)";
+  };
+  siretInput.addEventListener("input", checkSiret);
+  checkSiret();
   $("#pf-save").addEventListener("click", async () => {
     const body = { campusId: entCampus }; $$(".pf").forEach((i) => (body[i.dataset.f] = i.value));
     if (!String(body.name || "").trim()) return;
@@ -4195,6 +4220,174 @@ const hhmmToMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ""))
 let planState = { week: mondayOf(new Date().toISOString().slice(0, 10)), campusId: "", classId: "", teacherId: "" };
 
 // ---------- Emploi du temps : grille semaine éditable ----------
+// ---------- Vue : Contrats d'alternance ----------
+const CT_STATUS = { brouillon: ["Brouillon", ""], a_deposer: ["À déposer", "warn"], depose: ["Déposé", "doing"], valide: ["Validé", "done"], rompu: ["Rompu", "overdue"], termine: ["Terminé", ""] };
+const RUPT_STAGE = { signalee: "Signalée", mediation: "Médiation", replacement: "Recherche entreprise", resolue: "Résolue (maintien)", confirmee: "Rupture confirmée" };
+let ctFilter = { campusId: "", status: "", enRupture: false };
+async function renderContrats() {
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="ct-add">${I.plus}<span>Contrat</span></button>`;
+  $("#ct-add").addEventListener("click", () => openContractForm(null));
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const qs = new URLSearchParams();
+  if (ctFilter.campusId) qs.set("campusId", ctFilter.campusId);
+  if (ctFilter.status) qs.set("status", ctFilter.status);
+  if (ctFilter.enRupture) qs.set("enRupture", "1");
+  const rows = await api.get("/api/contracts?" + qs.toString()) || [];
+  const ruptures = rows.filter((c) => c.rupture && !["resolue", "confirmee"].includes(c.rupture.stage));
+  const bloques = rows.filter((c) => !c.validation.ok && c.status !== "rompu");
+  const line = (c) => {
+    const [lbl, tone] = CT_STATUS[c.status] || [c.status, ""];
+    const rupt = c.rupture && !["resolue", "confirmee"].includes(c.rupture.stage);
+    return `<div class="item">
+      <div class="grow"><div class="ttl">${esc(c.learnerName || "—")} <span class="muted" style="font-weight:400;">chez ${esc(c.companyName || "—")}</span>
+        <span class="pill ${tone}">${lbl}</span>${rupt ? ` <span class="pill overdue">⚠ ${RUPT_STAGE[c.rupture.stage]}</span>` : ""}${!c.validation.ok && c.status !== "rompu" ? ` <span class="pill warn">${c.validation.errors.length} blocage(s)</span>` : ""}</div>
+        <div class="sub muted">${esc(c.dateDebut || "?")} → ${esc(c.dateFin || "?")}${c.npec ? " · NPEC " + Number(c.npec).toLocaleString("fr-FR") + " €" : ""}${c.alerts?.length ? " · " + esc(c.alerts[0].label) : ""}</div></div>
+      <button class="btn-ghost btn-sm ct-open" data-id="${c.id}">Ouvrir</button>
+    </div>`;
+  };
+  view.innerHTML = `
+    <div class="kpis" style="margin-bottom:12px;">
+      <div class="k"><div class="v">${rows.length}</div><div class="l">contrats</div></div>
+      <div class="k"><div class="v">${rows.filter((c) => c.status === "valide").length}</div><div class="l">validés</div></div>
+      <div class="k${bloques.length ? " k-bad" : ""}"><div class="v">${bloques.length}</div><div class="l">non conformes</div></div>
+      <div class="k${ruptures.length ? " k-bad" : ""}"><div class="v">${ruptures.length}</div><div class="l">ruptures en cours</div></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+      ${isAdmin() ? `<select class="txt" id="ct-campus" style="max-width:200px;"><option value="">Tous les campus</option>${state.campuses.map((c) => `<option value="${c.id}" ${ctFilter.campusId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}
+      <select class="txt" id="ct-status" style="max-width:170px;"><option value="">Tous statuts</option>${Object.entries(CT_STATUS).map(([k, [l]]) => `<option value="${k}" ${ctFilter.status === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <label class="sub" style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="ct-rupt" ${ctFilter.enRupture ? "checked" : ""}> ruptures en cours</label>
+    </div>
+    ${ruptures.length ? `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid var(--bad);"><b>⚠ ${ruptures.length} rupture(s) à traiter</b> — chaque jour compte : au-delà de 2 mois sans solution, le retour en formation devient rare.</div>` : ""}
+    ${rows.length ? `<div class="list">${rows.map(line).join("")}</div>` : `<p class="empty">Aucun contrat${ctFilter.status || ctFilter.enRupture ? " pour ce filtre" : " — crée le premier avec « + Contrat »"}.</p>`}`;
+  $("#ct-campus")?.addEventListener("change", () => { ctFilter.campusId = $("#ct-campus").value; renderContrats(); });
+  $("#ct-status").addEventListener("change", () => { ctFilter.status = $("#ct-status").value; renderContrats(); });
+  $("#ct-rupt").addEventListener("change", () => { ctFilter.enRupture = $("#ct-rupt").checked; renderContrats(); });
+  $$(".ct-open").forEach((b) => b.addEventListener("click", () => openContractFiche(b.dataset.id)));
+}
+
+async function openContractForm(contract) {
+  const c = contract || {};
+  const campusId = c.campusId || ctFilter.campusId || state.campuses[0]?.id || "";
+  const [learners, companies] = await Promise.all([
+    api.get(`/api/learners?campusId=${campusId}`),
+    api.get(`/api/partners?campusId=${campusId}`),
+  ]);
+  openModal(c.id ? "Modifier le contrat" : "Nouveau contrat d'alternance", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Apprenant *</label><select class="txt" id="ctf-learner"><option value="">—</option>${(learners || []).map((l) => `<option value="${l.id}" ${l.id === c.learnerId ? "selected" : ""}>${esc(l.prenom)} ${esc(l.nom)}</option>`).join("")}</select></div>
+      <div class="field"><label class="field-label">Entreprise *</label><select class="txt" id="ctf-company"><option value="">—</option>${(companies || []).map((p) => `<option value="${p.id}" ${p.id === c.companyId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Type</label><select class="txt" id="ctf-type"><option value="apprentissage" ${c.type !== "professionnalisation" ? "selected" : ""}>Apprentissage</option><option value="professionnalisation" ${c.type === "professionnalisation" ? "selected" : ""}>Professionnalisation</option></select></div>
+      <div class="field"><label class="field-label">Début *</label><input class="txt" id="ctf-debut" type="date" value="${esc(c.dateDebut || "")}"></div>
+      <div class="field"><label class="field-label">Fin *</label><input class="txt" id="ctf-fin" type="date" value="${esc(c.dateFin || "")}"></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Signature</label><input class="txt" id="ctf-sign" type="date" value="${esc(c.dateSignature || "")}"></div>
+      <div class="field"><label class="field-label">Année d'exécution</label><select class="txt" id="ctf-annee">${[1, 2, 3].map((y) => `<option value="${y}" ${(c.anneeExecution || 1) === y ? "selected" : ""}>Année ${y}</option>`).join("")}</select></div>
+      <div class="field"><label class="field-label">Rémunération € / mois</label><input class="txt" id="ctf-remu" type="number" step="0.01" value="${c.remunerationMensuelle ?? ""}"><div class="sub muted" id="ctf-wage"></div></div>
+    </div>
+    <div class="section-title" style="margin-top:6px;">Maître d'apprentissage</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Nom *</label><input class="txt" id="ctf-mnom" value="${esc(c.maitreNom || "")}"></div>
+      <div class="field"><label class="field-label">Fonction</label><input class="txt" id="ctf-mfonc" value="${esc(c.maitreFonction || "")}"></div>
+      <div class="field"><label class="field-label">Email</label><input class="txt" id="ctf-mmail" value="${esc(c.maitreEmail || "")}"></div>
+      <div class="field"><label class="field-label">Téléphone</label><input class="txt" id="ctf-mtel" value="${esc(c.maitreTel || "")}"></div>
+    </div>
+    <div class="section-title" style="margin-top:6px;">Financement</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">NPEC €</label><input class="txt" id="ctf-npec" type="number" value="${c.npec ?? ""}"></div>
+      <div class="field"><label class="field-label">Financeur</label><input class="txt" id="ctf-fin2" value="${esc(c.financeur || "")}"></div>
+      <div class="field"><label class="field-label">N° dossier</label><input class="txt" id="ctf-dossier" value="${esc(c.numeroDossier || "")}"></div>
+      <div class="field"><label class="field-label">N° dépôt</label><input class="txt" id="ctf-depot" value="${esc(c.numeroDepot || "")}"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;"><input type="checkbox" id="ctf-derog" ${c.derogationAge ? "checked" : ""}> <span>Dérogation d'âge (RQTH, sportif de haut niveau, création d'entreprise…)</span></label>
+    <div class="actions"><button class="btn-primary" id="ctf-save">${c.id ? "Enregistrer" : "Créer"}</button> <span class="status" id="ctf-msg"></span></div>`);
+  // Aide vivante : la rémunération minimale s'affiche dès qu'on connaît l'âge et l'année.
+  const refreshWage = async () => {
+    const lid = $("#ctf-learner").value, debut = $("#ctf-debut").value;
+    const l = (learners || []).find((x) => x.id === lid);
+    if (!l?.dateNaissance || !debut) { $("#ctf-wage").textContent = ""; return; }
+    const age = Math.floor((new Date(debut) - new Date(l.dateNaissance)) / (365.25 * 864e5));
+    const w = await api.get(`/api/contracts/wage/simulate?age=${age}&year=${$("#ctf-annee").value}`);
+    if (w?.amount) $("#ctf-wage").innerHTML = `minimum légal : <b>${w.amount.toFixed(2)} €</b> (${Math.round(w.rate * 100)} % du SMIC, ${age} ans)`;
+  };
+  ["#ctf-learner", "#ctf-debut", "#ctf-annee"].forEach((s) => $(s).addEventListener("change", refreshWage));
+  refreshWage();
+  $("#ctf-save").onclick = async () => {
+    const body = {
+      campusId, learnerId: $("#ctf-learner").value, companyId: $("#ctf-company").value, type: $("#ctf-type").value,
+      dateDebut: $("#ctf-debut").value, dateFin: $("#ctf-fin").value, dateSignature: $("#ctf-sign").value,
+      anneeExecution: $("#ctf-annee").value, remunerationMensuelle: $("#ctf-remu").value,
+      maitreNom: $("#ctf-mnom").value.trim(), maitreFonction: $("#ctf-mfonc").value.trim(),
+      maitreEmail: $("#ctf-mmail").value.trim(), maitreTel: $("#ctf-mtel").value.trim(),
+      npec: $("#ctf-npec").value, financeur: $("#ctf-fin2").value.trim(),
+      numeroDossier: $("#ctf-dossier").value.trim(), numeroDepot: $("#ctf-depot").value.trim(),
+      derogationAge: $("#ctf-derog").checked,
+    };
+    if (!body.learnerId || !body.companyId) { $("#ctf-msg").textContent = "Apprenant et entreprise sont requis."; return; }
+    const r = c.id ? await api.patch(`/api/contracts/${c.id}`, body) : await api.post("/api/contracts", body);
+    if (r.error) { $("#ctf-msg").textContent = r.error; return; }
+    document.querySelector(".modal-bg")?.remove();
+    if (c.id) openContractFiche(c.id); else renderContrats();
+  };
+}
+
+async function openContractFiche(cid) {
+  const c = await api.get(`/api/contracts/${cid}`);
+  if (!c || c.error) { alert(c?.error || "Contrat introuvable"); return; }
+  const v = c.validation;
+  const rupt = c.rupture;
+  const ruptOpen = rupt && !["resolue", "confirmee"].includes(rupt.stage);
+  openModal(`Contrat — ${esc(c.learnerName || "")} / ${esc(c.companyName || "")}`, `
+    <div class="sub muted" style="margin-top:0;">${esc(CT_STATUS[c.status]?.[0] || c.status)} · ${esc(c.dateDebut || "?")} → ${esc(c.dateFin || "?")} · ${c.type === "professionnalisation" ? "Professionnalisation" : "Apprentissage"}${c.npec ? " · NPEC " + Number(c.npec).toLocaleString("fr-FR") + " €" : ""}</div>
+    ${v.errors.length ? `<div class="card card-pad" style="margin:10px 0;border-left:4px solid var(--bad);"><b>${v.errors.length} point(s) bloquant(s) avant dépôt</b><ul style="margin:6px 0 0;padding-left:18px;">${v.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`
+      : `<div class="card card-pad" style="margin:10px 0;border-left:4px solid var(--good);"><b>✓ Contrat conforme</b> — aucun point bloquant pour le dépôt.</div>`}
+    ${v.warnings.length ? `<div class="card card-pad" style="margin:10px 0;border-left:4px solid var(--warn);"><b>Vigilance</b><ul style="margin:6px 0 0;padding-left:18px;">${v.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : ""}
+    ${v.wage ? `<p class="sub muted">Rémunération minimale légale : <b>${v.wage.amount.toFixed(2)} €/mois</b> (${Math.round(v.wage.rate * 100)} % du SMIC, tranche ${esc(v.wage.bracket)}, année ${v.wage.year})${c.remunerationMensuelle ? ` — versée : ${Number(c.remunerationMensuelle).toFixed(2)} €` : ""}. <i>Barème ${esc(v.wage.version)}, à revérifier chaque campagne.</i></p>` : ""}
+    ${c.alerts?.length ? `<div class="list" style="margin:10px 0;">${c.alerts.map((a) => `<div class="item"><span class="pill ${a.severity === "high" ? "overdue" : "warn"}">${esc(a.date || "")}</span><div class="grow"><div class="ttl" style="font-weight:500;">${esc(a.label)}</div></div></div>`).join("")}</div>` : ""}
+    ${rupt ? `<div class="section-title">Rupture — ${esc(RUPT_STAGE[rupt.stage] || rupt.stage)}</div>
+      <p class="sub muted">Signalée le ${esc(rupt.since || "")}${rupt.origine ? " · origine : " + esc(rupt.origine) : ""}${rupt.owner ? " · pilote : " + esc(rupt.owner) : ""}<br>${esc(rupt.motif || "")}</p>
+      <div class="list">${(rupt.events || []).slice().reverse().map((e) => `<div class="item"><span class="pill">${new Date(e.at).toLocaleDateString("fr-FR")}</span><div class="grow"><div class="ttl" style="font-weight:500;">${esc(RUPT_STAGE[e.stage] || e.stage)}</div><div class="sub muted">${esc(e.note || "")}${e.by ? " · " + esc(e.by) : ""}</div></div></div>`).join("")}</div>
+      ${ruptOpen ? `<div class="actions" style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+        ${["mediation", "replacement", "resolue", "confirmee"].filter((s) => s !== rupt.stage).map((s) => `<button class="btn-${s === "resolue" ? "primary" : "ghost"} btn-sm rupt-adv" data-stage="${s}">${RUPT_STAGE[s]}</button>`).join("")}
+      </div>` : ""}` : ""}
+    <div class="actions" style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-ghost btn-sm" id="ct-edit">Modifier</button>
+      ${c.status !== "depose" && c.status !== "valide" && c.status !== "rompu" ? `<button class="btn-primary btn-sm" id="ct-depose" ${v.ok ? "" : "disabled title=\"Lever d'abord les points bloquants\""}>Marquer déposé</button>` : ""}
+      ${c.status === "depose" ? `<button class="btn-primary btn-sm" id="ct-valide">Marquer validé</button>` : ""}
+      ${!ruptOpen && c.status !== "rompu" ? `<button class="btn-ghost btn-sm btn-danger" id="ct-rupture">Signaler une rupture</button>` : ""}
+    </div>`);
+  $("#ct-edit").onclick = () => { document.querySelector(".modal-bg")?.remove(); openContractForm(c); };
+  $("#ct-depose")?.addEventListener("click", async () => {
+    const r = await api.patch(`/api/contracts/${cid}`, { status: "depose", dateDepot: new Date().toISOString().slice(0, 10) });
+    if (r.error) { alert(r.error + (r.errors ? "\n\n• " + r.errors.join("\n• ") : "")); return; }
+    document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
+  });
+  $("#ct-valide")?.addEventListener("click", async () => {
+    await api.patch(`/api/contracts/${cid}`, { status: "valide", dateValidation: new Date().toISOString().slice(0, 10) });
+    document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
+  });
+  $("#ct-rupture")?.addEventListener("click", async () => {
+    const motif = prompt("Que s'est-il passé ? (motif du signalement, obligatoire)");
+    if (!motif) return;
+    const origine = prompt("Origine du signalement (entreprise / apprenti / CFA) :", "entreprise") || "";
+    const r = await api.post(`/api/contracts/${cid}/rupture`, { motif, origine });
+    if (r.error) { alert(r.error); return; }
+    document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
+  });
+  $$(".rupt-adv").forEach((b) => b.addEventListener("click", async () => {
+    const stage = b.dataset.stage;
+    if (stage === "confirmee" && !confirm("Confirmer la rupture ?\n\nLe contrat passera en « rompu » et l'inscription de l'apprenant basculera en rupture.")) return;
+    const note = prompt(`Note pour l'étape « ${RUPT_STAGE[stage]} » :`, "") || "";
+    const owner = stage === "mediation" || stage === "replacement" ? (prompt("Qui pilote ?", rupt.owner || "") || "") : undefined;
+    const r = await api.patch(`/api/contracts/${cid}/rupture`, { stage, note, owner });
+    if (r.error) { alert(r.error); return; }
+    document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
+  }));
+}
+
 // ---------- Vue : Émargement (preuve de réalisation) ----------
 const ATT_LABEL = { present: "Présent", absent: "Absent", retard: "Retard", excuse: "Excusé" };
 const ATT_TONE = { present: "done", absent: "overdue", retard: "warn", excuse: "" };

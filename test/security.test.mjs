@@ -240,6 +240,57 @@ test("émargement : cycle appel → clôture → avenant, cloisonné, attestatio
   assert.equal((await (await req("/api/attendance/sheets", { cookie: d.cookie })).json()).length, 0);
 });
 
+test("contrats : dépôt bloqué si non conforme, rupture répercutée, cloisonnement", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Contrats" } })).json();
+  const learner = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Alt", prenom: "Ernant", dateNaissance: "2006-03-01", ine: "1234INE" } })).json();
+  await req(`/api/learners/${learner.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } });
+  const company = await (await req("/api/partners", { method: "POST", ...opts, json: { campusId: campus.id, name: "Entreprise Test", siret: "73282932000074", conventionCollective: "CCN test" } })).json();
+
+  // Création incomplète : le contrat existe mais n'est pas déposable
+  const c = await (await req("/api/contracts", { method: "POST", ...opts, json: { campusId: campus.id, learnerId: learner.id, companyId: company.id, type: "apprentissage", dateDebut: "2026-09-01", dateFin: "2028-08-31" } })).json();
+  assert.equal(c.validation.ok, false); // maître d'apprentissage manquant
+  assert.ok(c.validation.errors.some((e) => /Maître d'apprentissage/.test(e)));
+  const refus = await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "depose" } });
+  assert.equal(refus.status, 409);
+
+  // Une fois complété, le dépôt passe
+  const ok = await (await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { maitreNom: "Paul Martin", maitreEmail: "paul@test.fr", npec: 8200 } })).json();
+  assert.equal(ok.validation.ok, true);
+  const depose = await (await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "depose" } })).json();
+  assert.equal(depose.status, "depose");
+
+  // Rupture : signalement sans motif refusé, puis workflow jusqu'à confirmation
+  assert.equal((await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: {} })).status, 400);
+  const sig = await (await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: { motif: "Absences répétées", origine: "entreprise" } })).json();
+  assert.equal(sig.rupture.stage, "signalee");
+  const med = await (await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "mediation", note: "RDV tripartite" } })).json();
+  assert.equal(med.rupture.events.length, 2);
+
+  // Tant que la rupture est OUVERTE, elle remonte en alerte haute dans le cockpit
+  const enCours = await (await req("/api/notifications", { cookie: a.cookie })).json();
+  assert.ok(enCours.some((n) => n.type === "rupture_contrat" && n.severity === "high"));
+
+  const conf = await (await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "confirmee", note: "Actée" } })).json();
+  assert.equal(conf.status, "rompu");
+  // l'inscription de l'apprenant a basculé
+  const fiche = await (await req(`/api/learners/${learner.id}`, { cookie: a.cookie })).json();
+  assert.equal(fiche.enrollments[0].statut, "rupture");
+
+  // Une fois la rupture confirmée, le contrat est rompu : il n'alerte plus (le suivi
+  // se poursuit côté apprenant, pas côté contrat).
+  const apres = await (await req("/api/notifications", { cookie: a.cookie })).json();
+  assert.ok(!apres.some((n) => n.type === "rupture_contrat" && n.contractId === c.id));
+
+  // Cloisonnement : un directeur hors périmètre ne voit rien et ne peut pas agir
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await (await req("/api/contracts", { cookie: d.cookie })).json()).length, 0);
+  assert.equal((await req(`/api/contracts/${c.id}`, { cookie: d.cookie })).status, 403);
+  assert.equal((await req(`/api/contracts/${c.id}/rupture`, { method: "POST", cookie: d.cookie, csrf: d.csrf, json: { motif: "x" } })).status, 403);
+  assert.equal((await req(`/api/contracts/${c.id}`, { method: "DELETE", cookie: d.cookie, csrf: d.csrf })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

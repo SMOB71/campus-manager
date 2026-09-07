@@ -21,6 +21,7 @@ import { toMarkdown, toHtml, toDocx } from "./lib/export.js";
 import * as sessionstore from "./lib/sessionstore.js";
 import * as attendancestore from "./lib/attendancestore.js";
 import { sheetStats, periodStats, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
+import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
@@ -1629,6 +1630,16 @@ app.get("/api/notifications", requireAuth, (req, res) => {
     const k = store.latestKpi(r.id) || {};
     if (k.revenue) { const m = marginOf(k); if (m != null) { const mpct = Math.round((m / k.revenue) * 100); if (mpct < th.marginPct) notifs.push({ type: "marge", severity: mpct < th.marginPct - 5 ? "high" : "medium", campusId: r.id, campus: r.name, label: `Marge à ${mpct}% (seuil ${th.marginPct}%)`, date: null }); } }
   }
+  // Contrats d'alternance : ruptures en cours, fins de période d'essai et de contrat
+  for (const c of scopeByCampus(req, store.listContracts({}))) {
+    const learner = c.learnerId ? store.getLearner(c.learnerId) : null;
+    const who = learner ? `${learner.prenom} ${learner.nom}` : "apprenant";
+    for (const al of contractAlerts(c, today)) {
+      notifs.push({ type: al.type === "rupture" ? "rupture_contrat" : "contrat", severity: al.severity,
+        campusId: c.campusId, campus: store.listCampuses().find((x) => x.id === c.campusId)?.name || "",
+        label: `${who} — ${al.label}`, date: al.date, contractId: c.id });
+    }
+  }
   // Signaux du SI campus : ruptures de contrat en cours, absentéisme, synchro en échec
   for (const c of store.listCampuses().filter((c) => canCampus(req, c.id))) {
     const snap = store.getSiSnapshot(c.id);
@@ -3055,6 +3066,107 @@ for (const [seg, api, listName] of [["rooms", "Room", "listRooms"], ["classes", 
 }
 
 // --- Séances ---
+// ===== Contrats d'alternance =====
+// Les contrôles réglementaires sont calculés à la volée et renvoyés avec le contrat :
+// l'utilisateur voit ce qui bloque le dépôt AVANT d'éditer quoi que ce soit.
+
+function contractGuard(req, res) {
+  const c = store.getContract(req.params.id);
+  if (!c) { res.status(404).json({ error: "contrat introuvable" }); return null; }
+  if (!assertCampus(req, res, c.campusId)) return null;
+  return c;
+}
+function contractContext(c) {
+  const learner = c.learnerId ? store.getLearner(c.learnerId) : null;
+  const company = c.companyId ? store.listPartners().find((p) => p.id === c.companyId) : null;
+  return { learner, company, smic: Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT };
+}
+function hydrateContract(c) {
+  const ctx = contractContext(c);
+  return {
+    ...c,
+    learnerName: ctx.learner ? `${ctx.learner.prenom} ${ctx.learner.nom}` : null,
+    companyName: ctx.company?.name || null,
+    validation: validateContract(c, ctx),
+    alerts: contractAlerts(c),
+  };
+}
+
+app.get("/api/contracts", requireAuth, (req, res) => {
+  const { campusId, learnerId, companyId, status, enRupture } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let items = store.listContracts({ campusId, learnerId, companyId, status, enRupture: enRupture === "1" });
+  if (!campusId) items = scopeByCampus(req, items);
+  res.json(items.map(hydrateContract));
+});
+
+app.post("/api/contracts", requireAuth, (req, res) => {
+  const { campusId, learnerId, companyId } = req.body || {};
+  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  if (!learnerId) return res.status(400).json({ error: "apprenant requis" });
+  if (!companyId) return res.status(400).json({ error: "entreprise requise" });
+  const c = store.addContract(req.body);
+  logAudit(req, "create", "contrat", `${c.type} — apprenant ${learnerId}`);
+  res.json(hydrateContract(c));
+});
+
+app.get("/api/contracts/:id", requireAuth, (req, res) => {
+  const c = contractGuard(req, res);
+  if (!c) return;
+  res.json(hydrateContract(c));
+});
+
+app.patch("/api/contracts/:id", requireAuth, (req, res) => {
+  const c = contractGuard(req, res);
+  if (!c) return;
+  // Le passage à « déposé » exige que les contrôles bloquants soient levés.
+  if (req.body?.status === "depose") {
+    const v = validateContract({ ...c, ...req.body }, contractContext(c));
+    if (!v.ok) return res.status(409).json({ error: "contrat non conforme — dépôt impossible", errors: v.errors });
+  }
+  const upd = store.updateContract(c.id, req.body || {});
+  logAudit(req, "update", "contrat", `${upd.type} (${upd.status})`);
+  res.json(hydrateContract(upd));
+});
+
+app.delete("/api/contracts/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = contractGuard(req, res);
+  if (!c) return;
+  store.deleteContract(c.id);
+  logAudit(req, "delete", "contrat", c.id);
+  res.json({ ok: true });
+});
+
+// Simulateur de rémunération minimale (affiché à la saisie, pas seulement en contrôle)
+app.get("/api/contracts/wage/simulate", requireAuth, (req, res) => {
+  const { age, year } = req.query;
+  const smic = Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT;
+  const w = minimumWage({ age: Number(age), year: Number(year) || 1, smic });
+  if (!w) return res.status(400).json({ error: "âge invalide" });
+  res.json({ ...w, smic });
+});
+
+// --- Workflow de rupture ---
+app.post("/api/contracts/:id/rupture", requireAuth, (req, res) => {
+  const c = contractGuard(req, res);
+  if (!c) return;
+  if (!String(req.body?.motif || "").trim()) return res.status(400).json({ error: "motif du signalement requis" });
+  const r = store.openRupture(c.id, { ...req.body, by: req.user?.name || req.user?.email || "" });
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "create", "rupture", `signalement — ${req.body.motif}`);
+  res.json(hydrateContract(r));
+});
+
+app.patch("/api/contracts/:id/rupture", requireAuth, (req, res) => {
+  const c = contractGuard(req, res);
+  if (!c) return;
+  const r = store.advanceRupture(c.id, { ...req.body, by: req.user?.name || req.user?.email || "" });
+  if (!r) return res.status(404).json({ error: "aucune rupture en cours sur ce contrat" });
+  if (r.error) return res.status(400).json(r);
+  logAudit(req, "update", "rupture", `${req.body?.stage} — ${req.body?.note || ""}`);
+  res.json(hydrateContract(r));
+});
+
 // ===== Émargement (preuve de réalisation) =====
 // La feuille est ouverte depuis une séance du planning, remplie, puis CLOSE : la
 // clôture la fige et l'accroche à la chaîne d'empreintes du campus. Après clôture,
