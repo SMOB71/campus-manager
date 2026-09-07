@@ -1086,6 +1086,22 @@ async function renderParametres() {
       </div>
       <div class="actions" style="margin-top:14px;"><button class="btn-primary" id="th-save">Enregistrer les seuils</button></div>
     </div>
+    <div class="section-title">Rémunération de référence</div>
+    <div class="card card-pad">
+      <p class="muted" style="margin-top:0;">Le SMIC mensuel brut sert de base à tous les contrôles de rémunération des contrats d'alternance. <b>À mettre à jour à chaque revalorisation</b>, sinon l'application valide des salaires inférieurs au minimum légal.</p>
+      <div class="field" style="max-width:280px;"><label class="field-label">SMIC mensuel brut (€)</label>
+        <input class="txt" id="smic-val" type="number" step="0.01" value="${s.smicMensuel ?? ""}" placeholder="${s.smicDefaut}">
+        <div class="sub muted">Valeur de référence intégrée : ${s.smicDefaut} €. Laisser vide pour l'utiliser.</div></div>
+      <div class="actions" style="margin-top:10px;"><button class="btn-primary btn-sm" id="smic-save">Enregistrer</button></div>
+    </div>
+    <div class="section-title">Assistance IA</div>
+    <div class="card card-pad">
+      <p class="muted" style="margin-top:0;">Les fonctions d'assistance (rédaction, synthèses, suggestions) transmettent le contenu soumis à un fournisseur d'IA tiers, potentiellement hors Union européenne. ${s.iaDisponible ? "" : "<b>Aucune clé n'est configurée sur cette instance : l'assistance est indisponible.</b>"}</p>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><input type="checkbox" id="ia-off" ${s.iaDesactivee ? "checked" : ""}> <span>Désactiver l'assistance IA sur cette instance</span></label>
+      <div class="sub muted">Le reste de l'application continue de fonctionner normalement. Ce traitement figure au registre RGPD.</div>
+      <div class="actions" style="margin-top:10px;"><button class="btn-primary btn-sm" id="ia-save">Enregistrer</button></div>
+      <div id="ia-msg" class="sub" style="margin-top:8px;"></div>
+    </div>
     <div class="section-title">Board pack mensuel</div>
     <div class="card card-pad">
       <p class="muted" style="margin-top:0;">Rapport de pilotage réseau envoyé automatiquement le 1er de chaque mois (7h) aux destinataires ci-dessous.</p>
@@ -1098,6 +1114,16 @@ async function renderParametres() {
       </div>
       <div id="bp-msg" class="sub" style="margin-top:8px;"></div>
     </div>`;
+  $("#smic-save").onclick = () => guard($("#smic-save"), async () => {
+    const r = await api.put("/api/settings", { smicMensuel: $("#smic-val").value === "" ? null : $("#smic-val").value });
+    $("#bp-msg").textContent = r.error || "SMIC enregistré.";
+    $("#bp-msg").style.color = r.error ? "var(--bad)" : "var(--good)";
+  });
+  $("#ia-save").onclick = () => guard($("#ia-save"), async () => {
+    const r = await api.put("/api/settings", { iaDesactivee: $("#ia-off").checked });
+    $("#ia-msg").textContent = r.error || ($("#ia-off").checked ? "Assistance IA désactivée." : "Assistance IA réactivée.");
+    $("#ia-msg").style.color = r.error ? "var(--bad)" : "var(--good)";
+  });
   $("#th-save").onclick = async () => {
     const thresholds = {}; $$(".thf").forEach((i) => { if (i.value !== "") thresholds[i.dataset.f] = Number(i.value); });
     await api.put("/api/settings", { thresholds });

@@ -648,6 +648,55 @@ test("dossier Cerfa : complétude, périodes de rémunération, NIR non persist�
   assert.equal((await req(`/api/contracts/${c.id}/cerfa/print`, { cookie: dir.cookie })).status, 403);
 });
 
+test("assistance IA : désactivable par instance, toutes les routes couvertes", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  // Désactivation : le reste de l'application doit continuer de fonctionner
+  await req("/api/settings", { method: "PUT", ...opts, json: { iaDesactivee: true } });
+  const s = await (await req("/api/settings", { cookie: a.cookie })).json();
+  assert.equal(s.iaDesactivee, true);
+
+  // Chaque route qui transmet du contenu à un tiers doit refuser, avec un code
+  // exploitable par l'interface — pas une erreur générique.
+  for (const route of ["/api/chat", "/api/generate", "/api/network/synthese", "/api/codir/agenda-draft", "/api/reviews/draft-notes"]) {
+    const r = await req(route, { method: "POST", ...opts, json: {} });
+    assert.equal(r.status, 403, `${route} devrait refuser quand l'IA est désactivée`);
+    assert.equal((await r.json()).code, "ia_desactivee", `${route} doit renvoyer un code exploitable`);
+  }
+  // Le reste de l'application n'est pas affecté
+  assert.equal((await req("/api/campuses", { cookie: a.cookie })).status, 200);
+  assert.equal((await req("/api/learners", { cookie: a.cookie })).status, 200);
+
+  // Réactivation
+  await req("/api/settings", { method: "PUT", ...opts, json: { iaDesactivee: false } });
+  assert.equal((await (await req("/api/settings", { cookie: a.cookie })).json()).iaDesactivee, false);
+  // La bascule est tracée : c'est une décision de conformité, elle doit se prouver
+  const audit = await (await req("/api/audit", { cookie: a.cookie })).json();
+  assert.ok(audit.some((e) => /assistance IA/.test(e.detail || "")));
+
+  // Cloisonnement : un directeur ne peut pas rallumer l'IA
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req("/api/settings", { method: "PUT", cookie: d.cookie, csrf: d.csrf, json: { iaDesactivee: false } })).status, 403);
+});
+
+test("SMIC paramétrable : borné, et réellement pris en compte par les contrôles", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  assert.equal((await req("/api/settings", { method: "PUT", ...opts, json: { smicMensuel: -5 } })).status, 400);
+  assert.equal((await req("/api/settings", { method: "PUT", ...opts, json: { smicMensuel: 99999 } })).status, 400);
+  await req("/api/settings", { method: "PUT", ...opts, json: { smicMensuel: 2000 } });
+  assert.equal((await (await req("/api/settings", { cookie: a.cookie })).json()).smicMensuel, 2000);
+
+  // Un contrat validé contre le NOUVEAU SMIC : 43 % de 2000 = 860 €
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus SMIC" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "S", prenom: "Mic", dateNaissance: "2006-01-01" } })).json();
+  const co = await (await req("/api/partners", { method: "POST", ...opts, json: { campusId: campus.id, name: "E", siret: "73282932000074" } })).json();
+  const c = await (await req("/api/contracts", { method: "POST", ...opts, json: { campusId: campus.id, learnerId: l.id, companyId: co.id, dateDebut: "2026-09-01", dateFin: "2028-08-31", maitreNom: "M", maitreEmail: "m@e.fr", remunerationMensuelle: 800 } })).json();
+  assert.ok(c.validation.errors.some((e) => /860/.test(e)), `attendu un minimum de 860 €, erreurs : ${c.validation.errors.join(" | ")}`);
+  // Retour au défaut
+  await req("/api/settings", { method: "PUT", ...opts, json: { smicMensuel: null } });
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

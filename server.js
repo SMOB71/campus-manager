@@ -69,6 +69,21 @@ if (!APP_PASSWORD) console.warn("[warn] APP_PASSWORD manquante — login impossi
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// SOUS-TRAITANCE IA — l'assistance envoie des contenus souvent nominatifs à un
+// fournisseur tiers, potentiellement hors UE. Un établissement doit pouvoir la
+// refuser sans perdre le reste de l'application : l'interrupteur est ici, et il
+// est vérifié à l'entrée de chaque route qui appelle le modèle.
+function iaActive() {
+  const s = store.getSettings();
+  return s.iaDesactivee !== true && !!process.env.OPENAI_API_KEY;
+}
+function requireIA(req, res, next) {
+  if (!iaActive()) {
+    return res.status(403).json({ error: "L'assistance IA est désactivée sur cette instance.", code: "ia_desactivee" });
+  }
+  next();
+}
+
 // Chiffrement au repos (AES-256-GCM) : migration transparente au démarrage.
 // En production, DATA_KEY est OBLIGATOIRE (données perso, finances, Qualiopi, décisions…).
 if (encryptionEnabled) {
@@ -457,7 +472,7 @@ app.delete("/api/incidents/:id", requireAuth, (req, res) => {
   store.deleteIncident(req.params.id); res.json({ ok: true });
 });
 // Brouillon de réponse à une réclamation (IA) — ne sauvegarde rien, renvoie le corps du message à relire/envoyer.
-app.post("/api/incidents/:id/reply-draft", requireAuth, async (req, res) => {
+app.post("/api/incidents/:id/reply-draft", requireAuth, requireIA, async (req, res) => {
   const inc = store.listIncidents().find((x) => x.id === req.params.id);
   if (!inc) return res.status(404).json({ error: "réclamation introuvable" });
   if (!assertCampus(req, res, inc.campusId)) return;
@@ -736,7 +751,7 @@ function networkSignature() {
 }
 
 // --- Pack CODIR / synthèse réseau (streaming + sauvegarde) ---
-app.post("/api/network/synthese", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/network/synthese", requireAuth, requireAdmin, requireIA, async (req, res) => {
   const rows = buildNetworkRows(req);
   if (!rows.length) return res.status(400).json({ error: "Aucun campus à consolider" });
   const force = req.body?.force === true;
@@ -810,7 +825,7 @@ app.get("/api/campus360/:id", campusGuard, (req, res) => {
 });
 
 // --- Assistant chat (persona DO senior, zéro hallucination, contexte réseau scopé) ---
-app.post("/api/chat", requireAuth, async (req, res) => {
+app.post("/api/chat", requireAuth, requireIA, async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages.slice(-20) : [];
   if (!messages.length) return res.status(400).json({ error: "message vide" });
   const rows = buildNetworkRows(req);
@@ -874,7 +889,7 @@ app.get("/api/stats", requireAuth, (req, res) => {
 });
 
 // --- Generation (streaming + sauvegarde historique) ---
-app.post("/api/generate", requireAuth, async (req, res) => {
+app.post("/api/generate", requireAuth, requireIA, async (req, res) => {
   const { task, input, contexte, campusId, title, variant } = req.body || {};
   if (!task || !PROMPTS[task]) return res.status(400).json({ error: "tache inconnue" });
   if (campusId && !assertCampus(req, res, campusId)) return;
@@ -1344,8 +1359,14 @@ async function syncSalesforce() {
     const report = { created: 0, updated: 0, sansCampus: 0, total: rows.length };
     for (const row of rows) {
       if (!row.sfId) continue;
-      if (!row.campusId) report.sansCampus++;
-      const r = store.upsertCandidateFromSf(row);
+      if (!row.campusId) {
+        report.sansCampus++;
+        // Créé quand même (perdre le prospect serait pire), mais listé pour
+        // affectation : sans campus, il échappe au cloisonnement par campus.
+        report.aAffecter = report.aAffecter || [];
+        if (report.aAffecter.length < 50) report.aAffecter.push(`${row.prenom} ${row.nom}`.trim() || row.sfId);
+      }
+      const r = store.upsertCandidateFromSf(row, { org: cfg.instanceUrl, baseLegale: cfg.baseLegale || "" });
       report[r.action === "created" ? "created" : "updated"]++;
     }
     store.updateSettings({ salesforce: { ...cfg, lastSync: new Date().toISOString(), lastError: null } });
@@ -2056,7 +2077,7 @@ app.post("/api/committees/:id/sessions/:sid/tasks", requireAuth, requireAdmin, (
 
 // Ordre du jour assisté : nourri des retards, des livrables non produits et des décisions
 // non soldées de la séance précédente. Même motif que /api/codir/agenda-draft.
-app.post("/api/committees/:id/sessions/:sid/agenda-draft", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/committees/:id/sessions/:sid/agenda-draft", requireAuth, requireAdmin, requireIA, async (req, res) => {
   const c = store.getCommittee(req.params.id);
   if (!c) return res.status(404).json({ error: "comité introuvable" });
   const sessions = (c.sessions || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
@@ -2360,7 +2381,7 @@ app.post("/api/recoveries", requireAuth, requireAdmin, (req, res) => {
 // Brouillon de plan de redressement PRÉ-REMPLI par l'IA depuis les signaux réels du campus
 // (dimensions dégradées + dérives + actions en retard). Ne sauvegarde RIEN : renvoie un
 // brouillon que le directeur relit/édite avant création. Transforme le cockpit de constat en décision.
-app.post("/api/campuses/:id/recovery-draft", campusGuard, async (req, res) => {
+app.post("/api/campuses/:id/recovery-draft", campusGuard, requireIA, async (req, res) => {
   const campus = store.listCampuses().find((c) => c.id === req.params.id);
   if (!campus) return res.status(404).json({ error: "campus introuvable" });
   const row = buildNetworkRows(req).find((r) => r.id === campus.id) || {};
@@ -2453,7 +2474,7 @@ app.get("/api/forecast/consolidated", requireAuth, requireAdmin, (req, res) => {
 app.get("/api/arbitrages", requireAuth, requireAdmin, (req, res) => res.json(store.listArbitrages().filter((a) => !a.campusId || canCampus(req, a.campusId))));
 // Ordre du jour CODIR (IA) : généré depuis les DONNÉES RÉELLES du réseau (dérives,
 // arbitrages en attente, décisions, retards), sauvé comme livrable exportable Word/PDF.
-app.post("/api/codir/agenda-draft", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/codir/agenda-draft", requireAuth, requireAdmin, requireIA, async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const rows = buildNetworkRows(req);
   const netLine = rows.map((r) => `- ${r.name} : santé ${r.health ?? "?"}/100 · remplissage ${r.occupancy ?? "?"}% · Qualiopi ${r.qualiopi ?? "?"}% · marge ${r.margin ?? "?"}€ · ${r.overdue || 0} action(s) en retard${r.openIncidents ? ` · ${r.openIncidents} incident(s)` : ""}`).join("\n");
@@ -2632,7 +2653,7 @@ function campusSnapshot(req, campusId) {
   };
 }
 // Premier jet des notes de revue (IA) depuis le snapshot chiffré + la revue précédente.
-app.post("/api/reviews/draft-notes", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/reviews/draft-notes", requireAuth, requireAdmin, requireIA, async (req, res) => {
   const cid = req.body?.campusId;
   if (!cid || !canCampus(req, cid)) return res.status(400).json({ error: "campus requis / hors périmètre" });
   const campus = store.listCampuses().find((c) => c.id === cid);
@@ -2737,9 +2758,11 @@ app.get("/api/settings", requireAuth, requireAdmin, (req, res) => {
   const sf = s.salesforce || {};
   res.json({ thresholds: { ...DEFAULT_THRESHOLDS, ...(s.thresholds || {}) }, board: s.board || { enabled: false, recipients: "" },
     smicMensuel: s.smicMensuel ?? null, smicDefaut: SMIC_MENSUEL_DEFAUT,
+    iaDesactivee: s.iaDesactivee === true, iaDisponible: !!process.env.OPENAI_API_KEY,
     salesforce: { configured: !!(sf.instanceUrl && sf.clientId && sf.clientSecret), enabled: sf.enabled ?? true,
       instanceUrl: sf.instanceUrl || "", clientId: sf.clientId || "", secretMask: sf.clientSecret ? "•••" + String(sf.clientSecret).slice(-4) : "",
       object: sf.object || "Lead", where: sf.where || "", apiVersion: sf.apiVersion || "v59.0",
+      baseLegale: sf.baseLegale || "", orgRegion: sf.orgRegion || "",
       fieldsText: sf.fieldsText || "", statusMapText: sf.statusMapText || "", campusMapText: sf.campusMapText || "",
       lastSync: sf.lastSync || null, lastError: sf.lastError || null } });
 });
@@ -2749,6 +2772,10 @@ app.put("/api/settings", requireAuth, requireAdmin, (req, res) => {
   if (req.body?.board) patch.board = { enabled: !!req.body.board.enabled, recipients: String(req.body.board.recipients || "").trim() };
   // Le SMIC pilote tous les contrôles de rémunération : il DOIT être modifiable
   // sans redéploiement, sinon chaque revalorisation rend l'outil faux en silence.
+  if (req.body?.iaDesactivee !== undefined) {
+    patch.iaDesactivee = !!req.body.iaDesactivee;
+    logAudit(req, "update", "settings", `assistance IA ${patch.iaDesactivee ? "désactivée" : "réactivée"}`);
+  }
   if (req.body?.smicMensuel !== undefined) {
     if (req.body.smicMensuel === "" || req.body.smicMensuel === null) patch.smicMensuel = null;
     else {
@@ -2770,6 +2797,10 @@ app.put("/api/settings", requireAuth, requireAdmin, (req, res) => {
       where: String(b.where ?? prev.where ?? "").trim(),
       apiVersion: String(b.apiVersion ?? prev.apiVersion ?? "v59.0").trim(),
       fieldsText: String(b.fieldsText ?? prev.fieldsText ?? ""),
+      // Base légale de l'import : à déclarer par l'établissement, c'est lui le
+      // responsable de traitement. Reportée sur chaque candidat importé.
+      baseLegale: String(b.baseLegale ?? prev.baseLegale ?? "").trim(),
+      orgRegion: String(b.orgRegion ?? prev.orgRegion ?? "").trim(),
       statusMapText: String(b.statusMapText ?? prev.statusMapText ?? ""),
       campusMapText: String(b.campusMapText ?? prev.campusMapText ?? ""),
       enabled: b.enabled !== undefined ? !!b.enabled : (prev.enabled ?? true),
@@ -3140,7 +3171,7 @@ app.delete("/api/curricula/:id", requireAuth, requireAdmin, (req, res) => {
 // Import d'un référentiel depuis un fichier — PROPOSITION, jamais écriture directe.
 // Même doctrine que la proposition financière : un volume horaire inventé est un
 // risque réglementaire, pas une coquille.
-app.post("/api/curricula/import", requireAuth, requireAdmin, uploadOne, async (req, res) => {
+app.post("/api/curricula/import", requireAuth, requireAdmin, uploadOne, requireIA, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "fichier manquant" });
   let text = "";
   try { text = await extractText(req.file); } catch (e) { return res.status(400).json({ error: "fichier illisible : " + e.message }); }
@@ -4262,7 +4293,7 @@ app.get("/api/schedule/service", requireAuth, (req, res) => {
 // Propose qui peut enseigner quoi, à partir du référentiel et des fiches existantes.
 // C'est l'information la plus structurante du module : sans elle, tout le monde est
 // « polyvalent » et le générateur affecte au hasard. On la propose, l'utilisateur valide.
-app.post("/api/schedule/suggest-assignments", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/schedule/suggest-assignments", requireAuth, requireAdmin, requireIA, async (req, res) => {
   const { curriculumId, campusId } = req.body || {};
   const cur = store.getCurriculum(curriculumId);
   if (!cur) return res.status(404).json({ error: "référentiel introuvable" });
