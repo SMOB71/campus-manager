@@ -4527,6 +4527,11 @@ async function openContractFiche(cid) {
     ${c.alerts?.length ? `<div class="list" style="margin:10px 0;">${c.alerts.map((a) => `<div class="item"><span class="pill ${a.severity === "high" ? "overdue" : "warn"}">${esc(a.date || "")}</span><div class="grow"><div class="ttl" style="font-weight:500;">${esc(a.label)}</div></div></div>`).join("")}</div>` : ""}
     ${rupt ? `<div class="section-title">Rupture — ${esc(RUPT_STAGE[rupt.stage] || rupt.stage)}</div>
       <p class="sub muted">Signalée le ${esc(rupt.since || "")}${rupt.origine ? " · origine : " + esc(rupt.origine) : ""}${rupt.owner ? " · pilote : " + esc(rupt.owner) : ""}<br>${esc(rupt.motif || "")}</p>
+      <p class="sub">${rupt.mode ? `Qualification : <b>${esc(RUPT_MODES[rupt.mode]?.label || rupt.mode)}</b>` : `<span class="pill warn">Non qualifiée</span> — la qualification commande la procédure applicable`}
+        ${["resolue", "confirmee"].includes(rupt.stage) ? "" : ` <button class="btn-ghost btn-sm" id="ct-qualif">${rupt.mode ? "Modifier" : "Qualifier"}</button>`}</p>
+      ${rupt.mode && RUPT_MODES[rupt.mode] ? `<p class="sub muted"><b>Procédure :</b> ${esc(RUPT_MODES[rupt.mode].procedure)}</p>` : ""}
+      ${rupt.mediateurSaisiLe ? `<p class="sub muted">Médiateur saisi le ${esc(rupt.mediateurSaisiLe)} · employeur informable à partir du ${esc(rupt.informationEmployeurAuPlusTot)} · rupture effective au plus tôt le ${esc(rupt.ruptureEffectiveAuPlusTot)}</p>` : ""}
+      ${rupt.finAccompagnement ? `<p class="sub muted">Accompagnement du CFA jusqu'au <b>${esc(rupt.finAccompagnement)}</b> — l'apprenti reste en formation.</p>` : ""}
       <div class="list">${(rupt.events || []).slice().reverse().map((e) => `<div class="item"><span class="pill">${new Date(e.at).toLocaleDateString("fr-FR")}</span><div class="grow"><div class="ttl" style="font-weight:500;">${esc(RUPT_STAGE[e.stage] || e.stage)}</div><div class="sub muted">${esc(e.note || "")}${e.by ? " · " + esc(e.by) : ""}</div></div></div>`).join("")}</div>
       ${ruptOpen ? `<div class="actions" style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
         ${["mediation", "replacement", "resolue", "confirmee"].filter((s) => s !== rupt.stage).map((s) => `<button class="btn-${s === "resolue" ? "primary" : "ghost"} btn-sm rupt-adv" data-stage="${s}">${RUPT_STAGE[s]}</button>`).join("")}
@@ -4552,17 +4557,11 @@ async function openContractFiche(cid) {
     if (r.error) { alert(r.error); return; }
     document.querySelector(".modal-bg")?.remove(); await openContractFiche(cid);
   });
-  $("#ct-rupture")?.addEventListener("click", async () => {
-    const motif = prompt("Que s'est-il passé ? (motif du signalement, obligatoire)");
-    if (!motif) return;
-    const origine = prompt("Origine du signalement (entreprise / apprenti / CFA) :", "entreprise") || "";
-    const r = await api.post(`/api/contracts/${cid}/rupture`, { motif, origine });
-    if (r.error) { alert(r.error); return; }
-    document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
-  });
+  $("#ct-rupture")?.addEventListener("click", () => openRuptureForm(cid));
+  $("#ct-qualif")?.addEventListener("click", () => openRuptureForm(cid, rupt));
   $$(".rupt-adv").forEach((b) => b.addEventListener("click", async () => {
     const stage = b.dataset.stage;
-    if (stage === "confirmee" && !confirm("Confirmer la rupture ?\n\nLe contrat passera en « rompu » et l'inscription de l'apprenant basculera en rupture.")) return;
+    if (stage === "confirmee" && !confirm("Confirmer la rupture ?\n\nLe contrat passera en « rompu ». L'apprenti restera en formation au CFA pendant 6 mois sous statut de stagiaire de la formation professionnelle — il ne sort PAS des effectifs.")) return;
     const note = prompt(`Note pour l'étape « ${RUPT_STAGE[stage]} » :`, "") || "";
     const owner = stage === "mediation" || stage === "replacement" ? (prompt("Qui pilote ?", rupt.owner || "") || "") : undefined;
     const r = await api.patch(`/api/contracts/${cid}/rupture`, { stage, note, owner });
@@ -4745,6 +4744,45 @@ async function openCerfaDossier(cid) {
     const nir = $("#cf-nir").value.trim();
     window.open(`/api/contracts/${cid}/cerfa/print${nir ? "?nir=" + encodeURIComponent(nir) : ""}`, "_blank");
   };
+}
+
+// Qualification juridique de la rupture. Le mode commande les délais, le
+// formalisme et les parties à informer : le choisir à l'aveugle expose le CFA.
+let RUPT_MODES = {};
+async function openRuptureForm(cid, rupt) {
+  if (!Object.keys(RUPT_MODES).length) RUPT_MODES = await api.get("/api/contracts/rupture-modes") || {};
+  const existe = !!rupt;
+  openModal(existe ? "Qualifier la rupture" : "Signaler une rupture", `
+    ${existe ? "" : `<div class="field"><label class="field-label">Que s'est-il passé ? *</label><textarea id="rf-motif" rows="2" placeholder="Motif du signalement"></textarea></div>
+    <div class="field"><label class="field-label">Origine du signalement</label><select class="txt" id="rf-origine"><option value="entreprise">Entreprise</option><option value="apprenti">Apprenti</option><option value="cfa">CFA</option></select></div>`}
+    <div class="field"><label class="field-label">Mode de rupture ${existe ? "*" : "(peut être précisé plus tard)"}</label>
+      <select class="txt" id="rf-mode"><option value="">— à qualifier —</option>${Object.entries(RUPT_MODES).map(([k, m]) => `<option value="${k}" ${rupt?.mode === k ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></div>
+    <div id="rf-detail" class="card card-pad" style="display:none;font-size:13px;"></div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="rf-save">${existe ? "Enregistrer la qualification" : "Signaler"}</button> <span class="status" id="rf-msg"></span></div>
+    <p class="hint muted">La qualification détermine les délais et le formalisme applicables. Elle est <b>obligatoire avant de confirmer</b> la rupture.</p>`);
+  const maj = () => {
+    const m = RUPT_MODES[$("#rf-mode").value];
+    const box = $("#rf-detail");
+    if (!m) { box.style.display = "none"; return; }
+    box.style.display = "";
+    box.innerHTML = `<b>${esc(m.label)}</b><div class="sub muted" style="margin-top:4px;"><b>Quand :</b> ${esc(m.quand)}</div><div class="sub muted" style="margin-top:4px;"><b>Procédure :</b> ${esc(m.procedure)}</div>`;
+  };
+  $("#rf-mode").addEventListener("change", maj); maj();
+  $("#rf-save").onclick = () => guard($("#rf-save"), async () => {
+    const mode = $("#rf-mode").value || undefined;
+    let r;
+    if (existe) {
+      if (!mode) { $("#rf-msg").textContent = "Choisis un mode de rupture."; return; }
+      r = await api.patch(`/api/contracts/${cid}/rupture`, { stage: rupt.stage, mode, note: "qualification du mode de rupture" });
+    } else {
+      const motif = $("#rf-motif").value.trim();
+      if (!motif) { $("#rf-msg").textContent = "Le motif est requis."; return; }
+      r = await api.post(`/api/contracts/${cid}/rupture`, { motif, origine: $("#rf-origine").value, mode });
+    }
+    if (r.error) { $("#rf-msg").textContent = r.error; return; }
+    document.querySelector(".modal-bg")?.remove();
+    await openContractFiche(cid);
+  });
 }
 
 // ---------- Vue : Émargement (preuve de réalisation) ----------

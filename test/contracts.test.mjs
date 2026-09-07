@@ -228,7 +228,7 @@ test("rupture : signalement unique, étapes tracées, confirmation répercutée 
   const company = store.addPartner({ campusId: campus.id, name: "Entreprise X", siret: "73282932000074" });
   const c = store.addContract({ campusId: campus.id, learnerId: learner.id, companyId: company.id, type: "apprentissage", dateDebut: "2026-09-01", dateFin: "2028-08-31" });
 
-  const opened = store.openRupture(c.id, { motif: "Absences répétées signalées par le tuteur", origine: "entreprise", by: "dir" });
+  const opened = store.openRupture(c.id, { motif: "Absences répétées signalées par le tuteur", origine: "entreprise", mode: "accord", by: "dir" });
   assert.equal(opened.rupture.stage, "signalee");
   assert.equal(opened.rupture.events.length, 1);
   // un second signalement sur une rupture en cours est refusé
@@ -241,6 +241,7 @@ test("rupture : signalement unique, étapes tracées, confirmation répercutée 
   assert.ok(store.advanceRupture(c.id, { stage: "n_importe_quoi" }).error);
 
   // Confirmation : le contrat passe en rompu, MAIS l'apprenti n'est pas « sorti ».
+  // (Le mode a été qualifié à l'ouverture — sans lui, la confirmation est refusée.)
   // Le CFA doit le maintenir en formation 6 mois (art. L. 6231-2) sous statut de
   // stagiaire de la formation professionnelle. Le déclarer sorti fausserait les
   // effectifs, l'émargement, l'enquête SIFA et les indicateurs de résultats.
@@ -312,4 +313,31 @@ test("rupture résolue : le contrat reste actif (c'est le résultat recherché)"
 test("listContracts : filtre enRupture ne retient que les ruptures ouvertes", () => {
   const enCours = store.listContracts({ enRupture: true });
   assert.ok(enCours.every((c) => c.rupture && !["resolue", "confirmee"].includes(c.rupture.stage)));
+});
+
+
+test("qualification de la rupture : obligatoire avant confirmation", () => {
+  const campus = store.addCampus({ name: "Campus Qualif" });
+  const l = store.addLearner({ campusId: campus.id, nom: "Qua", prenom: "Lif" });
+  store.addEnrollment({ learnerId: l.id, campusId: campus.id, schoolYear: "2026-2027" });
+  const c = store.addContract({ campusId: campus.id, learnerId: l.id, companyId: "co", dateDebut: "2026-09-01", dateFin: "2028-08-31" });
+
+  // Signalement sans qualification : accepté, on ne bloque pas l'alerte
+  const sig = store.openRupture(c.id, { motif: "situation tendue", by: "dir" });
+  assert.equal(sig.rupture.mode, null);
+  // Mais on ne CONFIRME pas une rupture sans savoir quelle procédure on applique
+  const refus = store.advanceRupture(c.id, { stage: "confirmee", note: "actée", by: "dir" });
+  assert.ok(refus.error);
+  assert.match(refus.error, /qualifier le mode/);
+
+  // Un mode inconnu est ignoré, pas accepté en silence
+  store.advanceRupture(c.id, { stage: "mediation", mode: "n_importe_quoi", by: "dir" });
+  assert.equal(store.getContract(c.id).rupture.mode, null);
+
+  // Qualifié : la confirmation passe
+  store.advanceRupture(c.id, { stage: "mediation", mode: "apprenti", note: "démission", by: "dir" });
+  assert.equal(store.getContract(c.id).rupture.mode, "apprenti");
+  const ok = store.advanceRupture(c.id, { stage: "confirmee", note: "actée", by: "dir" });
+  assert.equal(ok.status, "rompu");
+  assert.equal(ok.rupture.mode, "apprenti");
 });

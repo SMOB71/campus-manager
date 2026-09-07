@@ -263,7 +263,7 @@ test("contrats : dépôt bloqué si non conforme, rupture répercutée, cloisonn
 
   // Rupture : signalement sans motif refusé, puis workflow jusqu'à confirmation
   assert.equal((await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: {} })).status, 400);
-  const sig = await (await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: { motif: "Absences répétées", origine: "entreprise" } })).json();
+  const sig = await (await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: { motif: "Absences répétées", origine: "entreprise", mode: "accord" } })).json();
   assert.equal(sig.rupture.stage, "signalee");
   const med = await (await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "mediation", note: "RDV tripartite" } })).json();
   assert.equal(med.rupture.events.length, 2);
@@ -555,7 +555,7 @@ test("machine à états : transitions de contrat et de rupture bornées", async 
   await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "valide" } });
 
   // Rupture confirmée : état terminal, on ne revient pas en arrière
-  await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: { motif: "abandon" } });
+  await req(`/api/contracts/${c.id}/rupture`, { method: "POST", ...opts, json: { motif: "abandon", mode: "accord" } });
   await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "confirmee", note: "actée" } });
   assert.equal((await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "mediation" } })).status, 400);
   // et un contrat rompu ne redevient pas valide

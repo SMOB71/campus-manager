@@ -21,7 +21,7 @@ import { toMarkdown, toHtml, toDocx } from "./lib/export.js";
 import * as sessionstore from "./lib/sessionstore.js";
 import * as attendancestore from "./lib/attendancestore.js";
 import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
-import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
+import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, RUPTURE_MODES, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention, blockReport, certificationSummary } from "./lib/grades.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
@@ -3185,6 +3185,13 @@ app.post("/api/curricula/import", requireAuth, requireAdmin, uploadOne, requireI
     const raw = resp.choices?.[0]?.message?.content || "";
     const m = raw.match(/\{[\s\S]*\}/);
     let d; try { d = JSON.parse(m ? m[0] : raw); } catch { return res.status(502).json({ error: "réponse IA non exploitable" }); }
+    // Retour aux identifiants réels. Un pseudonyme inconnu est ignoré : le modèle
+    // ne doit pas pouvoir désigner un intervenant qu'on ne lui a pas soumis.
+    if (Array.isArray(d?.assignments)) {
+      d.assignments = d.assignments
+        .map((x) => ({ ...x, teacherId: pseudo.get(x.teacherId) || null }))
+        .filter((x) => x.teacherId);
+    }
     const modules = (Array.isArray(d.modules) ? d.modules : [])
       .filter((x) => x && (x.label || x.code))
       .map((x) => ({
@@ -3921,6 +3928,10 @@ ${nir ? "<br>Le NIR figurant sur ce document a été saisi à l'édition et n'es
 });
 
 // Simulateur de rémunération minimale (affiché à la saisie, pas seulement en contrôle)
+// Modes de rupture et procédure applicable à chacun : c'est ce que l'équipe doit
+// avoir sous les yeux au moment de qualifier.
+app.get("/api/contracts/rupture-modes", requireAuth, (req, res) => res.json(RUPTURE_MODES));
+
 app.get("/api/contracts/wage/simulate", requireAuth, (req, res) => {
   const { age, year } = req.query;
   const smic = Number(store.getSettings().smicMensuel) || SMIC_MENSUEL_DEFAUT;
@@ -4306,8 +4317,13 @@ app.post("/api/schedule/suggest-assignments", requireAuth, requireAdmin, require
     ...(cur.modules || []).map((m) => `- id=${m.id} | ${m.code ? m.code + " · " : ""}${m.label}${m.heures != null ? ` (${m.heures} h)` : ""}${m.requiresRoom ? ` [salle ${m.requiresRoom}]` : ""}`),
     "",
     "Intervenants :",
-    ...teachers.map((t) => `- id=${t.id} | ${t.name} | ${t.status}${t.company ? ` chez ${t.company}` : ""} | matières déclarées : ${(t.subjects || []).join(", ") || "AUCUNE"}`),
+    // PSEUDONYMISATION — l'appariement matière/compétence ne demande aucun nom.
+    // On envoie des étiquettes neutres et on remappe au retour : aucune donnée
+    // identifiante d'un salarié ne part chez le fournisseur d'IA.
+    ...teachers.map((t, i) => `- id=INT${i + 1} | ${t.status}${t.company ? " (prestataire)" : ""} | matières déclarées : ${(t.subjects || []).join(", ") || "AUCUNE"}`),
   ].join("\n");
+  // Table de correspondance, gardée en mémoire le temps de la requête.
+  const pseudo = new Map(teachers.map((t, i) => [`INT${i + 1}`, t.id]));
 
   try {
     const resp = await openai.chat.completions.create({
@@ -4318,6 +4334,13 @@ app.post("/api/schedule/suggest-assignments", requireAuth, requireAdmin, require
     const raw = resp.choices?.[0]?.message?.content || "";
     const m = raw.match(/\{[\s\S]*\}/);
     let d; try { d = JSON.parse(m ? m[0] : raw); } catch { return res.status(502).json({ error: "réponse IA non exploitable" }); }
+    // Retour aux identifiants réels. Un pseudonyme inconnu est ignoré : le modèle
+    // ne doit pas pouvoir désigner un intervenant qu'on ne lui a pas soumis.
+    if (Array.isArray(d?.assignments)) {
+      d.assignments = d.assignments
+        .map((x) => ({ ...x, teacherId: pseudo.get(x.teacherId) || null }))
+        .filter((x) => x.teacherId);
+    }
     const byT = new Map(teachers.map((t) => [t.id, t]));
     const byM = new Map((cur.modules || []).map((x) => [x.id, x]));
     // On ne fait confiance à rien : chaque identifiant renvoyé est revérifié contre
