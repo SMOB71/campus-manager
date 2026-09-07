@@ -3419,25 +3419,56 @@ app.patch("/api/assessments/:id/grades", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Bulletin d'un apprenant : moyennes par matière, générale, rang, absences.
-function buildLearnerReport(learner, classId) {
+// Bulletins de TOUTE une classe, en une seule passe.
+//
+// PERFORMANCE : la version naïve rechargeait l'intégralité des notes puis
+// recalculait le rapport de chaque pair pour CHAQUE bulletin demandé, soit
+// O(P² × G). Ici les notes de la classe sont indexées une fois, les P rapports
+// sont produits ensemble, et le rang comme les moyennes de classe en découlent.
+function buildClassReports(classId, campusId) {
   const modules = modulesOfClass(classId);
   const assessments = store.listAssessments({ classId });
-  const grades = store.listGrades({});
-  const report = learnerReport({ learnerId: learner.id, assessments, grades, modules });
-  // Rang : calculé sur les inscrits actifs de la classe
-  const peers = learnersOfClassActive(classId, learner.campusId);
+  const idsEval = new Set(assessments.map((a) => a.id));
+  // Ne garder que les notes des évaluations de CETTE classe : inutile de traîner
+  // toutes les notes de l'établissement dans chaque calcul.
+  const grades = store.listGrades({}).filter((g) => idsEval.has(g.assessmentId));
+  const peers = learnersOfClassActive(classId, campusId);
   const all = peers.map((l) => learnerReport({ learnerId: l.id, assessments, grades, modules }));
   const { ranks, total } = ranking(all);
-  // Moyennes de classe par matière, pour situer chaque note
   const classAvg = new Map();
   for (const m of modules) {
     const vals = all.map((r) => r.modules.find((x) => x.moduleId === m.id)?.average).filter((v) => v != null);
     const st = classStats(vals);
     if (st) classAvg.set(m.id, st);
   }
-  return { ...report, rank: ranks.get(learner.id) || null, rankTotal: total, classAverages: classAvg };
+  const byLearner = new Map(all.map((r) => [r.learnerId, r]));
+  return { peers, all, ranks, total, classAverages: classAvg, byLearner };
 }
+
+// Bulletin d'un apprenant : moyennes par matière, générale, rang, absences.
+function buildLearnerReport(learner, classId) {
+  const ctx = buildClassReports(classId, learner.campusId);
+  const report = ctx.byLearner.get(learner.id)
+    || learnerReport({ learnerId: learner.id, assessments: store.listAssessments({ classId }), grades: store.listGrades({}), modules: modulesOfClass(classId) });
+  return { ...report, rank: ctx.ranks.get(learner.id) || null, rankTotal: ctx.total, classAverages: ctx.classAverages };
+}
+
+// Tous les bulletins d'une classe en une requête — la vue Notes en émettait une
+// par apprenant, en série, dont la plupart étaient ensuite jetées.
+app.get("/api/classes/:id/reports", requireAuth, (req, res) => {
+  const k = store.getClass(req.params.id);
+  if (!k) return res.status(404).json({ error: "classe introuvable" });
+  if (!assertCampus(req, res, k.campusId)) return;
+  const ctx = buildClassReports(k.id, k.campusId);
+  const noms = new Map(ctx.peers.map((l) => [l.id, { nom: l.nom, prenom: l.prenom }]));
+  res.json({
+    className: k.name,
+    reports: ctx.all.map((r) => ({
+      ...r, ...noms.get(r.learnerId),
+      rank: ctx.ranks.get(r.learnerId) || null, rankTotal: ctx.total,
+    })).sort((a, b) => (b.average ?? -1) - (a.average ?? -1)),
+  });
+});
 
 app.get("/api/learners/:id/report", requireAuth, (req, res) => {
   const l = learnerGuard(req, res);

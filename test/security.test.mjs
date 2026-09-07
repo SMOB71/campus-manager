@@ -441,6 +441,42 @@ test("ancrage émargement : empreinte publiée, journal consultable, cloisonné"
   assert.equal((await req("/api/attendance/anchors", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: {} })).status, 403);
 });
 
+test("bulletins de classe : une requête, rangs cohérents, cloisonnée", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Bulletins" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: { name: "BTS B", modules: [{ code: "U1", label: "Optique", coefficient: 2 }] } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "BTS B1", curriculumId: cur.id } })).json();
+  const eleves = [];
+  for (const [nom, note] of [["Alpha", 18], ["Beta", 10], ["Gamma", 18]]) {
+    const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom, prenom: "E" } })).json();
+    await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+    eleves.push({ l, note });
+  }
+  const ev = await (await req("/api/assessments", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, label: "DS", moduleId: cur.modules[0].id, maxScore: 20 } })).json();
+  await req(`/api/assessments/${ev.id}/grades`, { method: "PATCH", ...opts, json: { entries: eleves.map((e) => ({ learnerId: e.l.id, score: e.note })) } });
+
+  // UNE seule requête renvoie toute la classe, triée, avec les rangs
+  const data = await (await req(`/api/classes/${classe.id}/reports`, { cookie: a.cookie })).json();
+  assert.equal(data.reports.length, 3);
+  assert.equal(data.className, "BTS B1");
+  assert.equal(data.reports[0].average, 18);
+  // Ex aequo : même rang, et le rang 2 est consommé
+  const rangs = data.reports.map((r) => r.rank);
+  assert.deepEqual(rangs, [1, 1, 3]);
+  // Les noms sont joints (la vue n'a plus à faire d'appel supplémentaire)
+  assert.ok(data.reports.every((r) => r.nom && r.prenom));
+
+  // Cohérence avec le bulletin individuel
+  const solo = await (await req(`/api/learners/${eleves[1].l.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(solo.average, 10);
+  assert.equal(solo.rank, 3);
+
+  // Cloisonnement
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await req(`/api/classes/${classe.id}/reports`, { cookie: d.cookie })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };
