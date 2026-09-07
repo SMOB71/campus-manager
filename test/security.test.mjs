@@ -334,6 +334,79 @@ test("notes : barème contrôlé, moyennes et bulletin, cloisonnement", async ()
   assert.equal((await req(`/api/learners/${l1.id}/bulletin`, { cookie: d.cookie })).status, 403);
 });
 
+test("portails : cloisonnement strict, révocation, pas de session ni de CSRF détournables", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Portail E2E" } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "BTS P1" } })).json();
+  const alice = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Alice", prenom: "A" } })).json();
+  const bob = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Bob", prenom: "B" } })).json();
+  for (const l of [alice, bob]) await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  // Génération du lien : le jeton n'est renvoyé qu'ici
+  const acc = await (await req("/api/portal/access", { method: "POST", ...opts, json: { kind: "learner", subjectId: alice.id, campusId: campus.id, label: "Alice" } })).json();
+  assert.ok(acc.url.includes("/portail.html#"));
+  assert.equal(acc.tokenHash, undefined);
+  const tokenAlice = acc.url.split("#")[1];
+
+  const portal = (path, method = "GET", token = tokenAlice, body) => fetch(BASE + path, {
+    method, headers: { Authorization: "Bearer " + token, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  // Le portail d'Alice ne renvoie QUE le dossier d'Alice
+  const me = await (await portal("/api/portal/me")).json();
+  assert.equal(me.kind, "learner");
+  assert.equal(me.identity.nom, "Alice");
+  const dump = JSON.stringify(me);
+  assert.ok(!dump.includes("Bob"), "fuite : le dossier d'un autre apprenant apparaît");
+  assert.ok(!dump.includes(bob.id), "fuite : l'identifiant d'un autre apprenant apparaît");
+
+  // Sans jeton, jeton bidon, ou jeton révoqué : refusé
+  assert.equal((await fetch(BASE + "/api/portal/me")).status, 401);
+  assert.equal((await portal("/api/portal/me", "GET", "n-importe-quoi")).status, 401);
+
+  // Un jeton de portail n'ouvre AUCUNE route salariée
+  assert.equal((await portal("/api/learners")).status, 401);
+  assert.equal((await portal("/api/campuses")).status, 401);
+  assert.equal((await portal("/api/portal/access")).status, 401);
+
+  // Et une session salariée ne vaut pas jeton de portail (pas de repli sur le cookie)
+  assert.equal((await req("/api/portal/me", { cookie: a.cookie })).status, 401);
+
+  // L'apprenant ne peut pas signer pour un autre : le learnerId envoyé est ignoré
+  const session = await (await req("/api/sessions", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, date: "2026-09-21", start: "09:00", end: "12:00" } })).json();
+  const sheet = await (await req(`/api/sessions/${session.id}/attendance`, { method: "POST", ...opts, json: {} })).json();
+  const signed = await (await portal("/api/portal/sign", "POST", tokenAlice, { code: sheet.code, learnerId: bob.id })).json();
+  assert.equal(signed.ok, true);
+  const after = await (await req(`/api/attendance/sheets/${sheet.id}`, { cookie: a.cookie })).json();
+  assert.ok(after.entries.find((e) => e.learnerId === alice.id).signedAt, "Alice devait être signée");
+  assert.ok(!after.entries.find((e) => e.learnerId === bob.id).signedAt, "Bob ne devait PAS être signé");
+
+  // Un tuteur ne voit que les alternants de SON entreprise et ne peut signaler qu'eux
+  const societe = await (await req("/api/partners", { method: "POST", ...opts, json: { campusId: campus.id, name: "Ma Boite" } })).json();
+  const autre = await (await req("/api/partners", { method: "POST", ...opts, json: { campusId: campus.id, name: "Autre Boite" } })).json();
+  await req("/api/contracts", { method: "POST", ...opts, json: { campusId: campus.id, learnerId: alice.id, companyId: societe.id, dateDebut: "2026-09-01", dateFin: "2028-08-31" } });
+  await req("/api/contracts", { method: "POST", ...opts, json: { campusId: campus.id, learnerId: bob.id, companyId: autre.id, dateDebut: "2026-09-01", dateFin: "2028-08-31" } });
+  const accTuteur = await (await req("/api/portal/access", { method: "POST", ...opts, json: { kind: "tutor", subjectId: societe.id, campusId: campus.id, label: "Ma Boite" } })).json();
+  const tokenTuteur = accTuteur.url.split("#")[1];
+  const vue = await (await portal("/api/portal/me", "GET", tokenTuteur)).json();
+  assert.equal(vue.alternants.length, 1);
+  assert.equal(vue.alternants[0].nom, "Alice");
+  assert.ok(!JSON.stringify(vue).includes("Bob"));
+  // signalement sur un alternant qui n'est pas le sien → refusé
+  assert.equal((await portal("/api/portal/signal", "POST", tokenTuteur, { learnerId: bob.id, message: "test" })).status, 403);
+  // un tuteur ne peut pas utiliser les routes réservées aux apprenants
+  assert.equal((await portal("/api/portal/sign", "POST", tokenTuteur, { code: sheet.code })).status, 403);
+
+  // Révocation : le lien cesse immédiatement de fonctionner
+  const accesses = await (await req(`/api/portal/access?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.ok(!JSON.stringify(accesses).includes("tokenHash"), "l'empreinte du jeton ne doit pas sortir");
+  const idAlice = accesses.find((x) => x.subjectId === alice.id && !x.revokedAt).id;
+  await req(`/api/portal/access/${idAlice}`, { method: "DELETE", ...opts });
+  assert.equal((await portal("/api/portal/me")).status, 401);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

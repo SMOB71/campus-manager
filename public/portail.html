@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Mon espace — Campus Manager</title>
+<link rel="icon" href="/logo.svg">
+<style>
+  :root {
+    --teal: #0B6E5F; --coral: #FF6A4D; --ink: #0D1B2A; --cream: #F4EFE6;
+    --line: #E3DED3; --surface: #fff; --muted: #5A6779;
+    --good: #0B6E5F; --warn: #B7791F; --bad: #B03A2E;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--cream); color: var(--ink);
+    font: 15px/1.55 "Plus Jakarta Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+    padding: 0 0 40px; }
+  header { background: var(--teal); color: #fff; padding: 18px 16px calc(18px + env(safe-area-inset-top)); padding-top: calc(18px + env(safe-area-inset-top)); }
+  header .who { font-size: 20px; font-weight: 800; margin: 0; }
+  header .sub { opacity: .85; font-size: 13px; margin: 2px 0 0; }
+  main { max-width: 700px; margin: 0 auto; padding: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--teal); margin: 22px 0 8px; }
+  .row { display: flex; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .row .grow { flex: 1; min-width: 0; }
+  .ttl { font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 99px; background: #EEF3F1; color: var(--teal); white-space: nowrap; }
+  .pill.bad { background: #F7E4E0; color: var(--bad); }
+  .pill.warn { background: #F9EFD9; color: var(--warn); }
+  .kpis { display: flex; gap: 10px; flex-wrap: wrap; }
+  .kpi { flex: 1 1 100px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .kpi b { display: block; font-size: 22px; }
+  .kpi span { font-size: 12px; color: var(--muted); }
+  button, .btn { font: inherit; font-weight: 600; border-radius: 9px; padding: 11px 16px; border: 1px solid var(--teal);
+    background: var(--teal); color: #fff; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--teal); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, textarea { font: inherit; width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); }
+  .code-input { text-transform: uppercase; letter-spacing: 4px; font-size: 20px; text-align: center; font-family: ui-monospace, monospace; }
+  .msg { margin-top: 8px; font-size: 13.5px; }
+  .msg.ok { color: var(--good); } .msg.ko { color: var(--bad); }
+  .empty { color: var(--muted); text-align: center; padding: 20px; }
+  canvas { width: 100%; border: 2px dashed var(--line); border-radius: 10px; background: #fff; touch-action: none; }
+  @media (prefers-color-scheme: dark) {
+    :root { --cream: #10192B; --surface: #182338; --ink: #EDF0F4; --line: #2B3A55; --muted: #9AA9BF; --teal: #35B39A; }
+    canvas { background: #fff; }
+  }
+</style>
+</head>
+<body>
+<header><h1 class="who" id="who">Mon espace</h1><p class="sub" id="whosub"></p></header>
+<main id="app"><p class="empty">Chargement…</p></main>
+
+<script src="/portail.js"></script>
+</body>
+</html>

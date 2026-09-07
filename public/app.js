@@ -3475,10 +3475,12 @@ async function openLearnerFiche(lid) {
     <div class="list">${l.timeline.length ? l.timeline.map(tlRow).join("") : `<p class="muted" style="padding:8px;">—</p>`}</div>
     <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-ghost btn-sm" id="lr-edit">Modifier le dossier</button>
+      <button class="btn-ghost btn-sm" id="lr-portal">🔗 Lien portail</button>
       ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger" id="lr-del">Supprimer (RGPD)</button>` : ""}
     </div>`);
   const reopen = async () => { document.querySelector(".modal-bg")?.remove(); await openLearnerFiche(lid); };
   $("#lr-edit").onclick = () => { document.querySelector(".modal-bg")?.remove(); openLearnerForm(l, reopen); };
+  $("#lr-portal").onclick = () => openPortalLink("learner", l.id, l.campusId, `${l.prenom} ${l.nom}`);
   $("#lr-del")?.addEventListener("click", async () => {
     if (!confirm(`Supprimer définitivement le dossier de ${l.prenom} ${l.nom} (inscriptions comprises) ?`)) return;
     await api.del(`/api/learners/${lid}`);
@@ -4221,6 +4223,41 @@ const hhmmToMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ""))
 let planState = { week: mondayOf(new Date().toISOString().slice(0, 10)), campusId: "", classId: "", teacherId: "" };
 
 // ---------- Emploi du temps : grille semaine éditable ----------
+// Génération d'un lien de portail. Le lien n'est affiché QU'UNE FOIS : il n'est
+// stocké nulle part en clair, seule son empreinte l'est côté serveur.
+async function openPortalLink(kind, subjectId, campusId, label) {
+  const existing = await api.get(`/api/portal/access?campusId=${campusId}&kind=${kind}`) || [];
+  const actifs = existing.filter((a) => a.subjectId === subjectId && !a.revokedAt);
+  const kindLabel = { learner: "apprenant", teacher: "formateur", tutor: "tuteur entreprise" }[kind] || kind;
+  openModal(`Accès portail — ${label}`, `
+    <p class="sub muted" style="margin-top:0;">Un lien personnel donne accès à l'espace ${kindLabel}, sans mot de passe. Il est <b>révocable à tout moment</b> et n'ouvre que sur ce dossier.</p>
+    ${actifs.length ? `<div class="card card-pad" style="margin-bottom:10px;"><b>Un lien est déjà actif</b>
+      <div class="sub muted">Créé le ${new Date(actifs[0].createdAt).toLocaleDateString("fr-FR")}${actifs[0].lastUsedAt ? ` · dernière visite le ${new Date(actifs[0].lastUsedAt).toLocaleDateString("fr-FR")} (${actifs[0].useCount} visite(s))` : " · jamais utilisé"}${actifs[0].expiresAt ? ` · expire le ${new Date(actifs[0].expiresAt).toLocaleDateString("fr-FR")}` : ""}</div>
+      <div class="sub muted" style="margin-top:6px;">Le lien lui-même n'est pas conservé : en générer un nouveau remplace l'ancien, qui cesse aussitôt de fonctionner.</div>
+      <div class="actions" style="margin-top:8px;"><button class="btn-ghost btn-sm btn-danger" id="pl-revoke">Révoquer l'accès</button></div></div>` : ""}
+    <div class="actions"><button class="btn-primary" id="pl-gen">${actifs.length ? "Générer un nouveau lien" : "Générer le lien"}</button></div>
+    <div id="pl-out" style="margin-top:12px;"></div>`);
+  $("#pl-revoke")?.addEventListener("click", async () => {
+    if (!confirm("Révoquer cet accès ? Le lien cessera immédiatement de fonctionner.")) return;
+    await api.del(`/api/portal/access/${actifs[0].id}`);
+    document.querySelector(".modal-bg")?.remove();
+    openPortalLink(kind, subjectId, campusId, label);
+  });
+  $("#pl-gen").onclick = async () => {
+    const r = await api.post("/api/portal/access", { kind, subjectId, campusId, label });
+    if (r.error) { $("#pl-out").innerHTML = `<p class="sub" style="color:var(--bad);">${esc(r.error)}</p>`; return; }
+    $("#pl-out").innerHTML = `<div class="card card-pad" style="border-left:4px solid var(--coral);">
+      <b>⚠ ${esc(r.warning)}</b>
+      <input class="txt" id="pl-url" readonly value="${esc(r.url)}" style="margin-top:8px;font-family:ui-monospace,monospace;font-size:12px;">
+      <div class="actions" style="margin-top:8px;"><button class="btn-primary btn-sm" id="pl-copy">Copier le lien</button></div></div>`;
+    $("#pl-url").select();
+    $("#pl-copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(r.url); $("#pl-copy").textContent = "✓ Copié"; }
+      catch { $("#pl-url").select(); document.execCommand("copy"); $("#pl-copy").textContent = "✓ Copié"; }
+    };
+  };
+}
+
 // ---------- Vue : Contrats d'alternance ----------
 const CT_STATUS = { brouillon: ["Brouillon", ""], a_deposer: ["À déposer", "warn"], depose: ["Déposé", "doing"], valide: ["Validé", "done"], rompu: ["Rompu", "overdue"], termine: ["Terminé", ""] };
 const RUPT_STAGE = { signalee: "Signalée", mediation: "Médiation", replacement: "Recherche entreprise", resolue: "Résolue (maintien)", confirmee: "Rupture confirmée" };
@@ -4356,11 +4393,13 @@ async function openContractFiche(cid) {
       </div>` : ""}` : ""}
     <div class="actions" style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-ghost btn-sm" id="ct-edit">Modifier</button>
+      <button class="btn-ghost btn-sm" id="ct-portal">🔗 Lien tuteur</button>
       ${c.status !== "depose" && c.status !== "valide" && c.status !== "rompu" ? `<button class="btn-primary btn-sm" id="ct-depose" ${v.ok ? "" : "disabled title=\"Lever d'abord les points bloquants\""}>Marquer déposé</button>` : ""}
       ${c.status === "depose" ? `<button class="btn-primary btn-sm" id="ct-valide">Marquer validé</button>` : ""}
       ${!ruptOpen && c.status !== "rompu" ? `<button class="btn-ghost btn-sm btn-danger" id="ct-rupture">Signaler une rupture</button>` : ""}
     </div>`);
   $("#ct-edit").onclick = () => { document.querySelector(".modal-bg")?.remove(); openContractForm(c); };
+  $("#ct-portal").onclick = () => openPortalLink("tutor", c.companyId, c.campusId, c.companyName || "Entreprise");
   $("#ct-depose")?.addEventListener("click", async () => {
     const r = await api.patch(`/api/contracts/${cid}`, { status: "depose", dateDepot: new Date().toISOString().slice(0, 10) });
     if (r.error) { alert(r.error + (r.errors ? "\n\n• " + r.errors.join("\n• ") : "")); return; }

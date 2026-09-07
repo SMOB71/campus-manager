@@ -23,6 +23,7 @@ import * as attendancestore from "./lib/attendancestore.js";
 import { sheetStats, periodStats, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention } from "./lib/grades.js";
+import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
 import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
@@ -139,6 +140,9 @@ const CSRF_EXEMPT = new Set(["/api/login", "/api/forgot", "/api/reset", "/api/we
 app.use((req, res, next) => {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
   if (CSRF_EXEMPT.has(req.path)) return next();
+  // Le portail s'authentifie par en-tête Authorization (jamais par cookie) : une
+  // page tierce ne peut pas positionner cet en-tête, donc pas de risque CSRF.
+  if (req.path.startsWith("/api/portal/")) return next();
   if (!csrfValid(req)) return res.status(403).json({ error: "Requête refusée (jeton de sécurité invalide). Recharge la page." });
   next();
 });
@@ -3067,6 +3071,197 @@ for (const [seg, api, listName] of [["rooms", "Room", "listRooms"], ["classes", 
 }
 
 // --- Séances ---
+// ===== Portails externes (apprenant / formateur / tuteur) =====
+// Authentification par jeton porteur, totalement disjointe de la session salariée :
+// aucune route ci-dessous ne lit de cookie, et aucune ne peut retomber sur une
+// session admin. Voir lib/portal.js pour les partis pris de sécurité.
+
+const portalLimiter = makeRateLimiter({ max: 30, windowMs: 60000 });
+
+function portalAuth(req, res, next) {
+  const ip = clientIp(req);
+  if (!portalLimiter.check(ip).allowed) return res.status(429).json({ error: "Trop de requêtes. Réessaie dans une minute." });
+  const header = String(req.headers.authorization || "");
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (!token) return res.status(401).json({ error: "Lien d'accès requis" });
+  const access = store.findPortalAccessByHash(hashToken(token));
+  const state = accessState(access);
+  if (!state.valid) return res.status(401).json({ error: `Lien d'accès ${state.reason}` });
+  // Vérification à temps constant en plus de la recherche par empreinte.
+  if (!tokenMatches(token, access.tokenHash)) return res.status(401).json({ error: "Lien d'accès invalide" });
+  req.portal = access;
+  next();
+}
+
+// Identité et charge utile du portail, filtrées sur le seul sujet du jeton.
+function portalPayload(access) {
+  const today = new Date().toISOString().slice(0, 10);
+  const in30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+  const from = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const campusName = store.listCampuses().find((c) => c.id === access.campusId)?.name || "";
+
+  if (access.kind === "learner") {
+    const l = store.getLearner(access.subjectId);
+    if (!l) return null;
+    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
+    const classId = enr?.classId || null;
+    const sessions = classId ? sessionstore.listSessions({ classId, from: today, to: in30 }).slice(0, 40) : [];
+    const sheets = attendancestore.listSheets({ campusId: l.campusId, classId, from, to: today, status: "locked" });
+    const absences = [];
+    for (const s of sheets) {
+      const e = (s.entries || []).find((x) => x.learnerId === l.id);
+      if (e && (e.status === "absent" || e.status === "retard" || e.status === "excuse")) {
+        absences.push({ sheetId: s.id, date: s.date, start: s.start, end: s.end, status: e.status, justified: !!e.justified, reason: e.reason || "" });
+      }
+    }
+    let report = null;
+    if (classId) {
+      const modules = (() => { const k = store.getClass(classId); const cur = k?.curriculumId ? store.getCurriculum(k.curriculumId) : null; return cur?.modules || []; })();
+      report = learnerReport({ learnerId: l.id, assessments: store.listAssessments({ classId }), grades: store.listGrades({}), modules });
+    }
+    return {
+      kind: "learner", campusName,
+      identity: { nom: l.nom, prenom: l.prenom, className: classId ? store.getClass(classId)?.name || null : null, schoolYear: enr?.schoolYear || null },
+      sessions: hydrate(sessions),
+      absences: absences.sort((a, b) => (b.date || "").localeCompare(a.date || "")),
+      report,
+      documents: store.listDocuments(l.campusId, null, l.id).map((d) => ({ id: d.id, name: d.name, createdAt: d.createdAt })),
+    };
+  }
+
+  if (access.kind === "teacher") {
+    const teachers = store.listTeachers ? store.listTeachers({}) : [];
+    const teacher = teachers.find((x) => x.id === access.subjectId) || null;
+    const sessions = sessionstore.listSessions({ teacherId: access.subjectId, from: today, to: in30 }).slice(0, 60);
+    const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+    return {
+      kind: "teacher", campusName,
+      identity: { nom: teacher?.lastName || teacher?.name || "", prenom: teacher?.firstName || "" },
+      sessions: hydrate(sessions).map((s) => ({ ...s, className: classes.get(s.classId) || null })),
+    };
+  }
+
+  // Tuteur : uniquement SES alternants (ceux dont il est maître d'apprentissage).
+  const contracts = store.listContracts({ companyId: access.subjectId }).filter((c) => c.status !== "termine");
+  const alternants = contracts.map((c) => {
+    const l = c.learnerId ? store.getLearner(c.learnerId) : null;
+    if (!l) return null;
+    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit");
+    const classId = enr?.classId || null;
+    const sheets = attendancestore.listSheets({ campusId: l.campusId, classId, from, to: today, status: "locked" });
+    let planned = 0, absent = 0;
+    for (const s of sheets) {
+      const st = sheetStats(s);
+      const e = (s.entries || []).find((x) => x.learnerId === l.id);
+      if (!e) continue;
+      planned += st.durationMinutes;
+      if (e.status === "absent" || e.status === "excuse") absent += st.durationMinutes;
+      else if (e.status === "retard") absent += Math.min(Number(e.minutesLate) || 0, st.durationMinutes);
+    }
+    return {
+      learnerId: l.id, nom: l.nom, prenom: l.prenom,
+      className: classId ? store.getClass(classId)?.name || null : null,
+      contract: { dateDebut: c.dateDebut, dateFin: c.dateFin, status: c.status, rupture: c.rupture ? c.rupture.stage : null },
+      assiduite: planned > 0 ? Math.round(((planned - absent) / planned) * 1000) / 10 : null,
+      sessions: classId ? hydrate(sessionstore.listSessions({ classId, from: today, to: in30 }).slice(0, 15)) : [],
+    };
+  }).filter(Boolean);
+  const company = store.listPartners().find((p) => p.id === access.subjectId);
+  return { kind: "tutor", campusName, identity: { nom: company?.name || "Entreprise" }, alternants };
+}
+
+app.get("/api/portal/me", portalAuth, (req, res) => {
+  const payload = portalPayload(req.portal);
+  if (!payload) return res.status(404).json({ error: "Dossier introuvable — contacte ton campus" });
+  store.touchPortalAccess(req.portal.id);
+  res.json(payload);
+});
+
+// Signature d'émargement par code de séance, depuis le portail apprenant.
+app.post("/api/portal/sign", portalAuth, (req, res) => {
+  if (req.portal.kind !== "learner") return res.status(403).json({ error: "réservé aux apprenants" });
+  const sheet = attendancestore.getSheetByCode(req.body?.code);
+  if (!sheet) return res.status(404).json({ error: "Code invalide ou séance déjà close" });
+  // Le jeton ne vaut que pour SON apprenant : on ignore tout learnerId envoyé.
+  const r = attendancestore.signEntry(sheet.id, req.portal.subjectId, req.body?.signature);
+  if (r?.error) return res.status(409).json(r);
+  if (!r) return res.status(404).json({ error: "Feuille introuvable" });
+  res.json({ ok: true, date: sheet.date, start: sheet.start });
+});
+
+// Justification d'absence : l'apprenant motive, l'équipe tranche (pas d'auto-validation).
+app.post("/api/portal/justify", portalAuth, (req, res) => {
+  if (req.portal.kind !== "learner") return res.status(403).json({ error: "réservé aux apprenants" });
+  const { sheetId, reason } = req.body || {};
+  if (!String(reason || "").trim()) return res.status(400).json({ error: "Motif requis" });
+  const sheet = attendancestore.getSheet(sheetId);
+  if (!sheet || sheet.campusId !== req.portal.campusId) return res.status(404).json({ error: "Séance introuvable" });
+  const learner = store.getLearner(req.portal.subjectId);
+  // La demande devient une action pour l'équipe : rien n'est justifié automatiquement.
+  store.addAction({
+    campusId: sheet.campusId,
+    campusName: store.listCampuses().find((c) => c.id === sheet.campusId)?.name || null,
+    title: `Justificatif à valider — ${learner?.prenom || ""} ${learner?.nom || ""} (${sheet.date})`,
+    objectif: String(reason).trim(), category: "suivi",
+  });
+  res.json({ ok: true });
+});
+
+// Signalement d'une difficulté par le tuteur : remonte en incident côté campus.
+app.post("/api/portal/signal", portalAuth, (req, res) => {
+  if (req.portal.kind !== "tutor") return res.status(403).json({ error: "réservé aux tuteurs" });
+  const { learnerId, message } = req.body || {};
+  if (!String(message || "").trim()) return res.status(400).json({ error: "Message requis" });
+  // Le tuteur ne peut signaler que SES alternants.
+  const mine = store.listContracts({ companyId: req.portal.subjectId }).some((c) => c.learnerId === learnerId);
+  if (learnerId && !mine) return res.status(403).json({ error: "Cet apprenant n'est pas rattaché à votre entreprise" });
+  const l = learnerId ? store.getLearner(learnerId) : null;
+  const company = store.listPartners().find((p) => p.id === req.portal.subjectId);
+  store.addIncident({
+    campusId: req.portal.campusId,
+    campusName: store.listCampuses().find((c) => c.id === req.portal.campusId)?.name || null,
+    kind: "incident", category: "signalement tuteur", severity: "moyen",
+    title: `Signalement tuteur — ${l ? l.prenom + " " + l.nom : company?.name || "entreprise"}`,
+    description: String(message).trim(), date: new Date().toISOString().slice(0, 10),
+  });
+  res.json({ ok: true });
+});
+
+// --- Administration des accès (côté salarié) ---
+app.get("/api/portal/access", requireAuth, (req, res) => {
+  const { campusId, kind } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let items = store.listPortalAccess({ campusId, kind });
+  if (!campusId) items = items.filter((a) => canCampus(req, a.campusId));
+  // Jamais le jeton, même haché.
+  res.json(items.map(({ tokenHash, ...a }) => a));
+});
+
+app.post("/api/portal/access", requireAuth, (req, res) => {
+  const { kind, subjectId, campusId, label, days } = req.body || {};
+  if (!PORTAL_KINDS.includes(kind)) return res.status(400).json({ error: "type d'accès inconnu" });
+  if (!subjectId) return res.status(400).json({ error: "sujet requis" });
+  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  const token = generateToken();
+  const access = store.createPortalAccess({
+    kind, subjectId, campusId, label, tokenHash: hashToken(token),
+    expiresAt: expiryFor(kind, days), createdBy: req.user?.name || req.user?.email || "",
+  });
+  logAudit(req, "create", "portail", `accès ${KIND_LABEL[kind]} — ${label || subjectId}`);
+  // Le lien n'est renvoyé QU'ICI, une seule fois : il n'est stocké nulle part en clair.
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({ ...access, tokenHash: undefined, url: `${base}/portail.html#${token}`, warning: "Ce lien ne sera plus jamais affiché — transmets-le maintenant." });
+});
+
+app.delete("/api/portal/access/:id", requireAuth, (req, res) => {
+  const a = store.listPortalAccess({}).find((x) => x.id === req.params.id);
+  if (!a) return res.json({ ok: true });
+  if (!assertCampus(req, res, a.campusId)) return;
+  store.revokePortalAccess(a.id, req.body?.reason || "révoqué depuis l'administration");
+  logAudit(req, "delete", "portail", `révocation accès ${a.kind}`);
+  res.json({ ok: true });
+});
+
 // ===== Évaluations, notes et bulletins =====
 // Le calcul des moyennes vit dans lib/grades.js (pur) : une absence n'est pas un
 // zéro, chaque note est ramenée sur 20, et les matières pèsent par coefficient.
