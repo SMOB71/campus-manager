@@ -335,6 +335,7 @@ const NAV = [
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
   { id: "planning", label: "Emploi du temps", icon: I.agenda, group: "Enseignement" },
   { id: "emargement", label: "Émargement", icon: I.sign, group: "Enseignement" },
+  { id: "notes", label: "Notes & bulletins", icon: I.note, group: "Enseignement" },
   { id: "professeurs", label: "Professeurs", icon: I.campus, group: "Enseignement" },
   { id: "referentiels", label: "Référentiels", icon: I.note, admin: true, group: "Enseignement" },
   { id: "sallesclasses", label: "Salles & classes", icon: I.net, group: "Enseignement" },
@@ -391,7 +392,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, planning: renderPlanning, emargement: renderEmargement, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -4386,6 +4387,139 @@ async function openContractFiche(cid) {
     if (r.error) { alert(r.error); return; }
     document.querySelector(".modal-bg")?.remove(); openContractFiche(cid);
   }));
+}
+
+// ---------- Vue : Notes & bulletins ----------
+const EVAL_TYPE = { devoir: "Devoir", examen: "Examen", tp: "TP", oral: "Oral", projet: "Projet", cco: "CCF" };
+let ntCampus = "", ntClass = "";
+async function renderNotes() {
+  const view = $("#view");
+  if (!ntCampus) ntCampus = state.campuses[0]?.id || "";
+  const classes = ntCampus ? (await api.get(`/api/classes?campusId=${ntCampus}`) || []) : [];
+  if (ntClass && !classes.some((k) => k.id === ntClass)) ntClass = "";
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="nt-add">${I.plus}<span>Évaluation</span></button>`;
+  $("#nt-add").addEventListener("click", () => openAssessmentForm(null, classes));
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const qs = new URLSearchParams();
+  if (ntCampus) qs.set("campusId", ntCampus);
+  if (ntClass) qs.set("classId", ntClass);
+  const evals = await api.get("/api/assessments?" + qs.toString()) || [];
+  const learners = ntClass ? (await api.get(`/api/learners?campusId=${ntCampus}`) || []) : [];
+  const line = (a) => `<div class="item">
+    <span class="pill">${esc(a.date || "—")}</span>
+    <div class="grow"><div class="ttl">${esc(a.label)} <span class="muted" style="font-weight:400;">${EVAL_TYPE[a.type] || a.type}${a.moduleLabel ? " · " + esc(a.moduleLabel) : ""}${a.className ? " · " + esc(a.className) : ""}</span></div>
+      <div class="sub muted">coef. ${a.coefficient} · sur ${a.maxScore} · ${a.graded}/${a.total} note(s) saisie(s)</div></div>
+    ${a.graded < a.total ? '<span class="pill warn">à saisir</span>' : '<span class="pill done">complète</span>'}
+    <button class="btn-ghost btn-sm nt-open" data-id="${a.id}">Saisir</button>
+  </div>`;
+  view.innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+      ${isAdmin() ? `<select class="txt" id="nt-campus" style="max-width:200px;">${state.campuses.map((c) => `<option value="${c.id}" ${ntCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}
+      <select class="txt" id="nt-class" style="max-width:200px;"><option value="">Toutes les classes</option>${classes.map((k) => `<option value="${k.id}" ${ntClass === k.id ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select>
+    </div>
+    <div class="section-title" style="margin-top:0;">Évaluations <span class="muted">(${evals.length})</span></div>
+    ${evals.length ? `<div class="list">${evals.map(line).join("")}</div>` : `<p class="empty">Aucune évaluation${ntClass ? " pour cette classe" : ""} — crée la première avec « + Évaluation ».</p>`}
+    ${ntClass ? `<div class="section-title">Bulletins <span class="muted">(inscrits de la classe)</span></div>
+      <div class="list" id="nt-bulletins"><p class="muted" style="padding:8px;">Chargement des moyennes…</p></div>` : `<p class="hint muted" style="margin-top:14px;">Choisis une classe pour afficher les moyennes et éditer les bulletins.</p>`}`;
+  $("#nt-campus")?.addEventListener("change", () => { ntCampus = $("#nt-campus").value; ntClass = ""; renderNotes(); });
+  $("#nt-class").addEventListener("change", () => { ntClass = $("#nt-class").value; renderNotes(); });
+  $$(".nt-open").forEach((b) => b.addEventListener("click", () => openGradeEntry(b.dataset.id)));
+  if (ntClass) {
+    // Les moyennes se calculent côté serveur, apprenant par apprenant.
+    const inscrits = [];
+    for (const l of learners) {
+      const r = await api.get(`/api/learners/${l.id}/report`);
+      if (r && !r.error && r.className) inscrits.push({ l, r });
+    }
+    const box = $("#nt-bulletins");
+    if (!box) return;
+    box.innerHTML = inscrits.length ? inscrits
+      .sort((a, b) => (b.r.average ?? -1) - (a.r.average ?? -1))
+      .map(({ l, r }) => `<div class="item">
+        <span class="pill">${r.rank ? r.rank + "ᵉ" : "—"}</span>
+        <div class="grow"><div class="ttl">${esc(l.prenom)} ${esc(l.nom.toUpperCase())}</div>
+          <div class="sub muted">${r.average != null ? "moyenne " + r.average.toFixed(2).replace(".", ",") + " · " + (r.mention || "") : "aucune note"}${r.modules?.length ? " · " + r.modules.length + " matière(s)" : ""}</div></div>
+        <a class="btn-ghost btn-sm" href="/api/learners/${l.id}/bulletin" target="_blank">Bulletin</a>
+      </div>`).join("") : `<p class="muted" style="padding:8px;">Aucun apprenant inscrit dans cette classe.</p>`;
+  }
+}
+
+async function openAssessmentForm(a, classes) {
+  a = a || {};
+  const classId = a.classId || ntClass || classes[0]?.id || "";
+  const mods = await modulesForClass(classId, classes);
+  openModal(a.id ? "Modifier l'évaluation" : "Nouvelle évaluation", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Intitulé *</label><input class="txt" id="af-label" value="${esc(a.label || "")}" placeholder="Devoir sur table n°2"></div>
+      <div class="field"><label class="field-label">Classe *</label><select class="txt" id="af-class">${classes.map((k) => `<option value="${k.id}" ${k.id === classId ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Matière</label><select class="txt" id="af-module"><option value="">—</option>${mods.map((m) => `<option value="${m.id}" ${m.id === a.moduleId ? "selected" : ""}>${esc(m.code ? m.code + " — " : "")}${esc(m.label)}</option>`).join("")}</select></div>
+      <div class="field"><label class="field-label">Type</label><select class="txt" id="af-type">${Object.entries(EVAL_TYPE).map(([k, l]) => `<option value="${k}" ${k === (a.type || "devoir") ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Date</label><input class="txt" id="af-date" type="date" value="${esc(a.date || new Date().toISOString().slice(0, 10))}"></div>
+      <div class="field"><label class="field-label">Coefficient</label><input class="txt" id="af-coef" type="number" step="0.5" min="0" value="${a.coefficient ?? 1}"></div>
+      <div class="field"><label class="field-label">Barème (noté sur)</label><input class="txt" id="af-max" type="number" min="1" value="${a.maxScore ?? 20}"></div>
+    </div>
+    <div class="actions"><button class="btn-primary" id="af-save">${a.id ? "Enregistrer" : "Créer et saisir les notes"}</button> <span class="status" id="af-msg"></span></div>`);
+  $("#af-save").onclick = async () => {
+    const body = { campusId: ntCampus, classId: $("#af-class").value, moduleId: $("#af-module").value || null,
+      label: $("#af-label").value.trim(), type: $("#af-type").value, date: $("#af-date").value,
+      coefficient: $("#af-coef").value, maxScore: $("#af-max").value };
+    if (!body.label) { $("#af-msg").textContent = "L'intitulé est requis."; return; }
+    const r = a.id ? await api.patch(`/api/assessments/${a.id}`, body) : await api.post("/api/assessments", body);
+    if (r.error) { $("#af-msg").textContent = r.error; return; }
+    document.querySelector(".modal-bg")?.remove();
+    if (!a.id) openGradeEntry(r.id); else renderNotes();
+  };
+}
+
+async function modulesForClass(classId, classes) {
+  const k = (classes || []).find((x) => x.id === classId);
+  if (!k?.curriculumId) return [];
+  const cur = await api.get(`/api/curricula`);
+  return (cur || []).find((c) => c.id === k.curriculumId)?.modules || [];
+}
+
+async function openGradeEntry(aid) {
+  const a = await api.get(`/api/assessments/${aid}`);
+  if (!a || a.error) { alert(a?.error || "Évaluation introuvable"); return; }
+  const row = (g) => `<div class="item grade-row" data-lid="${g.learnerId}">
+    <div class="grow"><div class="ttl">${esc(g.learnerName)}</div></div>
+    <input class="txt gr-score" data-lid="${g.learnerId}" type="number" step="0.25" min="0" max="${a.maxScore}" value="${g.score ?? ""}" style="width:80px;" placeholder="/${a.maxScore}" ${g.absent ? "disabled" : ""}>
+    <label class="sub muted" style="display:flex;align-items:center;gap:4px;white-space:nowrap;"><input type="checkbox" class="gr-abs" data-lid="${g.learnerId}" ${g.absent ? "checked" : ""}> absent</label>
+    <label class="sub muted" style="display:flex;align-items:center;gap:4px;white-space:nowrap;${g.absent ? "" : "display:none;"}" data-zero="${g.learnerId}"><input type="checkbox" class="gr-zero" data-lid="${g.learnerId}" ${g.zeroSiAbsent ? "checked" : ""}> compte 0</label>
+  </div>`;
+  openModal(`${esc(a.label)} — saisie des notes`, `
+    <p class="sub muted" style="margin-top:0;">${EVAL_TYPE[a.type] || a.type} · noté sur ${a.maxScore} · coefficient ${a.coefficient}${a.date ? " · " + esc(a.date) : ""}</p>
+    ${a.stats ? `<div class="kpis" style="margin-bottom:10px;">
+      <div class="k"><div class="v">${a.stats.average.toFixed(2).replace(".", ",")}</div><div class="l">moyenne (/20)</div></div>
+      <div class="k"><div class="v">${a.stats.min.toFixed(2).replace(".", ",")}</div><div class="l">min</div></div>
+      <div class="k"><div class="v">${a.stats.max.toFixed(2).replace(".", ",")}</div><div class="l">max</div></div>
+      <div class="k"><div class="v">${a.stats.count}</div><div class="l">notés</div></div>
+    </div>` : ""}
+    <div class="list">${a.grades.map(row).join("")}</div>
+    <p class="hint muted" style="margin-top:10px;">Une absence ne compte pas comme un zéro : elle sort du calcul de la moyenne, sauf si l'équipe coche explicitement « compte 0 ».</p>
+    <div class="actions" style="margin-top:10px;"><button class="btn-primary" id="gr-save">Enregistrer les notes</button> <span class="status" id="gr-msg"></span></div>`);
+  $$(".gr-abs").forEach((c) => c.addEventListener("change", () => {
+    const lid = c.dataset.lid;
+    const score = $(`.gr-score[data-lid="${lid}"]`);
+    const zero = document.querySelector(`[data-zero="${lid}"]`);
+    if (score) score.disabled = c.checked;
+    if (zero) zero.style.display = c.checked ? "flex" : "none";
+  }));
+  $("#gr-save").onclick = async () => {
+    const entries = $$(".grade-row").map((r) => {
+      const lid = r.dataset.lid;
+      return { learnerId: lid, score: $(`.gr-score[data-lid="${lid}"]`).value,
+        absent: $(`.gr-abs[data-lid="${lid}"]`).checked, zeroSiAbsent: $(`.gr-zero[data-lid="${lid}"]`)?.checked };
+    });
+    const r = await api.patch(`/api/assessments/${aid}/grades`, { entries });
+    if (r.error) { $("#gr-msg").textContent = r.error; $("#gr-msg").style.color = "var(--bad)"; return; }
+    document.querySelector(".modal-bg")?.remove();
+    renderNotes();
+  };
 }
 
 // ---------- Vue : Émargement (preuve de réalisation) ----------

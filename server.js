@@ -22,6 +22,7 @@ import * as sessionstore from "./lib/sessionstore.js";
 import * as attendancestore from "./lib/attendancestore.js";
 import { sheetStats, periodStats, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
+import { learnerReport, ranking, classStats, mention } from "./lib/grades.js";
 import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
@@ -3066,6 +3067,167 @@ for (const [seg, api, listName] of [["rooms", "Room", "listRooms"], ["classes", 
 }
 
 // --- Séances ---
+// ===== Évaluations, notes et bulletins =====
+// Le calcul des moyennes vit dans lib/grades.js (pur) : une absence n'est pas un
+// zéro, chaque note est ramenée sur 20, et les matières pèsent par coefficient.
+
+function assessmentGuard(req, res) {
+  const a = store.getAssessment(req.params.id);
+  if (!a) { res.status(404).json({ error: "évaluation introuvable" }); return null; }
+  if (!assertCampus(req, res, a.campusId)) return null;
+  return a;
+}
+// Matières du référentiel rattaché à une classe (source des libellés et coefficients).
+function modulesOfClass(classId) {
+  const k = store.getClass(classId);
+  const cur = k?.curriculumId ? store.getCurriculum(k.curriculumId) : null;
+  return cur?.modules || [];
+}
+function learnersOfClassActive(classId, campusId) {
+  const ids = new Set(store.listEnrollments({ classId, statut: "inscrit" }).map((e) => e.learnerId));
+  return store.listLearners({ campusId }).filter((l) => ids.has(l.id));
+}
+
+app.get("/api/assessments", requireAuth, (req, res) => {
+  const { campusId, classId, moduleId } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let items = store.listAssessments({ campusId, classId, moduleId });
+  if (!campusId) items = scopeByCampus(req, items);
+  const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
+  res.json(items.map((a) => {
+    const grades = store.listGrades({ assessmentId: a.id });
+    const mods = modulesOfClass(a.classId);
+    return { ...a, className: classes.get(a.classId) || null,
+      moduleLabel: mods.find((m) => m.id === a.moduleId)?.label || null,
+      graded: grades.filter((g) => g.score != null || g.absent).length, total: grades.length };
+  }));
+});
+
+app.post("/api/assessments", requireAuth, (req, res) => {
+  const { campusId, classId, label } = req.body || {};
+  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  if (!classId) return res.status(400).json({ error: "classe requise" });
+  if (!String(label || "").trim()) return res.status(400).json({ error: "intitulé requis" });
+  const a = store.addAssessment(req.body);
+  // Pré-remplit la liste avec les inscrits actifs : le professeur n'a plus qu'à saisir.
+  store.setGrades(a.id, learnersOfClassActive(classId, campusId).map((l) => ({ learnerId: l.id, score: null })));
+  logAudit(req, "create", "evaluation", `${a.label} (${a.date || "sans date"})`);
+  res.json(a);
+});
+
+app.get("/api/assessments/:id", requireAuth, (req, res) => {
+  const a = assessmentGuard(req, res);
+  if (!a) return;
+  const names = new Map(store.listLearners({ campusId: a.campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
+  const grades = store.listGrades({ assessmentId: a.id }).map((g) => ({ ...g, learnerName: names.get(g.learnerId) || "—" }))
+    .sort((x, y) => (x.learnerName || "").localeCompare(y.learnerName || ""));
+  const values = grades.filter((g) => g.score != null && !g.absent).map((g) => (Number(g.score) / (a.maxScore || 20)) * 20);
+  res.json({ ...a, grades, stats: classStats(values) });
+});
+
+app.patch("/api/assessments/:id", requireAuth, (req, res) => {
+  const a = assessmentGuard(req, res);
+  if (!a) return;
+  const upd = store.updateAssessment(a.id, req.body || {});
+  res.json(upd);
+});
+
+app.delete("/api/assessments/:id", requireAuth, (req, res) => {
+  const a = assessmentGuard(req, res);
+  if (!a) return;
+  store.deleteAssessment(a.id);
+  logAudit(req, "delete", "evaluation", a.label);
+  res.json({ ok: true });
+});
+
+app.patch("/api/assessments/:id/grades", requireAuth, (req, res) => {
+  const a = assessmentGuard(req, res);
+  if (!a) return;
+  const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+  const max = a.maxScore || 20;
+  for (const e of entries) {
+    if (e.score != null && e.score !== "" && (Number(e.score) < 0 || Number(e.score) > max)) {
+      return res.status(400).json({ error: `Note hors barème : ${e.score} (attendu entre 0 et ${max})` });
+    }
+  }
+  store.setGrades(a.id, entries);
+  logAudit(req, "update", "notes", `${a.label} — ${entries.length} note(s)`);
+  res.json({ ok: true });
+});
+
+// Bulletin d'un apprenant : moyennes par matière, générale, rang, absences.
+function buildLearnerReport(learner, classId) {
+  const modules = modulesOfClass(classId);
+  const assessments = store.listAssessments({ classId });
+  const grades = store.listGrades({});
+  const report = learnerReport({ learnerId: learner.id, assessments, grades, modules });
+  // Rang : calculé sur les inscrits actifs de la classe
+  const peers = learnersOfClassActive(classId, learner.campusId);
+  const all = peers.map((l) => learnerReport({ learnerId: l.id, assessments, grades, modules }));
+  const { ranks, total } = ranking(all);
+  // Moyennes de classe par matière, pour situer chaque note
+  const classAvg = new Map();
+  for (const m of modules) {
+    const vals = all.map((r) => r.modules.find((x) => x.moduleId === m.id)?.average).filter((v) => v != null);
+    const st = classStats(vals);
+    if (st) classAvg.set(m.id, st);
+  }
+  return { ...report, rank: ranks.get(learner.id) || null, rankTotal: total, classAverages: classAvg };
+}
+
+app.get("/api/learners/:id/report", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
+  if (!enr?.classId) return res.status(400).json({ error: "apprenant sans classe — créer l'inscription d'abord" });
+  const r = buildLearnerReport(l, enr.classId);
+  res.json({ ...r, classAverages: Object.fromEntries(r.classAverages), className: store.getClass(enr.classId)?.name || null });
+});
+
+// Bulletin imprimable (PDF via le navigateur), à la charte documentaire.
+app.get("/api/learners/:id/bulletin", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
+  if (!enr?.classId) return res.status(400).json({ error: "apprenant sans classe" });
+  const r = buildLearnerReport(l, enr.classId);
+  const campus = store.listCampuses().find((c) => c.id === l.campusId);
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const fmt = (v) => (v == null ? "—" : v.toFixed(2).replace(".", ","));
+  const rows = r.modules.map((m) => {
+    const cs = r.classAverages.get(m.moduleId);
+    return `<tr><td>${esc(m.code ? m.code + " — " : "")}${esc(m.label)}</td><td style="text-align:center;">${m.coefficient}</td>
+      <td style="text-align:center;font-weight:700;">${fmt(m.average)}</td>
+      <td style="text-align:center;color:#4A5568;">${cs ? fmt(cs.average) : "—"}</td>
+      <td style="text-align:center;color:#4A5568;">${cs ? fmt(cs.min) + " / " + fmt(cs.max) : "—"}</td>
+      <td style="text-align:center;">${m.count}${m.absences ? ` <span style="color:#B03A2E;">(${m.absences} abs.)</span>` : ""}</td></tr>`;
+  }).join("");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Bulletin — ${esc(l.prenom)} ${esc(l.nom)}</title>
+<style>body{font:13px/1.55 -apple-system,Segoe UI,sans-serif;color:#0D1B2A;max-width:900px;margin:0 auto;padding:28px;}
+h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px;}
+.band{background:#0B6E5F;color:#fff;padding:14px 18px;border-radius:6px;margin-bottom:18px;}
+.band .eyebrow{color:#FFD9CF;font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px;}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:12.5px;}
+th{background:#0B6E5F;color:#fff;text-align:left;padding:7px 9px;}
+td{padding:6px 9px;border-bottom:1px solid #e3ded3;}tr:nth-child(even) td{background:#faf8f3;}
+.kpi{display:flex;gap:22px;flex-wrap:wrap;margin:14px 0;}
+.kpi div{background:#f4efe6;padding:10px 16px;border-radius:6px;}.kpi b{display:block;font-size:20px;}
+.foot{margin-top:24px;padding-top:10px;border-top:1px solid #e3ded3;font-size:11px;color:#4A5568;}
+@media print{body{padding:0;}}</style></head><body>
+<div class="band"><div class="eyebrow">${esc(campus?.name || "Campus Manager")} · Bulletin scolaire</div><h1>${esc(l.prenom)} ${esc(l.nom.toUpperCase())}</h1></div>
+<p><b>${esc(r.className || "")}</b>${enr.schoolYear ? " — année " + esc(enr.schoolYear) : ""} · édité le ${new Date().toLocaleDateString("fr-FR")}</p>
+<div class="kpi">
+  <div><b>${fmt(r.average)}</b>moyenne générale</div>
+  <div><b>${r.mention || "—"}</b>appréciation</div>
+  <div><b>${r.rank ? r.rank + "ᵉ" : "—"}</b>rang${r.rankTotal ? " sur " + r.rankTotal : ""}</div>
+</div>
+<table><thead><tr><th>Matière</th><th style="text-align:center;">Coef.</th><th style="text-align:center;">Moyenne</th><th style="text-align:center;">Classe</th><th style="text-align:center;">Min / Max</th><th style="text-align:center;">Évals</th></tr></thead>
+<tbody>${rows || '<tr><td colspan="6">Aucune évaluation saisie pour cette classe.</td></tr>'}</tbody></table>
+<div class="foot">Les moyennes sont pondérées par les coefficients du référentiel ; les notes sont ramenées sur 20. Une absence non convertie en note n'entre pas dans le calcul (elle est signalée séparément). Document édité par Campus Manager.</div>
+</body></html>`);
+});
+
 // ===== Contrats d'alternance =====
 // Les contrôles réglementaires sont calculés à la volée et renvoyés avec le contrat :
 // l'utilisateur voit ce qui bloque le dépôt AVANT d'éditer quoi que ce soit.

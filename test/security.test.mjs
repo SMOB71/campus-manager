@@ -291,6 +291,49 @@ test("contrats : dépôt bloqué si non conforme, rupture répercutée, cloisonn
   assert.equal((await req(`/api/contracts/${c.id}`, { method: "DELETE", cookie: d.cookie, csrf: d.csrf })).status, 403);
 });
 
+test("notes : barème contrôlé, moyennes et bulletin, cloisonnement", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Notes E2E" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: { name: "BTS Test", modules: [{ code: "U1", label: "Optique", coefficient: 3 }, { code: "U2", label: "Anglais", coefficient: 1 }] } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "BTS T1", curriculumId: cur.id } })).json();
+  const l1 = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Premier", prenom: "Eleve" } })).json();
+  const l2 = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Second", prenom: "Eleve" } })).json();
+  for (const l of [l1, l2]) await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  // Création : les inscrits actifs sont pré-remplis
+  const ev = await (await req("/api/assessments", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, label: "DS1", moduleId: cur.modules[0].id, coefficient: 2, maxScore: 20 } })).json();
+  const detail = await (await req(`/api/assessments/${ev.id}`, { cookie: a.cookie })).json();
+  assert.equal(detail.grades.length, 2);
+
+  // Note hors barème refusée
+  assert.equal((await req(`/api/assessments/${ev.id}/grades`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: l1.id, score: 25 }] } })).status, 400);
+
+  // Saisie valide : une note, une absence
+  await req(`/api/assessments/${ev.id}/grades`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: l1.id, score: 16 }, { learnerId: l2.id, absent: true }] } });
+  const report1 = await (await req(`/api/learners/${l1.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(report1.average, 16);
+  assert.equal(report1.mention, "Très bien");
+  assert.equal(report1.rank, 1);
+  // l'absent n'a pas de moyenne (et surtout pas un zéro)
+  const report2 = await (await req(`/api/learners/${l2.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(report2.average, null);
+
+  // Bulletin imprimable
+  const bull = await req(`/api/learners/${l1.id}/bulletin`, { cookie: a.cookie });
+  assert.equal(bull.status, 200);
+  const html = await bull.text();
+  assert.match(html, /Bulletin scolaire/);
+  assert.match(html, /16,00/);
+
+  // Cloisonnement
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await (await req("/api/assessments", { cookie: d.cookie })).json()).length, 0);
+  assert.equal((await req(`/api/assessments/${ev.id}`, { cookie: d.cookie })).status, 403);
+  assert.equal((await req(`/api/assessments/${ev.id}/grades`, { method: "PATCH", cookie: d.cookie, csrf: d.csrf, json: { entries: [] } })).status, 403);
+  assert.equal((await req(`/api/learners/${l1.id}/bulletin`, { cookie: d.cookie })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };
