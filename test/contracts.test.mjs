@@ -240,13 +240,60 @@ test("rupture : signalement unique, étapes tracées, confirmation répercutée 
   assert.equal(med.rupture.events.length, 2);
   assert.ok(store.advanceRupture(c.id, { stage: "n_importe_quoi" }).error);
 
-  // Confirmation : le contrat passe en rompu ET l'inscription bascule
+  // Confirmation : le contrat passe en rompu, MAIS l'apprenti n'est pas « sorti ».
+  // Le CFA doit le maintenir en formation 6 mois (art. L. 6231-2) sous statut de
+  // stagiaire de la formation professionnelle. Le déclarer sorti fausserait les
+  // effectifs, l'émargement, l'enquête SIFA et les indicateurs de résultats.
   const conf = store.advanceRupture(c.id, { stage: "confirmee", note: "Rupture actée", by: "dir" });
   assert.equal(conf.status, "rompu");
   assert.ok(conf.rupture.dateRupture);
+  assert.ok(conf.rupture.finAccompagnement, "l'échéance des 6 mois doit être posée");
+
   const enr = store.listEnrollments({ learnerId: learner.id })[0];
-  assert.equal(enr.statut, "rupture");
-  assert.ok(enr.dateSortie);
+  assert.equal(enr.statut, "stagiaire", "l'apprenti reste en formation, il n'est pas sorti");
+  assert.equal(enr.dateSortie, "", "aucune date de sortie : il n'est pas sorti");
+  assert.ok(enr.dateStagiaire);
+  assert.equal(enr.finAccompagnement, conf.rupture.finAccompagnement);
+  // L'échéance tombe bien 6 mois après la rupture
+  const d1 = new Date(conf.rupture.dateRupture + "T00:00:00Z");
+  const d2 = new Date(enr.finAccompagnement + "T00:00:00Z");
+  assert.equal((d2.getUTCFullYear() - d1.getUTCFullYear()) * 12 + (d2.getUTCMonth() - d1.getUTCMonth()), 6);
+
+  // Et il reste dans les effectifs en formation
+  assert.equal(store.listEnrollments({ learnerId: learner.id, statut: store.ENROLLMENT_ACTIFS }).length, 1);
+});
+
+test("médiation : les délais légaux sont calculés, pas devinés", () => {
+  const campus = store.addCampus({ name: "Campus Médiation" });
+  const l = store.addLearner({ campusId: campus.id, nom: "Med", prenom: "Iation" });
+  store.addEnrollment({ learnerId: l.id, campusId: campus.id, schoolYear: "2026-2027" });
+  const c = store.addContract({ campusId: campus.id, learnerId: l.id, companyId: "co", dateDebut: "2026-09-01", dateFin: "2028-08-31" });
+  store.openRupture(c.id, { motif: "souhait de l'apprenti", by: "dir" });
+  const med = store.advanceRupture(c.id, { stage: "mediation", note: "saisine du médiateur consulaire", by: "dir" });
+  // Art. R. 6222-21 : 5 jours calendaires avant d'informer l'employeur, puis 7
+  // jours avant que la rupture prenne effet. Rater ces délais fait tomber la
+  // procédure — l'outil doit les donner, pas laisser deviner.
+  assert.ok(med.rupture.mediateurSaisiLe);
+  const j = (d) => new Date(d + "T00:00:00Z").getTime();
+  assert.equal((j(med.rupture.informationEmployeurAuPlusTot) - j(med.rupture.mediateurSaisiLe)) / 864e5, 5);
+  assert.equal((j(med.rupture.ruptureEffectiveAuPlusTot) - j(med.rupture.mediateurSaisiLe)) / 864e5, 12);
+  // Une seconde étape de médiation ne réinitialise pas les délais déjà courus
+  const saisi = med.rupture.mediateurSaisiLe;
+  const encore = store.advanceRupture(c.id, { stage: "mediation", note: "relance", by: "dir" });
+  assert.equal(encore.rupture.mediateurSaisiLe, saisi);
+});
+
+test("accompagnement post-rupture : l'échéance des 6 mois remonte en alerte", () => {
+  const base = { status: "rompu", dateDebut: "2026-09-01", dateFin: "2028-08-31",
+    rupture: { stage: "confirmee", finAccompagnement: "2027-03-01" } };
+  // Un contrat rompu n'alerte plus sur ses échéances propres, mais l'accompagnement si
+  const proche = contractAlerts(base, "2027-02-20");
+  assert.ok(proche.some((a) => a.type === "accompagnement" && a.severity === "high"));
+  const echu = contractAlerts(base, "2027-04-01");
+  const alerte = echu.find((a) => a.type === "accompagnement");
+  assert.ok(alerte && /échu/.test(alerte.label));
+  // Loin de l'échéance : pas de bruit
+  assert.equal(contractAlerts(base, "2026-10-01").filter((a) => a.type === "accompagnement").length, 0);
 });
 
 test("rupture résolue : le contrat reste actif (c'est le résultat recherché)", () => {

@@ -3309,7 +3309,7 @@ function portalPayload(access) {
   if (access.kind === "learner") {
     const l = store.getLearner(access.subjectId);
     if (!l) return null;
-    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
+    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut)) || store.listEnrollments({ learnerId: l.id })[0];
     const classId = enr?.classId || null;
     const sessions = classId ? sessionstore.listSessions({ classId, from: today, to: in30 }).slice(0, 40) : [];
     const sheets = attendancestore.listSheets({ campusId: l.campusId, classId, from, to: today, status: "locked" });
@@ -3368,7 +3368,7 @@ function portalPayload(access) {
   const alternants = contracts.map((c) => {
     const l = c.learnerId ? store.getLearner(c.learnerId) : null;
     if (!l) return null;
-    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit");
+    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut));
     const classId = enr?.classId || null;
     const sheets = attendancestore.listSheets({ campusId: l.campusId, classId, from, to: today, status: "locked" });
     let planned = 0, absent = 0;
@@ -3524,7 +3524,10 @@ function blocksOfClass(classId) {
   return cur?.blocks || [];
 }
 function learnersOfClassActive(classId, campusId) {
-  const ids = new Set(store.listEnrollments({ classId, statut: "inscrit" }).map((e) => e.learnerId));
+  // Les stagiaires de la formation professionnelle (apprentis dont le contrat a
+  // été rompu) restent en formation : ils doivent figurer sur les feuilles
+  // d'émargement et dans les bulletins, sans quoi ils sortent des radars.
+  const ids = new Set(store.listEnrollments({ classId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId));
   return store.listLearners({ campusId }).filter((l) => ids.has(l.id));
 }
 
@@ -3656,7 +3659,7 @@ app.get("/api/classes/:id/reports", requireAuth, (req, res) => {
 app.get("/api/learners/:id/report", requireAuth, (req, res) => {
   const l = learnerGuard(req, res);
   if (!l) return;
-  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut)) || store.listEnrollments({ learnerId: l.id })[0];
   if (!enr?.classId) return res.status(400).json({ error: "apprenant sans classe — créer l'inscription d'abord" });
   const r = buildLearnerReport(l, enr.classId, { from: req.query.from, to: req.query.to });
   res.json({ ...r, classAverages: Object.fromEntries(r.classAverages), className: store.getClass(enr.classId)?.name || null });
@@ -3666,7 +3669,7 @@ app.get("/api/learners/:id/report", requireAuth, (req, res) => {
 app.get("/api/learners/:id/bulletin", requireAuth, (req, res) => {
   const l = learnerGuard(req, res);
   if (!l) return;
-  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut)) || store.listEnrollments({ learnerId: l.id })[0];
   if (!enr?.classId) return res.status(400).json({ error: "apprenant sans classe" });
   const { from, to } = req.query;
   const r = buildLearnerReport(l, enr.classId, { from, to });
@@ -3841,7 +3844,10 @@ function sheetGuard(req, res) {
 }
 // Apprenants attendus à une séance = inscrits actifs de la classe.
 function learnersOfClass(classId, campusId) {
-  const ids = new Set(store.listEnrollments({ classId, statut: "inscrit" }).map((e) => e.learnerId));
+  // Les stagiaires de la formation professionnelle (apprentis dont le contrat a
+  // été rompu) restent en formation : ils doivent figurer sur les feuilles
+  // d'émargement et dans les bulletins, sans quoi ils sortent des radars.
+  const ids = new Set(store.listEnrollments({ classId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId));
   return store.listLearners({ campusId }).filter((l) => ids.has(l.id));
 }
 function hydrateSheet(sheet) {

@@ -3390,7 +3390,13 @@ async function renderTournee() {
 }
 
 // ---------- Vue : Apprenants (dossiers & inscriptions) ----------
-const ENR_BADGE = { inscrit: ["Inscrit", "done"], sorti: ["Sorti", ""], diplome: ["Diplômé", "done"], rupture: ["Rupture", "overdue"], abandon: ["Abandon", "overdue"] };
+const ENR_BADGE = {
+  inscrit: ["Inscrit", "done"],
+  // Apprenti dont le contrat est rompu et qui reste en formation au CFA pendant
+  // les 6 mois d'accompagnement : il n'est PAS sorti.
+  stagiaire: ["Stagiaire (post-rupture)", "warn"],
+  sorti: ["Sorti", ""], diplome: ["Diplômé", "done"], rupture: ["Rupture", "overdue"], abandon: ["Abandon", "overdue"],
+};
 let appFilter = { campusId: "", q: "" };
 async function renderApprenants() {
   $("#topbar-actions").innerHTML = `
@@ -3417,7 +3423,8 @@ async function renderApprenants() {
   if (appFilter.campusId) qs.set("campusId", appFilter.campusId);
   if (appFilter.q) qs.set("q", appFilter.q);
   const rows = await api.get("/api/learners?" + qs.toString()) || [];
-  const actifs = rows.filter((l) => l.enrollment?.statut === "inscrit").length;
+  const actifs = rows.filter((l) => ["inscrit", "stagiaire"].includes(l.enrollment?.statut)).length;
+  const stagiaires = rows.filter((l) => l.enrollment?.statut === "stagiaire").length;
   const ruptures = rows.filter((l) => ["rupture", "abandon"].includes(l.enrollment?.statut)).length;
   const row = (l) => {
     const e = l.enrollment;
@@ -3431,7 +3438,8 @@ async function renderApprenants() {
   view.innerHTML = `
     <div class="kpis" style="margin-bottom:12px;">
       <div class="k"><div class="v">${rows.length}</div><div class="l">dossiers</div></div>
-      <div class="k"><div class="v">${actifs}</div><div class="l">inscrits</div></div>
+      <div class="k"><div class="v">${actifs}</div><div class="l">en formation</div></div>
+      ${stagiaires ? `<div class="k k-bad"><div class="v">${stagiaires}</div><div class="l">stagiaires post-rupture</div></div>` : ""}
       <div class="k${ruptures ? " k-bad" : ""}"><div class="v">${ruptures}</div><div class="l">ruptures / abandons</div></div>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">

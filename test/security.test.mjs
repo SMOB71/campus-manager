@@ -274,9 +274,12 @@ test("contrats : dépôt bloqué si non conforme, rupture répercutée, cloisonn
 
   const conf = await (await req(`/api/contracts/${c.id}/rupture`, { method: "PATCH", ...opts, json: { stage: "confirmee", note: "Actée" } })).json();
   assert.equal(conf.status, "rompu");
-  // l'inscription de l'apprenant a basculé
+  // L'apprenti passe en STAGIAIRE de la formation professionnelle : le CFA le
+  // maintient en formation 6 mois. Il n'est pas sorti.
   const fiche = await (await req(`/api/learners/${learner.id}`, { cookie: a.cookie })).json();
-  assert.equal(fiche.enrollments[0].statut, "rupture");
+  assert.equal(fiche.enrollments[0].statut, "stagiaire");
+  assert.ok(fiche.enrollments[0].finAccompagnement);
+  assert.equal(fiche.enrollments[0].dateSortie, "");
 
   // Une fois la rupture confirmée, le contrat est rompu : il n'alerte plus (le suivi
   // se poursuit côté apprenant, pas côté contrat).
