@@ -24,6 +24,7 @@ import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STA
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, RUPTURE_MODES, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention, blockReport, certificationSummary } from "./lib/grades.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
+import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
 import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
@@ -3755,6 +3756,201 @@ ${r.blocs.map((b) => `<tr><td>${esc(b.code ? b.code + " — " : "")}${esc(b.labe
 <p style="font-size:12.5px;">${r.certification.titreComplet ? "<b style=\"color:#0B6E5F;\">Tous les blocs sont acquis.</b>" : `<b>${r.certification.acquis}/${r.certification.total} bloc(s) acquis.</b> Reste à valider : ${esc(r.certification.resteAValider.join(", ")) || "—"}`}</p>` : ""}
 <div class="foot">Les moyennes sont pondérées par les coefficients du référentiel ; les notes sont ramenées sur 20. Une absence non convertie en note n'entre pas dans le calcul (elle est signalée séparément). Document édité par Campus Manager.</div>
 </body></html>`);
+});
+
+// ===== Financements et facturation =====
+// Voir lib/billing.js pour la règle centrale : le NPEC de l'alternance se verse
+// au prorata des JOURS DE CONTRAT exécutés, pas à l'assiduité ; le conventionné
+// se facture aux HEURES RÉALISÉES. Confondre les deux produit des factures fausses.
+
+function fundingGuard(req, res) {
+  const f = store.getFunding(req.params.id);
+  if (!f) { res.status(404).json({ error: "dossier de financement introuvable" }); return null; }
+  if (!assertCampus(req, res, f.campusId)) return null;
+  return f;
+}
+
+// Minutes réellement réalisées par un apprenant sur une période — la base du
+// mode « heures », tirée des feuilles CLOSES uniquement.
+function minutesRealisees(learnerId, campusId, classId, from, to) {
+  let prevu = 0, absent = 0;
+  for (const s of attendancestore.listSheets({ campusId, classId, from, to, status: "locked" })) {
+    const st = sheetStats(s);
+    const e = effectiveEntries(s).find((x) => x.learnerId === learnerId);
+    if (!e) continue;
+    prevu += st.durationMinutes;
+    if (e.status === "absent" || e.status === "excuse") absent += st.durationMinutes;
+    else if (e.status === "retard") absent += Math.min(Number(e.minutesLate) || 0, st.durationMinutes);
+  }
+  return Math.max(0, prevu - absent);
+}
+
+function hydrateFunding(f) {
+  const factures = store.listInvoices({ fundingId: f.id });
+  const reglements = factures.flatMap((i) => store.listPayments({ invoiceId: i.id }));
+  const p = f.mode === "npec" && f.montant
+    ? prorataTemporis({ montant: f.montant, dateDebut: f.dateDebut, dateFin: f.dateFin, arret: f.arret })
+    : null;
+  const learner = f.learnerId ? store.getLearner(f.learnerId) : null;
+  return {
+    ...f,
+    learnerName: learner ? `${learner.prenom} ${learner.nom}` : null,
+    modeLabel: FUNDING_MODES[f.mode]?.label || f.mode,
+    prorata: p,
+    solde: balance({ montantDu: p ? p.montantDu : (f.montant || 0), factures, reglements }),
+    factures: factures.length,
+  };
+}
+
+app.get("/api/fundings", requireAuth, (req, res) => {
+  const { campusId, learnerId, contractId } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let items = store.listFundings({ campusId, learnerId, contractId });
+  if (!campusId) items = scopeByCampus(req, items);
+  res.json(items.map(hydrateFunding));
+});
+
+app.get("/api/fundings/modes", requireAuth, (req, res) => res.json(FUNDING_MODES));
+
+app.post("/api/fundings", requireAuth, (req, res) => {
+  const { campusId, montant, dateDebut, dateFin, mode } = req.body || {};
+  if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  if (!dateDebut || !dateFin) return res.status(400).json({ error: "dates de début et de fin requises" });
+  if (mode !== "heures" && !(Number(montant) > 0)) return res.status(400).json({ error: "montant de prise en charge requis" });
+  const f = store.addFunding(req.body);
+  // L'échéancier se déduit du montant et de la durée : le saisir à la main
+  // produirait des écarts d'arrondi et des périodes qui ne se recollent pas.
+  const echeances = buildSchedule({ montant: f.montant, dateDebut: f.dateDebut, dateFin: f.dateFin, cadence: f.cadence, mode: f.mode });
+  const maj = store.updateFunding(f.id, { echeances });
+  logAudit(req, "create", "financement", `${maj.financeur || "financeur"} — ${maj.montant ?? "?"} €`);
+  res.json(hydrateFunding(maj));
+});
+
+app.get("/api/fundings/:id", requireAuth, (req, res) => {
+  const f = fundingGuard(req, res);
+  if (!f) return;
+  res.json({ ...hydrateFunding(f), invoices: store.listInvoices({ fundingId: f.id }) });
+});
+
+app.patch("/api/fundings/:id", requireAuth, (req, res) => {
+  const f = fundingGuard(req, res);
+  if (!f) return;
+  let upd = store.updateFunding(f.id, req.body || {});
+  // Un changement de montant, de dates ou de cadence invalide l'échéancier :
+  // le recalculer évite qu'il décrive une réalité périmée.
+  if (["montant", "dateDebut", "dateFin", "cadence", "mode"].some((k) => k in (req.body || {}))) {
+    upd = store.updateFunding(f.id, { echeances: buildSchedule({ montant: upd.montant, dateDebut: upd.dateDebut, dateFin: upd.dateFin, cadence: upd.cadence, mode: upd.mode }) });
+  }
+  logAudit(req, "update", "financement", upd.financeur || upd.id);
+  res.json(hydrateFunding(upd));
+});
+
+app.delete("/api/fundings/:id", requireAuth, requireAdmin, (req, res) => {
+  const f = fundingGuard(req, res);
+  if (!f) return;
+  const r = store.deleteFunding(f.id);
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "delete", "financement", f.id);
+  res.json({ ok: true });
+});
+
+// Prépare une facture pour une échéance : les montants sont CALCULÉS, jamais saisis.
+app.post("/api/fundings/:id/invoices", requireAuth, (req, res) => {
+  const f = fundingGuard(req, res);
+  if (!f) return;
+  const { periodeDebut, periodeFin, destinataire } = req.body || {};
+  const echeance = (f.echeances || []).find((e) => e.debut === periodeDebut)
+    || { debut: periodeDebut, fin: periodeFin, montant: f.montant, mode: f.mode };
+  if (!echeance.debut || !echeance.fin) return res.status(400).json({ error: "période à facturer requise" });
+  // Facturer deux fois la même période est l'erreur la plus coûteuse : on la bloque.
+  const doublon = store.listInvoices({ fundingId: f.id }).find((i) => i.periodeDebut === echeance.debut && i.status !== "annulee");
+  if (doublon) return res.status(409).json({ error: `période déjà facturée (${doublon.numero || "brouillon"})` });
+
+  const learner = f.learnerId ? store.getLearner(f.learnerId) : null;
+  const enr = learner ? store.listEnrollments({ learnerId: learner.id })[0] : null;
+  const minutes = f.mode === "heures"
+    ? minutesRealisees(f.learnerId, f.campusId, enr?.classId, echeance.debut, echeance.fin)
+    : 0;
+  const du = amountDue({ mode: f.mode, echeance, prixHoraire: f.prixHoraire, minutesRealisees: minutes, arret: f.arret });
+  const campus = store.listCampuses().find((c) => c.id === f.campusId);
+  const totaux = computeTotals([{ montant: du.montant }], { exonereTva: campus?.tvaExoneree !== false });
+  const inv = store.addInvoice({
+    campusId: f.campusId, fundingId: f.id, learnerId: f.learnerId,
+    periodeDebut: echeance.debut, periodeFin: echeance.fin,
+    destinataire: destinataire || f.financeur,
+    lignes: [{
+      libelle: `${FUNDING_MODES[f.mode]?.label || f.mode} — ${learner ? learner.prenom + " " + learner.nom : "dossier"} — du ${echeance.debut} au ${echeance.fin}`,
+      detail: du.base + (du.heures != null ? ` (${du.heures} h)` : du.jours != null ? ` (${du.jours}/${du.joursPeriode} jours)` : ""),
+      montant: du.montant,
+    }],
+    ...totaux, mentionExoneration: totaux.mentionExoneration || "",
+  });
+  logAudit(req, "create", "facture", `brouillon ${echeance.debut} — ${du.montant} €`);
+  res.json({ ...inv, calcul: du });
+});
+
+app.get("/api/invoices", requireAuth, (req, res) => {
+  const { campusId, learnerId, status } = req.query;
+  if (campusId && !canCampus(req, campusId)) return res.status(403).json({ error: "campus hors de votre périmètre" });
+  let items = store.listInvoices({ campusId, learnerId, status });
+  if (!campusId) items = scopeByCampus(req, items);
+  const noms = new Map(store.listLearners({}).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
+  res.json(items.map((i) => ({ ...i, learnerName: noms.get(i.learnerId) || null,
+    regle: store.listPayments({ invoiceId: i.id }).reduce((s, p) => s + p.montant, 0) })));
+});
+
+app.post("/api/invoices/:id/issue", requireAuth, (req, res) => {
+  const inv = store.getInvoice(req.params.id);
+  if (!inv) return res.status(404).json({ error: "facture introuvable" });
+  if (!assertCampus(req, res, inv.campusId)) return;
+  const r = store.issueInvoice(inv.id, req.user?.name || req.user?.email || "");
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "update", "facture", `émission ${r.numero} — ${r.totalTTC} €`);
+  res.json(r);
+});
+
+app.post("/api/invoices/:id/credit", requireAuth, (req, res) => {
+  const inv = store.getInvoice(req.params.id);
+  if (!inv) return res.status(404).json({ error: "facture introuvable" });
+  if (!assertCampus(req, res, inv.campusId)) return;
+  const r = store.creditInvoice(inv.id, { motif: req.body?.motif, by: req.user?.name || req.user?.email || "" });
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "create", "avoir", `avoir sur ${inv.numero} — ${req.body?.motif || ""}`);
+  res.json(r);
+});
+
+app.post("/api/invoices/:id/payments", requireAuth, (req, res) => {
+  const inv = store.getInvoice(req.params.id);
+  if (!inv) return res.status(404).json({ error: "facture introuvable" });
+  if (!assertCampus(req, res, inv.campusId)) return;
+  if (!(Number(req.body?.montant) > 0)) return res.status(400).json({ error: "montant du règlement requis" });
+  const r = store.addPayment({ ...req.body, invoiceId: inv.id });
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "create", "reglement", `${r.montant} € sur ${inv.numero}`);
+  res.json(r);
+});
+
+// Comparateur de bascule : confronte nos montants à ceux du système sortant.
+// C'est lui qui autorise l'abandon de l'ancien ERP, et il resservira pour chaque
+// client migré — ce n'est pas un script interne, c'est un écran du produit.
+app.post("/api/billing/compare", requireAuth, requireAdmin, (req, res) => {
+  const { campusId, from, to, reference } = req.body || {};
+  if (!campusId || !assertCampus(req, res, campusId)) return;
+  if (!Array.isArray(reference)) return res.status(400).json({ error: "montants de référence attendus (périodes du système sortant)" });
+  const nôtres = new Map();
+  for (const i of store.listInvoices({ campusId })) {
+    if (i.status === "annulee" || !i.periodeDebut) continue;
+    if (from && i.periodeDebut < from) continue;
+    if (to && i.periodeDebut > to) continue;
+    const periode = i.periodeDebut.slice(0, 7);
+    nôtres.set(periode, (nôtres.get(periode) || 0) + (Number(i.totalTTC) || 0));
+  }
+  const r = compareWithLegacy(
+    [...nôtres.entries()].map(([periode, montant]) => ({ periode, montant })),
+    reference.map((x) => ({ periode: String(x.periode || "").slice(0, 7), montant: Number(x.montant) || 0 })),
+  );
+  logAudit(req, "export", "facturation", `comparaison de bascule : ${r.ecarts} écart(s) sur ${r.total} période(s)`);
+  res.json(r);
 });
 
 // ===== Contrats d'alternance =====

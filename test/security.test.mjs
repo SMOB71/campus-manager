@@ -762,6 +762,60 @@ test("certificat de réalisation : durée tirée des émargements, mentions cont
   assert.equal((await req(`/api/learners/${l.id}/certificat-realisation`, { cookie: d.cookie })).status, 403);
 });
 
+test("facturation : montants calculés, période non facturable deux fois, cloisonnée", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Factu" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Fac", prenom: "Ture" } })).json();
+
+  // Garde-fous de création
+  assert.equal((await req("/api/fundings", { method: "POST", ...opts, json: { campusId: campus.id, mode: "npec" } })).status, 400);
+  assert.equal((await req("/api/fundings", { method: "POST", ...opts, json: { campusId: campus.id, mode: "npec", dateDebut: "2026-09-01", dateFin: "2027-08-31" } })).status, 400);
+
+  const f = await (await req("/api/fundings", { method: "POST", ...opts, json: { campusId: campus.id, learnerId: l.id, financeur: "OPCO T", mode: "npec", montant: 8000, dateDebut: "2026-09-01", dateFin: "2027-08-31" } })).json();
+  // L'échéancier est généré, et sa somme vaut exactement le montant convenu
+  assert.equal(f.echeances.length, 12);
+  assert.equal(Math.round(f.echeances.reduce((s, e) => s + e.montant, 0) * 100) / 100, 8000);
+  assert.equal(f.solde.resteAFacturer, 8000);
+
+  // Facturation d'une échéance : le montant est CALCULÉ, pas transmis
+  const inv = await (await req(`/api/fundings/${f.id}/invoices`, { method: "POST", ...opts, json: { periodeDebut: f.echeances[0].debut, periodeFin: f.echeances[0].fin } })).json();
+  assert.equal(inv.status, "brouillon");
+  assert.equal(inv.totalTTC, f.echeances[0].montant);
+  assert.equal(inv.totalTVA, 0, "formation professionnelle : exonérée par défaut");
+  assert.match(inv.mentionExoneration, /261-4-4/);
+  // Facturer deux fois la même période est l'erreur la plus coûteuse : bloquée
+  assert.equal((await req(`/api/fundings/${f.id}/invoices`, { method: "POST", ...opts, json: { periodeDebut: f.echeances[0].debut, periodeFin: f.echeances[0].fin } })).status, 409);
+
+  // Émission : la pièce devient immuable et numérotée
+  const emise = await (await req(`/api/invoices/${inv.id}/issue`, { method: "POST", ...opts, json: {} })).json();
+  assert.match(emise.numero, /^FA\d{4}-\d{5}$/);
+  assert.equal((await req(`/api/invoices/${inv.id}/issue`, { method: "POST", ...opts, json: {} })).status, 409);
+
+  // Règlement puis avoir motivé
+  await req(`/api/invoices/${inv.id}/payments`, { method: "POST", ...opts, json: { montant: emise.totalTTC } });
+  assert.equal((await req(`/api/invoices/${inv.id}/credit`, { method: "POST", ...opts, json: {} })).status, 409, "un avoir sans motif est refusé");
+  const avoir = await (await req(`/api/invoices/${inv.id}/credit`, { method: "POST", ...opts, json: { motif: "erreur de période" } })).json();
+  assert.equal(avoir.totalTTC, -emise.totalTTC);
+
+  // Arrêt du financement : régularisation au prorata des jours exécutés
+  const arrete = await (await req(`/api/fundings/${f.id}`, { method: "PATCH", ...opts, json: { arret: "2027-02-28" } })).json();
+  assert.equal(arrete.prorata.joursExecutes, 181);
+  assert.ok(arrete.prorata.montantDu < 8000, "le dû doit être réduit au prorata");
+
+  // Comparateur de bascule
+  const cmp = await (await req("/api/billing/compare", { method: "POST", ...opts, json: { campusId: campus.id, reference: [{ periode: "2026-09", montant: 99999 }] } })).json();
+  assert.equal(cmp.basculeAutorisee, false);
+  assert.ok(cmp.ecarts > 0);
+
+  // Cloisonnement
+  const d = await login("dir@test.co", "pw12345678");
+  assert.equal((await (await req("/api/fundings", { cookie: d.cookie })).json()).length, 0);
+  assert.equal((await req(`/api/fundings/${f.id}`, { cookie: d.cookie })).status, 403);
+  assert.equal((await req(`/api/invoices/${inv.id}/issue`, { method: "POST", cookie: d.cookie, csrf: d.csrf, json: {} })).status, 403);
+  assert.equal((await req("/api/billing/compare", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: { campusId: campus.id, reference: [] } })).status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

@@ -362,6 +362,7 @@ const NAV = [
   { id: "admissions", label: "Admissions", icon: I.funnel, group: "Recrutement" },
   { id: "evenements", label: "JPO & événements", icon: I.mega, group: "Recrutement" },
   { id: "finance", label: "Finance", icon: I.euro, group: "Performance" },
+  { id: "facturation", label: "Facturation", icon: I.euro, group: "Performance" },
   { id: "objectifs", label: "Objectifs réseau", icon: I.target, group: "Performance" },
   { id: "prevision", label: "Prévision consolidée", icon: I.chart, admin: true, group: "Performance" },
   { id: "indicateurs", label: "Indicateurs", icon: I.chart, group: "Performance" },
@@ -428,7 +429,7 @@ function setView(v) {
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -4823,6 +4824,175 @@ async function openRuptureForm(cid, rupt) {
     if (r.error) { $("#rf-msg").textContent = r.error; return; }
     document.querySelector(".modal-bg")?.remove();
     await openContractFiche(cid);
+  });
+}
+
+// ---------- Vue : Facturation ----------
+const INV_BADGE = { brouillon: ["Brouillon", ""], emise: ["Émise", "doing"], payee: ["Payée", "done"], annulee: ["Annulée", "overdue"] };
+let facCampus = "";
+async function renderFacturation() {
+  if (!facCampus) facCampus = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="fac-compare">Comparateur de bascule</button>
+    <button class="btn-primary btn-sm" id="fac-add">${I.plus}<span>Financement</span></button>`;
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [fundings, invoices] = await Promise.all([
+    api.get(`/api/fundings?campusId=${facCampus}`),
+    api.get(`/api/invoices?campusId=${facCampus}`),
+  ]);
+  const eur = (v) => (v == null ? "—" : Number(v).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €");
+  const aFacturer = (fundings || []).reduce((s, f) => s + (f.solde?.resteAFacturer || 0), 0);
+  const aEncaisser = (fundings || []).reduce((s, f) => s + (f.solde?.resteAEncaisser || 0), 0);
+  const ligneF = (f) => `<div class="item">
+    <div class="grow"><div class="ttl">${esc(f.financeur || "Financeur")} <span class="muted" style="font-weight:400;">${esc(f.learnerName || "")}</span>
+      <span class="pill">${esc(f.modeLabel || f.mode)}</span>${f.arret ? ' <span class="pill overdue">arrêté</span>' : ""}</div>
+      <div class="sub muted">${esc(f.dateDebut || "?")} → ${esc(f.dateFin || "?")} · ${eur(f.montant)}${f.prorata && f.prorata.ratio < 1 ? ` · dû au prorata : ${eur(f.prorata.montantDu)} (${f.prorata.joursExecutes}/${f.prorata.joursTotal} j)` : ""}
+        · reste à facturer ${eur(f.solde?.resteAFacturer)}</div></div>
+    <button class="btn-ghost btn-sm fac-open" data-id="${f.id}">Ouvrir</button></div>`;
+  const ligneI = (i) => {
+    const [lbl, tone] = INV_BADGE[i.status] || [i.status, ""];
+    return `<div class="item"><span class="pill ${tone}">${lbl}</span>
+      <div class="grow"><div class="ttl">${esc(i.numero || "sans numéro")} <span class="muted" style="font-weight:400;">${esc(i.learnerName || "")}</span></div>
+        <div class="sub muted">${esc(i.date)}${i.periodeDebut ? ` · période ${esc(i.periodeDebut)} → ${esc(i.periodeFin)}` : ""} · ${eur(i.totalTTC)}${i.regle ? ` · réglé ${eur(i.regle)}` : ""}</div></div>
+      ${i.status === "brouillon" ? `<button class="btn-primary btn-sm inv-issue" data-id="${i.id}">Émettre</button>` : ""}
+      ${i.status === "emise" ? `<button class="btn-ghost btn-sm inv-pay" data-id="${i.id}" data-ttc="${i.totalTTC}">Régler</button>
+        <button class="btn-ghost btn-sm inv-credit" data-id="${i.id}">Avoir</button>` : ""}</div>`;
+  };
+  view.innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      ${isAdmin() ? `<select class="txt" id="fac-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${facCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}
+    </div>
+    <div class="kpis" style="margin-bottom:12px;">
+      <div class="k"><div class="v">${(fundings || []).length}</div><div class="l">dossiers de financement</div></div>
+      <div class="k${aFacturer > 0 ? " k-bad" : ""}"><div class="v">${eur(aFacturer)}</div><div class="l">reste à facturer</div></div>
+      <div class="k${aEncaisser > 0 ? " k-bad" : ""}"><div class="v">${eur(aEncaisser)}</div><div class="l">reste à encaisser</div></div>
+    </div>
+    <div class="section-title" style="margin-top:0;">Dossiers de financement</div>
+    ${(fundings || []).length ? `<div class="list">${fundings.map(ligneF).join("")}</div>` : `<p class="empty">Aucun dossier — crée le premier avec « + Financement ».</p>`}
+    <div class="section-title">Factures et avoirs</div>
+    ${(invoices || []).length ? `<div class="list">${invoices.map(ligneI).join("")}</div>` : `<p class="muted" style="padding:8px;">Aucune pièce émise.</p>`}
+    <p class="hint muted" style="margin-top:12px;">Le montant dû est <b>calculé</b>, jamais saisi : en alternance au prorata des jours de contrat exécutés (l'assiduité n'entre pas dans le NPEC), en conventionné aux heures réellement réalisées. Une facture émise est immuable — elle se corrige par un avoir.</p>`;
+  $("#fac-campus")?.addEventListener("change", () => { facCampus = $("#fac-campus").value; renderFacturation(); });
+  $("#fac-add").addEventListener("click", () => openFundingForm());
+  $("#fac-compare").addEventListener("click", () => openComparateur());
+  $$(".fac-open").forEach((b) => b.addEventListener("click", () => openFundingFiche(b.dataset.id)));
+  $$(".inv-issue").forEach((b) => b.addEventListener("click", () => guard(b, async () => {
+    if (!confirm("Émettre cette facture ?\n\nElle deviendra IMMUABLE : une erreur ne se corrigera plus que par un avoir.")) return;
+    const r = await api.post(`/api/invoices/${b.dataset.id}/issue`, {});
+    if (r.error) { alert(r.error); return; }
+    await renderFacturation();
+  })));
+  $$(".inv-credit").forEach((b) => b.addEventListener("click", () => guard(b, async () => {
+    const motif = prompt("Motif de l'avoir (obligatoire — il figure sur la pièce) :");
+    if (!motif) return;
+    const r = await api.post(`/api/invoices/${b.dataset.id}/credit`, { motif });
+    if (r.error) { alert(r.error); return; }
+    await renderFacturation();
+  })));
+  $$(".inv-pay").forEach((b) => b.addEventListener("click", () => guard(b, async () => {
+    const montant = prompt("Montant du règlement (€) :", b.dataset.ttc);
+    if (!montant) return;
+    const r = await api.post(`/api/invoices/${b.dataset.id}/payments`, { montant, moyen: "virement" });
+    if (r.error) { alert(r.error); return; }
+    await renderFacturation();
+  })));
+}
+
+async function openFundingForm() {
+  const [learners, modes] = await Promise.all([api.get(`/api/learners?campusId=${facCampus}`), api.get("/api/fundings/modes")]);
+  openModal("Nouveau dossier de financement", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Apprenant</label><select class="txt" id="ff-learner"><option value="">—</option>${(learners || []).map((l) => `<option value="${l.id}">${esc(l.prenom)} ${esc(l.nom)}</option>`).join("")}</select></div>
+      <div class="field"><label class="field-label">Financeur *</label><input class="txt" id="ff-financeur" placeholder="OPCO, entreprise, particulier…"></div>
+    </div>
+    <div class="field"><label class="field-label">Mode de financement *</label>
+      <select class="txt" id="ff-mode">${Object.entries(modes || {}).map(([k, m]) => `<option value="${k}">${esc(m.label)}</option>`).join("")}</select>
+      <div class="sub muted" id="ff-base"></div></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Montant total (€)</label><input class="txt" id="ff-montant" type="number" step="0.01"></div>
+      <div class="field"><label class="field-label">Prix horaire (€) <span class="muted">mode heures</span></label><input class="txt" id="ff-ph" type="number" step="0.01"></div>
+      <div class="field"><label class="field-label">Cadence</label><select class="txt" id="ff-cadence"><option value="mensuelle">Mensuelle</option><option value="trimestrielle">Trimestrielle</option><option value="annuelle">Annuelle</option></select></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label class="field-label">Début *</label><input class="txt" id="ff-debut" type="date"></div>
+      <div class="field"><label class="field-label">Fin *</label><input class="txt" id="ff-fin" type="date"></div>
+    </div>
+    <div class="actions"><button class="btn-primary" id="ff-save">Créer et générer l'échéancier</button> <span class="status" id="ff-msg"></span></div>`);
+  const maj = () => { $("#ff-base").textContent = (modes || {})[$("#ff-mode").value]?.base || ""; };
+  $("#ff-mode").addEventListener("change", maj); maj();
+  $("#ff-save").onclick = () => guard($("#ff-save"), async () => {
+    const body = { campusId: facCampus, learnerId: $("#ff-learner").value || null, financeur: $("#ff-financeur").value.trim(),
+      mode: $("#ff-mode").value, montant: $("#ff-montant").value, prixHoraire: $("#ff-ph").value,
+      cadence: $("#ff-cadence").value, dateDebut: $("#ff-debut").value, dateFin: $("#ff-fin").value };
+    const r = await api.post("/api/fundings", body);
+    if (r.error) { $("#ff-msg").textContent = r.error; return; }
+    document.querySelector(".modal-bg")?.remove();
+    await renderFacturation();
+  });
+}
+
+async function openFundingFiche(fid) {
+  const f = await api.get(`/api/fundings/${fid}`);
+  if (!f || f.error) { alert(f?.error || "Dossier introuvable"); return; }
+  const eur = (v) => (v == null ? "—" : Number(v).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €");
+  const dejaFacturees = new Set((f.invoices || []).filter((i) => i.status !== "annulee").map((i) => i.periodeDebut));
+  openModal(`Financement — ${esc(f.financeur || "")}`, `
+    <div class="sub muted" style="margin-top:0;">${esc(f.modeLabel)} · ${esc(f.dateDebut)} → ${esc(f.dateFin)} · ${eur(f.montant)}${f.arret ? ` · arrêté le ${esc(f.arret)}` : ""}</div>
+    ${f.prorata && f.prorata.ratio < 1 ? `<div class="card card-pad" style="border-left:4px solid var(--warn);margin:10px 0;">
+      <b>Régularisation au prorata</b><div class="sub muted">${f.prorata.joursExecutes} jours exécutés sur ${f.prorata.joursTotal} → <b>${eur(f.prorata.montantDu)}</b> dus au lieu de ${eur(f.prorata.montantInitial)}.</div></div>` : ""}
+    <div class="kpis" style="margin:10px 0;">
+      <div class="k"><div class="v">${eur(f.solde?.facture)}</div><div class="l">facturé</div></div>
+      <div class="k"><div class="v">${eur(f.solde?.encaisse)}</div><div class="l">encaissé</div></div>
+      <div class="k"><div class="v">${eur(f.solde?.resteAFacturer)}</div><div class="l">reste à facturer</div></div>
+    </div>
+    <div class="section-title">Échéancier</div>
+    <div class="list">${(f.echeances || []).map((e) => `<div class="item">
+      <span class="pill">${esc(e.debut)} → ${esc(e.fin)}</span>
+      <div class="grow"><div class="ttl">${eur(e.montant)}</div><div class="sub muted">${e.jours} jour(s)</div></div>
+      ${dejaFacturees.has(e.debut) ? '<span class="pill done">facturée</span>' : `<button class="btn-ghost btn-sm ech-fac" data-debut="${e.debut}" data-fin="${e.fin}">Facturer</button>`}
+    </div>`).join("") || '<p class="muted" style="padding:8px;">Aucune échéance.</p>'}</div>
+    ${f.arret ? "" : `<div class="actions" style="margin-top:12px;"><button class="btn-ghost btn-sm btn-danger" id="ff-arret">Arrêter (rupture)</button></div>`}`);
+  $$(".ech-fac").forEach((b) => b.addEventListener("click", () => guard(b, async () => {
+    const r = await api.post(`/api/fundings/${fid}/invoices`, { periodeDebut: b.dataset.debut, periodeFin: b.dataset.fin });
+    if (r.error) { alert(r.error); return; }
+    alert(`Facture préparée : ${eur(r.totalTTC)}\n${r.calcul.base}${r.calcul.jours != null ? ` — ${r.calcul.jours}/${r.calcul.joursPeriode} jours` : ""}${r.calcul.heures != null ? ` — ${r.calcul.heures} h` : ""}\n\nElle reste en brouillon jusqu'à son émission.`);
+    document.querySelector(".modal-bg")?.remove();
+    await renderFacturation();
+  })));
+  $("#ff-arret")?.addEventListener("click", () => guard($("#ff-arret"), async () => {
+    const date = prompt("Date d'arrêt (AAAA-MM-JJ) — le dû sera recalculé au prorata des jours exécutés :", new Date().toISOString().slice(0, 10));
+    if (!date) return;
+    const r = await api.patch(`/api/fundings/${fid}`, { arret: date, motifArret: "rupture de contrat" });
+    if (r.error) { alert(r.error); return; }
+    document.querySelector(".modal-bg")?.remove();
+    await openFundingFiche(fid);
+  }));
+}
+
+// Comparateur de bascule : c'est lui qui autorise l'abandon de l'ancien système.
+function openComparateur() {
+  openModal("Comparateur de bascule", `
+    <p class="sub muted" style="margin-top:0;">Colle les montants facturés par le système sortant, mois par mois. Le comparateur confronte chaque période à ce que Campus Manager calcule. <b>Un seul écart inexpliqué suffit à reporter la bascule</b> : il se répétera sur chaque dossier.</p>
+    <div class="field"><label class="field-label">Référence (une ligne par mois : <code>2026-09 ; 660.00</code>)</label>
+      <textarea id="cp-ref" rows="8" placeholder="2026-09 ; 660.00&#10;2026-10 ; 680.00"></textarea></div>
+    <div class="actions"><button class="btn-primary" id="cp-run">Comparer</button></div>
+    <div id="cp-out" style="margin-top:12px;"></div>`);
+  $("#cp-run").onclick = () => guard($("#cp-run"), async () => {
+    const reference = $("#cp-ref").value.split(/\n/).map((l) => {
+      const [periode, montant] = l.split(/[;,\t]/);
+      return periode && montant ? { periode: periode.trim(), montant: Number(String(montant).replace(",", ".").trim()) } : null;
+    }).filter(Boolean);
+    if (!reference.length) { $("#cp-out").innerHTML = `<p class="sub" style="color:var(--bad);">Aucune ligne exploitable.</p>`; return; }
+    const r = await api.post("/api/billing/compare", { campusId: facCampus, reference });
+    if (r.error) { $("#cp-out").innerHTML = `<p class="sub" style="color:var(--bad);">${esc(r.error)}</p>`; return; }
+    const eur = (v) => (v == null ? "—" : Number(v).toFixed(2).replace(".", ",") + " €");
+    $("#cp-out").innerHTML = `
+      <div class="card card-pad" style="border-left:4px solid var(--${r.basculeAutorisee ? "good" : "bad"});margin-bottom:10px;">
+        <b>${r.basculeAutorisee ? "✓ Concordance complète — bascule envisageable" : `${r.ecarts} écart(s) sur ${r.total} période(s) — bascule à reporter`}</b>
+        ${r.ecartTotal ? `<div class="sub muted">Écart cumulé : ${eur(r.ecartTotal)}</div>` : ""}</div>
+      <div class="list">${r.lignes.map((l) => `<div class="item"><span class="pill ${l.conforme ? "done" : "overdue"}">${esc(l.periode)}</span>
+        <div class="grow"><div class="ttl">${eur(l.calcule)} <span class="muted" style="font-weight:400;">vs ${eur(l.reference)}</span></div>
+        <div class="sub muted">${l.conforme ? "conforme" : esc(l.motif || "")}${l.ecart ? ` · écart ${eur(l.ecart)}` : ""}</div></div></div>`).join("")}</div>`;
   });
 }
 
