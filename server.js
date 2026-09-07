@@ -24,6 +24,7 @@ import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STA
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention } from "./lib/grades.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
+import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
 import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
@@ -1461,6 +1462,18 @@ app.delete("/api/learners/:id", requireAuth, requireAdmin, (req, res) => {
   attendancestore.removeLearnerFromOpenSheets(l.id);
   logAudit(req, "delete", "apprenant", `${l.prenom} ${l.nom} — effacement RGPD : ${r.contractIds.length} contrat(s), ${fichiers} document(s), ${signatures} signature(s)`);
   res.json({ ok: true, contrats: r.contractIds.length, documents: fichiers, signatures });
+});
+
+// Autorisations parentales : horodatées, nominatives, à portée explicite.
+app.put("/api/learners/:id/consent", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const { scope, accorde, par, note } = req.body || {};
+  if (!String(par || "").trim()) return res.status(400).json({ error: "nom du signataire requis — une autorisation anonyme n'en est pas une" });
+  const r = store.setConsent(l.id, { scope, accorde, par, note });
+  if (r?.error) return res.status(400).json(r);
+  logAudit(req, "update", "consentement", `${scope} ${accorde ? "accordé" : "refusé"} pour ${l.prenom} ${l.nom} (par ${par})`);
+  res.json({ consentements: r.consentements });
 });
 
 app.post("/api/learners/:id/enrollments", requireAuth, (req, res) => {
@@ -3322,6 +3335,22 @@ function portalPayload(access) {
     };
   }
 
+  // Représentant légal : même dossier que l'enfant, en LECTURE. Il ne signe pas à
+  // sa place — la signature d'émargement engage l'apprenti lui-même.
+  if (access.kind === "guardian") {
+    const l = store.getLearner(access.subjectId);
+    if (!l) return null;
+    const vue = portalPayload({ ...access, kind: "learner" });
+    if (!vue) return null;
+    return {
+      ...vue, kind: "guardian", lectureSeule: true,
+      identity: { ...vue.identity, pour: `${l.prenom} ${l.nom}` },
+      // Les notes ne sont communiquées que si l'autorisation a été donnée.
+      report: store.hasConsent(l, "communication_notes") ? vue.report : null,
+      reportBloque: !store.hasConsent(l, "communication_notes"),
+    };
+  }
+
   if (access.kind === "teacher") {
     const teachers = store.listTeachers ? store.listTeachers({}) : [];
     const teacher = teachers.find((x) => x.id === access.subjectId) || null;
@@ -3384,7 +3413,8 @@ app.post("/api/portal/sign", portalAuth, (req, res) => {
 
 // Justification d'absence : l'apprenant motive, l'équipe tranche (pas d'auto-validation).
 app.post("/api/portal/justify", portalAuth, (req, res) => {
-  if (req.portal.kind !== "learner") return res.status(403).json({ error: "réservé aux apprenants" });
+  // Le représentant légal justifie légitimement l'absence de son enfant mineur.
+  if (!["learner", "guardian"].includes(req.portal.kind)) return res.status(403).json({ error: "réservé aux apprenants et à leur représentant légal" });
   const { sheetId, reason } = req.body || {};
   if (!String(reason || "").trim()) return res.status(400).json({ error: "Motif requis" });
   const sheet = attendancestore.getSheet(sheetId);
@@ -3435,6 +3465,22 @@ app.post("/api/portal/access", requireAuth, (req, res) => {
   if (!PORTAL_KINDS.includes(kind)) return res.status(400).json({ error: "type d'accès inconnu" });
   if (!subjectId) return res.status(400).json({ error: "sujet requis" });
   if (!campusId || !assertCampus(req, res, campusId)) return campusId ? undefined : res.status(400).json({ error: "campus requis" });
+  // Un accès en ligne ouvert à un mineur suppose l'accord du représentant légal.
+  // On ne bloque pas l'établissement — il reste responsable de traitement — mais
+  // on refuse de le faire en silence : l'autorisation doit être enregistrée.
+  if (kind === "learner") {
+    const l = store.getLearner(subjectId);
+    const age = l?.dateNaissance ? ageAtDate(l.dateNaissance, new Date().toISOString().slice(0, 10)) : null;
+    if (age != null && age < 18 && !store.hasConsent(l, "acces_portail") && !req.body?.forcerMineur) {
+      return res.status(409).json({
+        error: "Apprenant mineur : l'autorisation du représentant légal pour l'accès en ligne n'est pas enregistrée.",
+        code: "consentement_mineur_manquant", age,
+      });
+    }
+  }
+  if (kind === "guardian" && !store.getLearner(subjectId)) {
+    return res.status(400).json({ error: "un accès représentant légal doit désigner un apprenant" });
+  }
   const token = generateToken();
   const access = store.createPortalAccess({
     kind, subjectId, campusId, label, tokenHash: hashToken(token),

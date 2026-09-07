@@ -559,6 +559,50 @@ test("machine à états : transitions de contrat et de rupture bornées", async 
   assert.equal((await req(`/api/contracts/${c.id}`, { method: "PATCH", ...opts, json: { status: "valide" } })).status, 409);
 });
 
+test("mineurs : autorisation parentale, portail représentant légal en lecture", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Mineurs" } })).json();
+  const annee = new Date().getFullYear() - 16; // 16 ans : mineur
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Jeune", prenom: "Eleve", dateNaissance: `${annee}-01-01`, repLegalNom: "Parent Dupont" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } });
+
+  // Ouvrir un accès en ligne à un mineur sans autorisation : refusé, avec un code exploitable
+  const refus = await req("/api/portal/access", { method: "POST", ...opts, json: { kind: "learner", subjectId: l.id, campusId: campus.id } });
+  assert.equal(refus.status, 409);
+  assert.equal((await refus.json()).code, "consentement_mineur_manquant");
+
+  // Une autorisation anonyme n'en est pas une
+  assert.equal((await req(`/api/learners/${l.id}/consent`, { method: "PUT", ...opts, json: { scope: "acces_portail", accorde: true } })).status, 400);
+  assert.equal((await req(`/api/learners/${l.id}/consent`, { method: "PUT", ...opts, json: { scope: "inconnu", accorde: true, par: "X" } })).status, 400);
+
+  // Autorisation enregistrée : l'accès devient possible, et elle est horodatée et nominative
+  const cs = await (await req(`/api/learners/${l.id}/consent`, { method: "PUT", ...opts, json: { scope: "acces_portail", accorde: true, par: "Parent Dupont" } })).json();
+  const acc = cs.consentements.find((c) => c.scope === "acces_portail");
+  assert.equal(acc.accorde, true);
+  assert.equal(acc.par, "Parent Dupont");
+  assert.ok(acc.le, "l'autorisation doit être datée");
+  assert.equal((await req("/api/portal/access", { method: "POST", ...opts, json: { kind: "learner", subjectId: l.id, campusId: campus.id } })).status, 200);
+
+  // Portail du représentant légal : lecture du dossier de l'enfant
+  const g = await (await req("/api/portal/access", { method: "POST", ...opts, json: { kind: "guardian", subjectId: l.id, campusId: campus.id, label: "Parent Dupont" } })).json();
+  const tok = g.url.split("#")[1];
+  const vue = await (await fetch(BASE + "/api/portal/me", { headers: { Authorization: "Bearer " + tok } })).json();
+  assert.equal(vue.kind, "guardian");
+  assert.equal(vue.lectureSeule, true);
+  assert.equal(vue.identity.pour, "Eleve Jeune");
+  // Les résultats ne sont communiqués que si l'autorisation correspondante existe
+  assert.equal(vue.report, null);
+  assert.equal(vue.reportBloque, true);
+  await req(`/api/learners/${l.id}/consent`, { method: "PUT", ...opts, json: { scope: "communication_notes", accorde: true, par: "Parent Dupont" } });
+  const vue2 = await (await fetch(BASE + "/api/portal/me", { headers: { Authorization: "Bearer " + tok } })).json();
+  assert.equal(vue2.reportBloque, false, "l'autorisation doit lever le blocage des résultats");
+
+  // Le représentant légal ne signe PAS à la place de l'enfant, mais peut justifier
+  const sign = await fetch(BASE + "/api/portal/sign", { method: "POST", headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" }, body: JSON.stringify({ code: "ABC234" }) });
+  assert.equal(sign.status, 403);
+});
+
 test("comité : cycle complet et action rattachée à une séance", async () => {
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };

@@ -29,6 +29,7 @@ async function load() {
   $("#who").textContent = d.kind === "tutor" ? d.identity.nom : `${d.identity.prenom || ""} ${d.identity.nom || ""}`.trim() || "Mon espace";
   $("#whosub").textContent = [d.campusName, d.identity.className, d.identity.schoolYear].filter(Boolean).join(" · ");
   if (d.kind === "learner") renderLearner(d);
+  else if (d.kind === "guardian") renderGuardian(d);
   else if (d.kind === "teacher") renderTeacher(d);
   else renderTutor(d);
 }
@@ -82,6 +83,38 @@ function renderLearner(d) {
     $("#code").value = "";
     setTimeout(load, 1200);
   };
+  document.querySelectorAll(".just").forEach((b) => b.onclick = async () => {
+    const reason = prompt("Motif de l'absence (il sera transmis à l'équipe pour validation) :");
+    if (!reason) return;
+    const r = await api("/api/portal/justify", "POST", { sheetId: b.dataset.id, reason });
+    alert(r.error || "Demande transmise. L'équipe la validera — l'absence reste non justifiée en attendant.");
+    if (!r.error) load();
+  });
+}
+
+// Représentant légal : consultation du dossier de l'enfant, sans signature.
+function renderGuardian(d) {
+  const abs = d.absences || [];
+  $("#whosub").textContent = `Espace représentant légal · ${d.identity.pour || ""}`;
+  $("#app").innerHTML = `
+    ${d.report ? `<h2 style="margin-top:0;">Résultats</h2>
+      <div class="kpis">
+        <div class="kpi"><b>${d.report.average != null ? d.report.average.toFixed(2).replace(".", ",") : "—"}</b><span>moyenne générale</span></div>
+        <div class="kpi"><b>${d.report.mention || "—"}</b><span>appréciation</span></div>
+      </div>
+      <div class="card" style="margin-top:12px;">${d.report.modules?.length ? d.report.modules.map((m) => `<div class="row"><div class="grow"><div class="ttl">${esc(m.label)}</div><div class="sub">${m.count} évaluation(s)</div></div><span class="pill">${m.average != null ? m.average.toFixed(2).replace(".", ",") : "—"}</span></div>`).join("") : '<p class="empty">Aucune note pour l’instant.</p>'}</div>`
+      : `<div class="card"><b>Résultats non communiqués</b><p class="sub">La communication des résultats au représentant légal n'a pas été autorisée. Contactez le campus si vous souhaitez y accéder.</p></div>`}
+    <h2>Prochains cours</h2>
+    <div class="card">${sessionRows(d.sessions)}</div>
+    <h2>Absences</h2>
+    <div class="card">${abs.length ? abs.map((a) => {
+      const [lbl, tone] = ATT[a.status] || [a.status, ""];
+      return `<div class="row"><span class="pill ${tone}">${lbl}</span>
+        <div class="grow"><div class="ttl">${esc(fmtDate(a.date))} · ${esc(a.start)}–${esc(a.end)}</div>
+          <div class="sub">${a.justified ? "Justifiée" : "Non justifiée"}</div></div>
+        ${a.justified ? "" : `<button class="ghost just" data-id="${a.sheetId}">Justifier</button>`}</div>`;
+    }).join("") : '<p class="empty">Aucune absence.</p>'}</div>
+    <p class="sub" style="text-align:center;margin-top:16px;">Cet espace est en lecture seule. La signature de présence est faite par l'apprenant lui-même.</p>`;
   document.querySelectorAll(".just").forEach((b) => b.onclick = async () => {
     const reason = prompt("Motif de l'absence (il sera transmis à l'équipe pour validation) :");
     if (!reason) return;

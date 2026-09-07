@@ -3512,11 +3512,15 @@ async function openLearnerFiche(lid) {
     <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-ghost btn-sm" id="lr-edit">Modifier le dossier</button>
       <button class="btn-ghost btn-sm" id="lr-portal">🔗 Lien portail</button>
+      <button class="btn-ghost btn-sm" id="lr-consent">🛡 Autorisations</button>
+      <button class="btn-ghost btn-sm" id="lr-export">⬇ Export RGPD</button>
       ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger" id="lr-del">Supprimer (RGPD)</button>` : ""}
     </div>`);
   const reopen = async () => { document.querySelector(".modal-bg")?.remove(); await openLearnerFiche(lid); };
   $("#lr-edit").onclick = () => { document.querySelector(".modal-bg")?.remove(); openLearnerForm(l, reopen); };
   $("#lr-portal").onclick = () => openPortalLink("learner", l.id, l.campusId, `${l.prenom} ${l.nom}`);
+  $("#lr-consent").onclick = () => openConsentForm(l, reopen);
+  $("#lr-export").onclick = () => window.open(`/api/learners/${l.id}/export`, "_blank");
   $("#lr-del")?.addEventListener("click", async () => {
     if (!confirm(`Supprimer définitivement le dossier de ${l.prenom} ${l.nom} (inscriptions comprises) ?`)) return;
     await api.del(`/api/learners/${lid}`);
@@ -4302,7 +4306,16 @@ async function openPortalLink(kind, subjectId, campusId, label) {
     openPortalLink(kind, subjectId, campusId, label);
   });
   $("#pl-gen").onclick = async () => {
-    const r = await api.post("/api/portal/access", { kind, subjectId, campusId, label });
+    let r = await api.post("/api/portal/access", { kind, subjectId, campusId, label });
+    if (r.code === "consentement_mineur_manquant") {
+      // On n'impose rien à l'établissement (c'est lui le responsable de traitement),
+      // mais on refuse de le faire en silence.
+      if (!confirm(`${r.error}\n\nOuvrir quand même l'accès ? La décision sera tracée dans le journal d'audit.`)) {
+        $("#pl-out").innerHTML = `<p class="sub muted">Accès non créé. Enregistre l'autorisation via « 🛡 Autorisations » sur la fiche.</p>`;
+        return;
+      }
+      r = await api.post("/api/portal/access", { kind, subjectId, campusId, label, forcerMineur: true });
+    }
     if (r.error) { $("#pl-out").innerHTML = `<p class="sub" style="color:var(--bad);">${esc(r.error)}</p>`; return; }
     $("#pl-out").innerHTML = `<div class="card card-pad" style="border-left:4px solid var(--coral);">
       <b>⚠ ${esc(r.warning)}</b>
@@ -4314,6 +4327,41 @@ async function openPortalLink(kind, subjectId, campusId, label) {
       catch { $("#pl-url").select(); document.execCommand("copy"); $("#pl-copy").textContent = "✓ Copié"; }
     };
   };
+}
+
+// Autorisations du représentant légal. Enregistrer des coordonnées ne prouve
+// aucun consentement : il faut savoir qui a autorisé quoi, et quand.
+const CONSENT_LABELS = {
+  droit_image: "Droit à l'image",
+  sorties: "Sorties et déplacements",
+  communication_notes: "Communication des résultats au représentant légal",
+  acces_portail: "Ouverture d'un accès à l'espace en ligne",
+  soins_urgence: "Autorisation de soins en cas d'urgence",
+};
+function openConsentForm(l, onDone) {
+  const actuels = new Map((l.consentements || []).map((c) => [c.scope, c]));
+  const ligne = ([scope, label]) => {
+    const c = actuels.get(scope);
+    return `<div class="item">
+      <div class="grow"><div class="ttl">${label}</div>
+        <div class="sub muted">${c ? `${c.accorde ? "Accordée" : "Refusée"} le ${esc(c.le)} par ${esc(c.par)}` : "Jamais renseignée"}</div></div>
+      <button class="btn-${c?.accorde ? "ghost" : "primary"} btn-sm cs-set" data-scope="${scope}" data-ok="1">Accorder</button>
+      <button class="btn-ghost btn-sm cs-set" data-scope="${scope}" data-ok="0">Refuser</button>
+    </div>`;
+  };
+  openModal(`Autorisations — ${l.prenom} ${l.nom}`, `
+    <p class="sub muted" style="margin-top:0;">À recueillir auprès du représentant légal pour un apprenant mineur. Chaque autorisation est horodatée et nominative.</p>
+    <div class="field"><label class="field-label">Signataire *</label><input class="txt" id="cs-par" value="${esc(l.repLegalNom || "")}" placeholder="Nom du représentant légal"></div>
+    <div class="list">${Object.entries(CONSENT_LABELS).map(ligne).join("")}</div>
+    <div id="cs-msg" class="sub" style="margin-top:8px;"></div>`);
+  $$(".cs-set").forEach((b) => b.addEventListener("click", () => guard(b, async () => {
+    const par = $("#cs-par").value.trim();
+    if (!par) { $("#cs-msg").textContent = "Renseigne le nom du signataire : une autorisation anonyme n'en est pas une."; $("#cs-msg").style.color = "var(--bad)"; return; }
+    const r = await api.put(`/api/learners/${l.id}/consent`, { scope: b.dataset.scope, accorde: b.dataset.ok === "1", par });
+    if (r.error) { $("#cs-msg").textContent = r.error; $("#cs-msg").style.color = "var(--bad)"; return; }
+    document.querySelector(".modal-bg")?.remove();
+    await onDone();
+  })));
 }
 
 // ---------- Vue : Contrats d'alternance ----------
