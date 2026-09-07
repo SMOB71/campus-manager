@@ -22,7 +22,7 @@ import * as sessionstore from "./lib/sessionstore.js";
 import * as attendancestore from "./lib/attendancestore.js";
 import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
-import { learnerReport, ranking, classStats, mention } from "./lib/grades.js";
+import { learnerReport, ranking, classStats, mention, blockReport, certificationSummary } from "./lib/grades.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
 import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
@@ -3517,6 +3517,12 @@ function modulesOfClass(classId) {
   const cur = k?.curriculumId ? store.getCurriculum(k.curriculumId) : null;
   return cur?.modules || [];
 }
+// Blocs de compétences du titre visé par la classe.
+function blocksOfClass(classId) {
+  const k = store.getClass(classId);
+  const cur = k?.curriculumId ? store.getCurriculum(k.curriculumId) : null;
+  return cur?.blocks || [];
+}
 function learnersOfClassActive(classId, campusId) {
   const ids = new Set(store.listEnrollments({ classId, statut: "inscrit" }).map((e) => e.learnerId));
   return store.listLearners({ campusId }).filter((l) => ids.has(l.id));
@@ -3595,7 +3601,7 @@ app.patch("/api/assessments/:id/grades", requireAuth, (req, res) => {
 // recalculait le rapport de chaque pair pour CHAQUE bulletin demandé, soit
 // O(P² × G). Ici les notes de la classe sont indexées une fois, les P rapports
 // sont produits ensemble, et le rang comme les moyennes de classe en découlent.
-function buildClassReports(classId, campusId) {
+function buildClassReports(classId, campusId, { from = null, to = null } = {}) {
   const modules = modulesOfClass(classId);
   const assessments = store.listAssessments({ classId });
   const idsEval = new Set(assessments.map((a) => a.id));
@@ -3603,7 +3609,13 @@ function buildClassReports(classId, campusId) {
   // toutes les notes de l'établissement dans chaque calcul.
   const grades = store.listGrades({}).filter((g) => idsEval.has(g.assessmentId));
   const peers = learnersOfClassActive(classId, campusId);
-  const all = peers.map((l) => learnerReport({ learnerId: l.id, assessments, grades, modules }));
+  const blocks = blocksOfClass(classId);
+  const all = peers.map((l) => {
+    const r = learnerReport({ learnerId: l.id, assessments, grades, modules, from, to });
+    // Certification : statut par bloc, sans compensation entre blocs.
+    const blocs = blockReport({ modules: r.modules, blocks });
+    return { ...r, blocs, certification: certificationSummary(blocs) };
+  });
   const { ranks, total } = ranking(all);
   const classAvg = new Map();
   for (const m of modules) {
@@ -3616,8 +3628,8 @@ function buildClassReports(classId, campusId) {
 }
 
 // Bulletin d'un apprenant : moyennes par matière, générale, rang, absences.
-function buildLearnerReport(learner, classId) {
-  const ctx = buildClassReports(classId, learner.campusId);
+function buildLearnerReport(learner, classId, periode = {}) {
+  const ctx = buildClassReports(classId, learner.campusId, periode);
   const report = ctx.byLearner.get(learner.id)
     || learnerReport({ learnerId: learner.id, assessments: store.listAssessments({ classId }), grades: store.listGrades({}), modules: modulesOfClass(classId) });
   return { ...report, rank: ctx.ranks.get(learner.id) || null, rankTotal: ctx.total, classAverages: ctx.classAverages };
@@ -3629,10 +3641,11 @@ app.get("/api/classes/:id/reports", requireAuth, (req, res) => {
   const k = store.getClass(req.params.id);
   if (!k) return res.status(404).json({ error: "classe introuvable" });
   if (!assertCampus(req, res, k.campusId)) return;
-  const ctx = buildClassReports(k.id, k.campusId);
+  const { from, to } = req.query;
+  const ctx = buildClassReports(k.id, k.campusId, { from, to });
   const noms = new Map(ctx.peers.map((l) => [l.id, { nom: l.nom, prenom: l.prenom }]));
   res.json({
-    className: k.name,
+    className: k.name, periode: { from: from || null, to: to || null },
     reports: ctx.all.map((r) => ({
       ...r, ...noms.get(r.learnerId),
       rank: ctx.ranks.get(r.learnerId) || null, rankTotal: ctx.total,
@@ -3645,7 +3658,7 @@ app.get("/api/learners/:id/report", requireAuth, (req, res) => {
   if (!l) return;
   const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
   if (!enr?.classId) return res.status(400).json({ error: "apprenant sans classe — créer l'inscription d'abord" });
-  const r = buildLearnerReport(l, enr.classId);
+  const r = buildLearnerReport(l, enr.classId, { from: req.query.from, to: req.query.to });
   res.json({ ...r, classAverages: Object.fromEntries(r.classAverages), className: store.getClass(enr.classId)?.name || null });
 });
 
@@ -3655,7 +3668,8 @@ app.get("/api/learners/:id/bulletin", requireAuth, (req, res) => {
   if (!l) return;
   const enr = store.listEnrollments({ learnerId: l.id }).find((e) => e.statut === "inscrit") || store.listEnrollments({ learnerId: l.id })[0];
   if (!enr?.classId) return res.status(400).json({ error: "apprenant sans classe" });
-  const r = buildLearnerReport(l, enr.classId);
+  const { from, to } = req.query;
+  const r = buildLearnerReport(l, enr.classId, { from, to });
   const campus = store.listCampuses().find((c) => c.id === l.campusId);
   const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const fmt = (v) => (v == null ? "—" : v.toFixed(2).replace(".", ","));
@@ -3681,7 +3695,7 @@ td{padding:6px 9px;border-bottom:1px solid #e3ded3;}tr:nth-child(even) td{backgr
 .foot{margin-top:24px;padding-top:10px;border-top:1px solid #e3ded3;font-size:11px;color:#4A5568;}
 @media print{body{padding:0;}}</style></head><body>
 <div class="band"><div class="eyebrow">${esc(campus?.name || "Campus Manager")} · Bulletin scolaire</div><h1>${esc(l.prenom)} ${esc(l.nom.toUpperCase())}</h1></div>
-<p><b>${esc(r.className || "")}</b>${enr.schoolYear ? " — année " + esc(enr.schoolYear) : ""} · édité le ${new Date().toLocaleDateString("fr-FR")}</p>
+<p><b>${esc(r.className || "")}</b>${enr.schoolYear ? " — année " + esc(enr.schoolYear) : ""}${from || to ? ` · période du ${esc(from || "début")} au ${esc(to || "ce jour")}` : ""} · édité le ${new Date().toLocaleDateString("fr-FR")}</p>
 <div class="kpi">
   <div><b>${fmt(r.average)}</b>moyenne générale</div>
   <div><b>${r.mention || "—"}</b>appréciation</div>
@@ -3689,6 +3703,14 @@ td{padding:6px 9px;border-bottom:1px solid #e3ded3;}tr:nth-child(even) td{backgr
 </div>
 <table><thead><tr><th>Matière</th><th style="text-align:center;">Coef.</th><th style="text-align:center;">Moyenne</th><th style="text-align:center;">Classe</th><th style="text-align:center;">Min / Max</th><th style="text-align:center;">Évals</th></tr></thead>
 <tbody>${rows || '<tr><td colspan="6">Aucune évaluation saisie pour cette classe.</td></tr>'}</tbody></table>
+${r.blocs?.length ? `<h2 style="font-family:Georgia,serif;font-size:16px;margin:22px 0 6px;">Validation par blocs de compétences</h2>
+<p style="font-size:12px;color:#4A5568;margin:0 0 8px;">Un titre professionnel se valide bloc par bloc, <b>sans compensation entre blocs</b> : une moyenne générale élevée ne remplace pas un bloc non acquis. Chaque bloc acquis est capitalisable et conservé.</p>
+<table><thead><tr><th>Bloc</th><th style="text-align:center;">Moyenne</th><th style="text-align:center;">Seuil</th><th style="text-align:center;">Statut</th></tr></thead><tbody>
+${r.blocs.map((b) => `<tr><td>${esc(b.code ? b.code + " — " : "")}${esc(b.label)}<div style="font-size:11px;color:#4A5568;">${b.evaluees}/${b.total} matière(s) évaluée(s)</div></td>
+  <td style="text-align:center;font-weight:700;">${fmt(b.moyenne)}</td><td style="text-align:center;color:#4A5568;">${b.seuil}</td>
+  <td style="text-align:center;font-weight:700;color:${b.status === "acquis" ? "#0B6E5F" : b.status === "non_acquis" ? "#B03A2E" : "#4A5568"};">${b.status === "acquis" ? "Acquis" : b.status === "non_acquis" ? "Non acquis" : "En cours"}${b.elimine ? " (note éliminatoire)" : ""}</td></tr>`).join("")}
+</tbody></table>
+<p style="font-size:12.5px;">${r.certification.titreComplet ? "<b style=\"color:#0B6E5F;\">Tous les blocs sont acquis.</b>" : `<b>${r.certification.acquis}/${r.certification.total} bloc(s) acquis.</b> Reste à valider : ${esc(r.certification.resteAValider.join(", ")) || "—"}`}</p>` : ""}
 <div class="foot">Les moyennes sont pondérées par les coefficients du référentiel ; les notes sont ramenées sur 20. Une absence non convertie en note n'entre pas dans le calcul (elle est signalée séparément). Document édité par Campus Manager.</div>
 </body></html>`);
 });

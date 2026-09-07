@@ -4537,7 +4537,7 @@ async function openContractFiche(cid) {
 
 // ---------- Vue : Notes & bulletins ----------
 const EVAL_TYPE = { devoir: "Devoir", examen: "Examen", tp: "TP", oral: "Oral", projet: "Projet", cco: "CCF" };
-let ntCampus = "", ntClass = "";
+let ntCampus = "", ntClass = "", ntFrom = "", ntTo = "";
 // Jeton de génération : invalide un rendu dont la réponse arrive après un
 // changement de classe (sinon le rendu périmé écrase le nouveau).
 let ntGen = 0;
@@ -4565,6 +4565,10 @@ async function renderNotes() {
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
       ${isAdmin() ? `<select class="txt" id="nt-campus" style="max-width:200px;">${state.campuses.map((c) => `<option value="${c.id}" ${ntCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}
       <select class="txt" id="nt-class" style="max-width:200px;"><option value="">Toutes les classes</option>${classes.map((k) => `<option value="${k.id}" ${ntClass === k.id ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select>
+      ${ntClass ? `<span class="sub muted" style="align-self:center;">Période du bulletin :</span>
+      <input class="txt" id="nt-from" type="date" value="${esc(ntFrom)}" style="max-width:150px;" title="début de période">
+      <input class="txt" id="nt-to" type="date" value="${esc(ntTo)}" style="max-width:150px;" title="fin de période">
+      ${ntFrom || ntTo ? `<button class="btn-ghost btn-sm" id="nt-clear">Toute l'année</button>` : ""}` : ""}
     </div>
     <div class="section-title" style="margin-top:0;">Évaluations <span class="muted">(${evals.length})</span></div>
     ${evals.length ? `<div class="list">${evals.map(line).join("")}</div>` : `<p class="empty">Aucune évaluation${ntClass ? " pour cette classe" : ""} — crée la première avec « + Évaluation ».</p>`}
@@ -4572,13 +4576,19 @@ async function renderNotes() {
       <div class="list" id="nt-bulletins"><p class="muted" style="padding:8px;">Chargement des moyennes…</p></div>` : `<p class="hint muted" style="margin-top:14px;">Choisis une classe pour afficher les moyennes et éditer les bulletins.</p>`}`;
   $("#nt-campus")?.addEventListener("change", () => { ntCampus = $("#nt-campus").value; ntClass = ""; renderNotes(); });
   $("#nt-class").addEventListener("change", () => { ntClass = $("#nt-class").value; renderNotes(); });
+  $("#nt-from")?.addEventListener("change", () => { ntFrom = $("#nt-from").value; renderNotes(); });
+  $("#nt-to")?.addEventListener("change", () => { ntTo = $("#nt-to").value; renderNotes(); });
+  $("#nt-clear")?.addEventListener("click", () => { ntFrom = ""; ntTo = ""; renderNotes(); });
   $$(".nt-open").forEach((b) => b.addEventListener("click", () => openGradeEntry(b.dataset.id)));
   if (ntClass) {
     // Une seule requête pour toute la classe : la version précédente en émettait
     // une par apprenant du campus, en série, et jetait celles qui ne concernaient
     // pas la classe — environ sept secondes d'attente pour 25 bulletins.
     const gen = ++ntGen;
-    const data = await api.get(`/api/classes/${ntClass}/reports`);
+    const qsRep = new URLSearchParams();
+    if (ntFrom) qsRep.set("from", ntFrom);
+    if (ntTo) qsRep.set("to", ntTo);
+    const data = await api.get(`/api/classes/${ntClass}/reports?` + qsRep.toString());
     // L'utilisateur a pu changer de classe pendant le chargement : ne pas écrire
     // les moyennes d'une classe dans le conteneur d'une autre.
     if (gen !== ntGen) return;
@@ -4588,9 +4598,10 @@ async function renderNotes() {
     const rows = data?.reports || [];
     box.innerHTML = rows.length ? rows.map((r) => `<div class="item">
         <span class="pill">${r.rank ? r.rank + "ᵉ" : "—"}</span>
-        <div class="grow"><div class="ttl">${esc(r.prenom || "")} ${esc((r.nom || "").toUpperCase())}</div>
-          <div class="sub muted">${r.average != null ? "moyenne " + r.average.toFixed(2).replace(".", ",") + " · " + (r.mention || "") : "aucune note"}${r.modules?.length ? " · " + r.modules.length + " matière(s)" : ""}</div></div>
-        <a class="btn-ghost btn-sm" href="/api/learners/${r.learnerId}/bulletin" target="_blank">Bulletin</a>
+        <div class="grow"><div class="ttl">${esc(r.prenom || "")} ${esc((r.nom || "").toUpperCase())}
+          ${r.certification?.total ? `<span class="pill ${r.certification.titreComplet ? "done" : r.certification.nonAcquis ? "overdue" : ""}">${r.certification.acquis}/${r.certification.total} bloc(s)</span>` : ""}</div>
+          <div class="sub muted">${r.average != null ? "moyenne " + r.average.toFixed(2).replace(".", ",") + " · " + (r.mention || "") : "aucune note"}${r.certification?.resteAValider?.length ? " · reste : " + esc(r.certification.resteAValider.join(", ")) : ""}</div></div>
+        <a class="btn-ghost btn-sm" href="/api/learners/${r.learnerId}/bulletin${ntFrom || ntTo ? "?" + qsRep.toString() : ""}" target="_blank">Bulletin</a>
       </div>`).join("") : `<p class="muted" style="padding:8px;">Aucun apprenant inscrit dans cette classe.</p>`;
   }
 }

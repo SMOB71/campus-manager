@@ -7,7 +7,7 @@ import path from "node:path";
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "cmgrd-"));
 process.env.DATA_KEY = "test-key-grades";
 const store = await import("../lib/store.js");
-const { weightedAverage, normalized, isCounted, learnerReport, mention, classStats, ranking } = await import("../lib/grades.js");
+const { weightedAverage, normalized, isCounted, learnerReport, mention, classStats, ranking, blockReport, certificationSummary } = await import("../lib/grades.js");
 
 // ---------- Règles de calcul ----------
 
@@ -113,6 +113,73 @@ test("learnerReport : notes sans matière regroupées, apprenant sans note → m
   const vide = learnerReport({ learnerId: "X", assessments: [], grades: [], modules: [] });
   assert.equal(vide.average, null);
   assert.equal(vide.mention, null);
+});
+
+test("blocs de compétences : validation SANS compensation entre blocs", () => {
+  const modules = [
+    { moduleId: "m1", label: "Optique", coefficient: 3, average: 18 },
+    { moduleId: "m2", label: "Contactologie", coefficient: 2, average: 16 },
+    { moduleId: "m3", label: "Anglais", coefficient: 1, average: 6 },
+  ];
+  const blocks = [
+    { id: "b1", code: "BC01", label: "Technique optique", moduleIds: ["m1", "m2"] },
+    { id: "b2", code: "BC02", label: "Communication", moduleIds: ["m3"] },
+  ];
+  const blocs = blockReport({ modules, blocks });
+  assert.equal(blocs[0].status, "acquis");
+  assert.equal(blocs[0].moyenne, 17.2); // (18×3 + 16×2) / 5
+  // LE POINT CLÉ : l'excellence en technique ne rattrape PAS l'anglais.
+  assert.equal(blocs[1].status, "non_acquis");
+  assert.equal(blocs[1].moyenne, 6);
+
+  const synth = certificationSummary(blocs);
+  assert.equal(synth.acquis, 1);
+  assert.equal(synth.nonAcquis, 1);
+  assert.equal(synth.titreComplet, false, "un bloc non acquis empêche le titre complet");
+  assert.deepEqual(synth.resteAValider, ["BC02"]);
+});
+
+test("blocs : seuil propre, note éliminatoire, bloc non évalué", () => {
+  const modules = [
+    { moduleId: "m1", label: "Pratique", coefficient: 1, average: 12 },
+    { moduleId: "m2", label: "Théorie", coefficient: 1, average: 4 },
+    { moduleId: "m3", label: "Stage", coefficient: 1, average: null },
+  ];
+  // Seuil relevé à 14 : une moyenne de 8 ne suffit plus
+  const seuilHaut = blockReport({ modules, blocks: [{ id: "b", moduleIds: ["m1", "m2"], seuil: 14 }] });
+  assert.equal(seuilHaut[0].status, "non_acquis");
+  // Note éliminatoire : la moyenne du bloc est de 8, mais c'est le 4 qui bloque
+  const elim = blockReport({ modules, blocks: [{ id: "b", moduleIds: ["m1", "m2"], noteEliminatoire: 5 }] });
+  assert.equal(elim[0].elimine, true);
+  assert.equal(elim[0].status, "non_acquis");
+  // Aucune matière évaluée : « en cours », surtout pas « non acquis »
+  const vide = blockReport({ modules, blocks: [{ id: "b", moduleIds: ["m3"] }] });
+  assert.equal(vide[0].status, "en_cours");
+  assert.equal(vide[0].moyenne, null);
+  assert.equal(certificationSummary(vide).titreComplet, false);
+});
+
+test("bulletin par période : seules les évaluations de la fenêtre comptent", () => {
+  const modules = [{ id: "m1", label: "Optique", coefficient: 1 }];
+  const assessments = [
+    { id: "a1", moduleId: "m1", coefficient: 1, maxScore: 20, date: "2026-10-15" }, // S1
+    { id: "a2", moduleId: "m1", coefficient: 1, maxScore: 20, date: "2027-03-10" }, // S2
+  ];
+  const grades = [
+    { assessmentId: "a1", learnerId: "L", score: 8 },
+    { assessmentId: "a2", learnerId: "L", score: 16 },
+  ];
+  // Sans période : tout l'historique (moyenne 12)
+  assert.equal(learnerReport({ learnerId: "L", assessments, grades, modules }).average, 12);
+  // 1er semestre seulement
+  const s1 = learnerReport({ learnerId: "L", assessments, grades, modules, from: "2026-09-01", to: "2027-01-31" });
+  assert.equal(s1.average, 8);
+  // 2e semestre seulement
+  const s2 = learnerReport({ learnerId: "L", assessments, grades, modules, from: "2027-02-01", to: "2027-07-31" });
+  assert.equal(s2.average, 16);
+  // Période sans évaluation : aucune moyenne, et surtout pas zéro
+  const vide = learnerReport({ learnerId: "L", assessments, grades, modules, from: "2028-01-01", to: "2028-06-30" });
+  assert.equal(vide.average, null);
 });
 
 // ---------- Store ----------
