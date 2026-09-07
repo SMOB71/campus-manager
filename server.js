@@ -20,7 +20,7 @@ import { extractText } from "./lib/extract.js";
 import { toMarkdown, toHtml, toDocx } from "./lib/export.js";
 import * as sessionstore from "./lib/sessionstore.js";
 import * as attendancestore from "./lib/attendancestore.js";
-import { sheetStats, periodStats, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
+import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention } from "./lib/grades.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
@@ -3645,7 +3645,9 @@ function hydrateSheet(sheet) {
   const names = new Map(store.listLearners({ campusId: sheet.campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
   return {
     ...sheet,
-    entries: (sheet.entries || []).map((e) => ({ ...e, learnerName: names.get(e.learnerId) || "—" })),
+    // État effectif : l'appel scellé auquel les avenants sont appliqués. Le sceau
+    // d'origine, lui, ne bouge jamais (voir lib/attendancestore.js).
+    entries: effectiveEntries(sheet).map((e) => ({ ...e, learnerName: names.get(e.learnerId) || "—" })),
     stats: sheetStats(sheet),
   };
 }
@@ -3739,7 +3741,10 @@ app.post("/api/attendance/sheets/:id/amend", requireAuth, (req, res) => {
 app.get("/api/attendance/verify", requireAuth, (req, res) => {
   const campusId = req.query.campusId;
   if (!campusId || !assertCampus(req, res, campusId)) return;
-  res.json(attendancestore.verifyCampusChain(campusId));
+  const chain = attendancestore.verifyCampusChain(campusId);
+  const avenants = attendancestore.listAmendments(campusId);
+  res.json({ ...chain, amendments: avenants.length,
+    sheets: Math.max(0, (chain.count ?? 0) - avenants.length) });
 });
 
 // Attestation d'assiduité imprimable (période × classe) — la pièce financeur.

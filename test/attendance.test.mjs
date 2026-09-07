@@ -7,7 +7,7 @@ import path from "node:path";
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "cmatt-"));
 process.env.DATA_KEY = "test-key-attendance";
 const att = await import("../lib/attendancestore.js");
-const { canonical, hashSheet, verifyChain, sheetStats, periodStats, sessionMinutes, generateSessionCode, GENESIS_HASH } = await import("../lib/attendance.js");
+const { canonical, hashSheet, verifyChain, sheetStats, periodStats, sessionMinutes, generateSessionCode, effectiveEntries, GENESIS_HASH } = await import("../lib/attendance.js");
 
 // ---------- Logique pure ----------
 
@@ -74,30 +74,74 @@ test("clôture : la première feuille part du hash de genèse, les suivantes s'e
 
 test("feuille close : saisie directe refusée, avenant motivé obligatoire", () => {
   const s = att.openSheet({ session: mkSession(3), learners: LEARNERS, openedBy: "prof" });
-  att.lockSheet(s.id, "prof");
-  const refus = att.setEntries(s.id, [{ learnerId: "l1", status: "absent" }]);
-  assert.ok(refus.error);
-  const sansMotif = att.amendSheet(s.id, { learnerId: "l1", status: "absent", by: "dir" });
-  assert.ok(sansMotif.error);
+  const scelle = att.lockSheet(s.id, "prof");
+  const empreinteOrigine = scelle.hash;
+
+  assert.ok(att.setEntries(s.id, [{ learnerId: "l1", status: "absent" }]).error);
+  assert.ok(att.amendSheet(s.id, { learnerId: "l1", status: "absent", by: "dir" }).error, "sans motif : refusé");
+  assert.ok(att.amendSheet(s.id, { learnerId: "l1", status: "n_importe_quoi", reason: "x", by: "dir" }).error, "statut invalide : refusé");
+
   const ok = att.amendSheet(s.id, { learnerId: "l1", status: "absent", reason: "certificat médical reçu", by: "dir" });
   assert.equal(ok.amendments.length, 1);
   assert.equal(ok.amendments[0].from, "present");
   assert.equal(ok.amendments[0].to, "absent");
-  assert.equal(ok.entries.find((e) => e.learnerId === "l1").status, "absent");
-  // l'avenant re-scelle sans rompre la chaîne
+
+  // LE POINT CLÉ : la feuille scellée n'est PAS réécrite. Son empreinte d'origine
+  // reste valable, donc tous les ancrages externes publiés avant la correction
+  // restent vrais.
+  assert.equal(att.getSheet(s.id).hash, empreinteOrigine, "le sceau d'origine ne doit jamais bouger");
+  assert.equal(att.getSheet(s.id).entries.find((e) => e.learnerId === "l1").status, "present", "l'appel constaté reste intact");
+
+  // Mais l'état EFFECTIF, lui, tient compte de la correction
+  const effectif = effectiveEntries(att.getSheet(s.id)).find((e) => e.learnerId === "l1");
+  assert.equal(effectif.status, "absent");
+  assert.equal(effectif.amende, true);
+  // et les statistiques aussi
+  assert.equal(sheetStats(att.getSheet(s.id)).absent, 1);
+
+  // L'avenant est un maillon supplémentaire, pas une réécriture
+  const chaine = att.listAmendments("camp1");
+  assert.equal(chaine.length, 1);
+  assert.equal(chaine[0].sheetId, s.id);
+  assert.ok(chaine[0].seq > scelle.seq, "l'avenant vient APRÈS la feuille dans la chaîne");
   assert.equal(att.verifyCampusChain("camp1").ok, true);
+
+  // Un avenant qui ne change rien est refusé (bruit inutile dans une pièce probante)
+  assert.ok(att.amendSheet(s.id, { learnerId: "l1", status: "absent", reason: "re-correction", by: "dir" }).error);
 });
 
-test("altération silencieuse : la chaîne la détecte", () => {
-  const sheets = att.listSheets({ campusId: "camp1", status: "locked" }).map((s) => ({ ...s, entries: s.entries.map((e) => ({ ...e })) }));
-  assert.equal(verifyChain(sheets).ok, true);
+test("avenant altéré après coup : la chaîne le détecte aussi", () => {
+  const s = att.openSheet({ session: mkSession(8), learners: LEARNERS, openedBy: "prof" });
+  att.lockSheet(s.id, "prof");
+  att.amendSheet(s.id, { learnerId: "l2", status: "excuse", reason: "convocation", by: "dir" });
+  const liens = [
+    ...att.listSheets({ campusId: "camp1", status: "locked" }).map((x) => ({ ...x })),
+    ...att.listAmendments("camp1").map((x) => ({ ...x })),
+  ];
+  assert.equal(verifyChain(liens).ok, true);
+  // quelqu'un maquille le motif d'un avenant
+  const victime = liens.find((l) => l.kind === "amendment" && l.sheetId === s.id);
+  victime.reason = "motif réécrit";
+  const verdict = verifyChain(liens);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.brokenAt, victime.id);
+  assert.match(verdict.reason, /avenant modifié/);
+});
+
+test("altération silencieuse d'une feuille : la chaîne la détecte", () => {
+  // La chaîne mêle feuilles closes ET avenants : les deux doivent être fournis.
+  const liens = [
+    ...att.listSheets({ campusId: "camp1", status: "locked" }).map((s) => ({ ...s, entries: s.entries.map((e) => ({ ...e })) })),
+    ...att.listAmendments("camp1").map((a) => ({ ...a })),
+  ];
+  assert.equal(verifyChain(liens).ok, true);
   // quelqu'un modifie une feuille ancienne sans repasser par un avenant
-  const victim = sheets.find((s) => s.seq === 1);
+  const victim = liens.find((l) => l.seq === 1);
   victim.entries[0].status = "absent";
-  const verdict = verifyChain(sheets);
+  const verdict = verifyChain(liens);
   assert.equal(verdict.ok, false);
   assert.equal(verdict.brokenAt, victim.id);
-  assert.match(verdict.reason, /modifié/);
+  assert.match(verdict.reason, /modifiée après clôture/);
 });
 
 test("signature : horodatage serveur, empreinte stockée, image relisible", () => {
