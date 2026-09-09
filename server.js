@@ -273,6 +273,17 @@ app.use((req, res, next) => {
   return res.status(423).json({ error: etat.alerte, code: "licence_lecture_seule" });
 });
 
+// Places restantes sur une ressource. null = illimité.
+function quotaRestant(ressource) {
+  const eff = licenceEffective();
+  const q = quotaReport({ plan: licenceState(eff).plan, usage: licenceUsage() }).find((x) => x.cle === ressource);
+  return q ? q.restant : null;
+}
+// Motif de refus, ou null si l'écriture est permise.
+function quotaMotif(ressource) {
+  const v = canWrite({ ...licenceEffective(), usage: licenceUsage(), ressource });
+  return v.ok ? null : v.error;
+}
 // Garde de quota, posée au point de création. Renvoie true si la requête a déjà
 // reçu sa réponse — l'appelant n'a qu'à sortir.
 function quotaBloque(req, res, ressource) {
@@ -1454,8 +1465,17 @@ app.delete("/api/candidates/:id", requireAuth, (req, res) => {
 app.post("/api/candidates/:id/convert", requireAuth, (req, res) => {
   const c = candidateGuard(req, res);
   if (!c) return;
-  const r = store.convertCandidate(c.id, { classId: req.body?.classId, schoolYear: req.body?.schoolYear });
+  // Une conversion qui RATTACHE un dossier existant ne consomme pas de place :
+  // seule la création d'un nouveau dossier compte. C'est le store qui sait
+  // lequel des deux cas s'applique, on lui passe donc l'interdiction plutôt que
+  // de dupliquer ici sa logique de rapprochement.
+  const motifQuota = quotaMotif("apprenants");
+  const r = store.convertCandidate(c.id, {
+    classId: req.body?.classId, schoolYear: req.body?.schoolYear,
+    interdireCreation: !!motifQuota,
+  });
   if (!r) return res.status(404).json({ error: "candidature introuvable" });
+  if (r.quotaAtteint) return res.status(402).json({ error: motifQuota, code: "quota_atteint" });
   if (r.error) return res.status(409).json(r);
   logAudit(req, "create", "apprenant", `${r.learner.prenom} ${r.learner.nom} (conversion candidature${r.learnerCreated ? "" : " — dossier existant lié"})`);
   res.json(r);
@@ -1681,6 +1701,13 @@ app.post("/api/campuses/:id/learners/import", campusGuard, uploadOne, (req, res)
   const classes = store.listClasses({ campusId: cid });
   const findClass = (name) => classes.find((k) => norm(k.name) === norm(name)) || null;
   const report = { created: 0, enrolled: 0, skipped: [] };
+  // Le plafond du plan s'applique aussi ici — c'est même LE chemin par lequel on
+  // dépasse : un fichier de 5 000 lignes sur un plan à 300 places. On importe
+  // jusqu'au plafond et on NOMME les lignes refusées ligne à ligne, plutôt que
+  // de tronquer en silence (un rapport qui dit « 300 créés » sur 5 000 lignes se
+  // lit comme un succès) ou de tout refuser (un fichier de 50 lignes à 299/300
+  // ne passerait jamais).
+  let placesRestantes = quotaRestant("apprenants");
   rows.forEach((row, i) => {
     const ligne = i + 2; // 1 = en-têtes
     const nom = get(row, "nom"), prenom = get(row, "prenom");
@@ -1691,6 +1718,11 @@ app.post("/api/campuses/:id/learners/import", campusGuard, uploadOne, (req, res)
     const ddn = parseFrDate(rawDdn) || (/^\d{4,5}$/.test(rawDdn) ? new Date((Number(rawDdn) - 25569) * 864e5).toISOString().slice(0, 10) : rawDdn);
     if (ine && byIne.has(ine)) { report.skipped.push({ ligne, motif: `doublon INE ${ine}` }); return; }
     if (byIdent.has(`${nom}|${prenom}|${ddn || ""}`.toLowerCase())) { report.skipped.push({ ligne, motif: "doublon nom+prénom+naissance" }); return; }
+    if (placesRestantes !== null && placesRestantes <= 0) {
+      report.plafondAtteint = true;
+      report.skipped.push({ ligne, motif: "plafond du plan atteint" });
+      return;
+    }
     const l = store.addLearner({
       campusId: cid, nom, prenom, civilite: get(row, "civilite"),
       dateNaissance: ddn || "", lieuNaissance: get(row, "lieunaissance"), ine,
@@ -1700,6 +1732,7 @@ app.post("/api/campuses/:id/learners/import", campusGuard, uploadOne, (req, res)
     });
     if (l.ine) byIne.set(l.ine, l);
     byIdent.add(`${l.nom}|${l.prenom}|${l.dateNaissance}`.toLowerCase());
+    if (placesRestantes !== null) placesRestantes--;
     report.created++;
     const classe = findClass(get(row, "classe"));
     const year = get(row, "anneescolaire", "annee");
@@ -2003,7 +2036,13 @@ app.patch("/api/openings/:id", requireAuth, requireAdmin, (req, res) => {
   }
   // Passage à « Ouvert » → crée automatiquement la fiche campus (une seule fois).
   let converted = null;
-  if (req.body?.status === "ouvert" && !before?.campusId) converted = convertOpeningToCampus(req, store.getOpening(o.id));
+  if (req.body?.status === "ouvert" && !before?.campusId) {
+    converted = convertOpeningToCampus(req, store.getOpening(o.id));
+    // Le projet reste passé à « ouvert » : refuser la bascule entière pour un
+    // plafond serait disproportionné. On dit simplement que la fiche campus
+    // n'a pas été créée, et pourquoi.
+    if (converted?.error) converted = { error: converted.error, code: converted.code };
+  }
   logAudit(req, "update", "opening", o.name);
   res.json({ ...store.getOpening(o.id), converted });
 });
@@ -2121,6 +2160,10 @@ app.post("/api/openings/:id/budget/seed", requireAuth, requireAdmin, (req, res) 
 // Conversion d'un projet en fiche campus
 function convertOpeningToCampus(req, o) {
   if (o.campusId) return { already: true, campusId: o.campusId };
+  // Un projet d'ouverture qui bascule en « ouvert » crée un campus : le plafond
+  // du plan s'y applique comme sur la création directe.
+  const motif = quotaMotif("campus");
+  if (motif) return { error: motif, code: "quota_atteint" };
   const c = store.addCampus({ name: o.name, city: o.city, region: o.region, address: o.address });
   store.setOpeningCampus(o.id, c.id);
   logAudit(req, "create", "campus", `${c.name} (depuis ouverture)`);
@@ -2130,6 +2173,7 @@ app.post("/api/openings/:id/convert", requireAuth, requireAdmin, (req, res) => {
   const o = store.getOpening(req.params.id);
   if (!o) return res.status(404).json({ error: "introuvable" });
   const r = convertOpeningToCampus(req, o);
+  if (r.error) return res.status(402).json(r);
   if (o.status !== "ouvert") store.updateOpening(o.id, { status: "ouvert" });
   res.json({ ok: true, ...r });
 });

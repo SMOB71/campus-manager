@@ -227,3 +227,105 @@ test("webhook : une résiliation ferme l'écriture mais laisse lire et exporter"
     assert.ok(lecture.status < 400, `${chemin} doit rester ouvert après résiliation → ${lecture.status}`);
   }
 });
+
+// ---------- Contournements de quota ----------
+// Un plafond qui ne tient que sur le formulaire de création unitaire ne tient
+// pas : les chemins par lesquels on dépasse réellement sont l'import en masse
+// et la conversion d'une candidature.
+
+test("import en masse : le plafond tient, et les lignes refusées sont nommées", async () => {
+  const petite = await demarrer("imp", PORT + 3, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
+  const s = await connecter(petite);
+  let campus = await (await appel(petite, s, "/api/campuses")).json();
+  if (!campus.length) {
+    await appel(petite, s, "/api/campuses", { method: "POST", json: { name: "Campus import" } });
+    campus = await (await appel(petite, s, "/api/campuses")).json();
+  }
+  const cid = campus[0].id;
+
+  // 305 lignes valides sur un plan à 300 places.
+  const lignes = ["nom;prenom;date_naissance"];
+  for (let i = 1; i <= 305; i++) lignes.push(`Nom${i};Prenom${i};01/01/2005`);
+  const fd = new FormData();
+  fd.append("file", new Blob([lignes.join("\n")], { type: "text/csv" }), "apprenants.csv");
+  const r = await fetch(petite.base + `/api/campuses/${cid}/learners/import`, {
+    method: "POST", headers: { Cookie: s.cookie, "X-CSRF-Token": s.csrf }, body: fd,
+  });
+  assert.equal(r.status, 200);
+  const rapport = await r.json();
+
+  assert.equal(rapport.created, 300, "on importe jusqu'au plafond, pas au-delà");
+  assert.equal(rapport.plafondAtteint, true, "le rapport doit le DIRE — « 300 créés » seul se lirait comme un succès");
+  const refusees = rapport.skipped.filter((x) => /plafond/.test(x.motif));
+  assert.equal(refusees.length, 5, "chaque ligne refusée est nommée, on sait lesquelles reprendre");
+  assert.ok(refusees[0].ligne, "avec son numéro de ligne");
+
+  // Le plafond est bien atteint, pas dépassé.
+  const l = await (await appel(petite, s, "/api/licence")).json();
+  const q = l.quotas.find((x) => x.cle === "apprenants");
+  assert.equal(q.utilise, 300);
+  assert.equal(q.depasse, true);
+
+  // Et un second import ne fait plus rien passer.
+  const fd2 = new FormData();
+  fd2.append("file", new Blob(["nom;prenom\nAutre;Personne"], { type: "text/csv" }), "b.csv");
+  const r2 = await fetch(petite.base + `/api/campuses/${cid}/learners/import`, {
+    method: "POST", headers: { Cookie: s.cookie, "X-CSRF-Token": s.csrf }, body: fd2,
+  });
+  assert.equal((await r2.json()).created, 0);
+});
+
+test("conversion d'une candidature : refusée au plafond, mais un rattachement reste permis", async () => {
+  const inst = await demarrer("cand", PORT + 4, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
+  const s = await connecter(inst);
+  let campus = await (await appel(inst, s, "/api/campuses")).json();
+  if (!campus.length) {
+    await appel(inst, s, "/api/campuses", { method: "POST", json: { name: "Campus cand" } });
+    campus = await (await appel(inst, s, "/api/campuses")).json();
+  }
+  const cid = campus[0].id;
+
+  // Un apprenant déjà au dossier, qu'une candidature homonyme viendra rattacher.
+  const dejaLa = await (await appel(inst, s, "/api/learners", { method: "POST", json: { campusId: cid, nom: "Dupont", prenom: "Lea" } })).json();
+  assert.ok(dejaLa.id);
+
+  // On sature le plafond.
+  const lignes = ["nom;prenom"];
+  for (let i = 1; i <= 299; i++) lignes.push(`Rempl${i};Place${i}`);
+  const fd = new FormData();
+  fd.append("file", new Blob([lignes.join("\n")], { type: "text/csv" }), "c.csv");
+  await fetch(inst.base + `/api/campuses/${cid}/learners/import`, {
+    method: "POST", headers: { Cookie: s.cookie, "X-CSRF-Token": s.csrf }, body: fd,
+  });
+  const q = (await (await appel(inst, s, "/api/licence")).json()).quotas.find((x) => x.cle === "apprenants");
+  assert.equal(q.utilise, 300, "plafond atteint");
+
+  // Une candidature homonyme : elle RATTACHE, ne crée rien, donc elle passe.
+  const cRattache = await (await appel(inst, s, "/api/candidates", { method: "POST", json: { campusId: cid, nom: "Dupont", prenom: "Lea" } })).json();
+  assert.ok(cRattache.id, "candidature créée");
+  const rr = await appel(inst, s, `/api/candidates/${cRattache.id}/convert`, { method: "POST", json: {} });
+  assert.equal(rr.status, 200, "un rattachement ne consomme pas de place : il ne doit pas être refusé");
+  assert.equal((await rr.json()).learnerCreated, false);
+
+  // Une candidature inconnue, elle, créerait un dossier : refusée, avec le motif.
+  const cNouveau = await (await appel(inst, s, "/api/candidates", { method: "POST", json: { campusId: cid, nom: "Inconnu", prenom: "Total" } })).json();
+  const rn = await appel(inst, s, `/api/candidates/${cNouveau.id}/convert`, { method: "POST", json: {} });
+  assert.equal(rn.status, 402);
+  const b = await rn.json();
+  assert.equal(b.code, "quota_atteint");
+  assert.match(b.error, /Essentiel/);
+});
+
+test("ouverture → campus : la création automatique respecte aussi le plafond", async () => {
+  const s = await connecter(plafonnee);
+  const campus = await (await appel(plafonnee, s, "/api/campuses")).json();
+  assert.equal(campus.length, 1, "plan Essentiel déjà au plafond de campus");
+
+  const o = await (await appel(plafonnee, s, "/api/openings", { method: "POST", json: { name: "Projet Lyon", city: "Lyon" } })).json();
+  assert.ok(o.id);
+  const r = await appel(plafonnee, s, `/api/openings/${o.id}/convert`, { method: "POST", json: {} });
+  assert.equal(r.status, 402, "un projet qui ouvre ne doit pas créer un campus hors plafond");
+
+  const apres = await (await appel(plafonnee, s, "/api/campuses")).json();
+  assert.equal(apres.length, 1, "aucun campus n'a été créé au passage");
+});
