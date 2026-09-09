@@ -26,6 +26,7 @@ import { learnerReport, ranking, classStats, mention, blockReport, certification
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
 import { buildSifa, buildBpf, toCsv, SIFA_COLUMNS, BPF_FINANCEURS, sifaObservationDate } from "./lib/declarations.js";
+import { licenceState, quotaReport, canWrite, PLANS, MODULES } from "./lib/licence.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
 import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
@@ -176,6 +177,55 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// --- Licence de l'instance ---
+// Le plan par DÉFAUT est le plus large. Contre-intuitif pour un SaaS, mais une
+// instance déjà en service dont le .env ne porte pas de plan ne doit pas se
+// retrouver bridée du jour au lendemain par une simple mise à jour du code : ce
+// serait une panne fonctionnelle silencieuse chez un client qui paie. Les
+// instances provisionnées reçoivent, elles, un plan explicite (scripts/provision.mjs).
+const LICENCE = {
+  plan: process.env.LICENCE_PLAN || "groupe",
+  client: process.env.LICENCE_CLIENT || "",
+  validUntil: process.env.LICENCE_VALID_UNTIL || null,
+  suspendue: process.env.LICENCE_SUSPENDUE === "1",
+};
+function licenceUsage() {
+  try {
+    return {
+      campus: store.listCampuses().length,
+      apprenants: store.listLearners({}).length,
+      utilisateurs: userstore.listUsers().length,
+    };
+  } catch { return {}; }
+}
+
+// Écritures exemptées : sans elles, une instance en lecture seule deviendrait
+// inaccessible — donc ses données inatteignables, ce que la licence ne doit
+// JAMAIS provoquer (voir lib/licence.js).
+const LICENCE_EXEMPT = new Set([
+  "/api/login", "/api/logout", "/api/forgot", "/api/reset",
+  "/api/webauthn/login/options", "/api/webauthn/login/verify",
+]);
+app.use((req, res, next) => {
+  // Toute lecture passe, toujours : consultation et exports sont des GET, et
+  // ils restent ouverts quel que soit l'état de la licence.
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+  if (LICENCE_EXEMPT.has(req.path)) return next();
+  const etat = licenceState(LICENCE);
+  if (!etat.lectureSeule) return next();
+  // 423 Locked : la ressource existe et reste lisible, seule l'écriture est fermée.
+  return res.status(423).json({ error: etat.alerte, code: "licence_lecture_seule" });
+});
+
+// Garde de quota, posée au point de création. Renvoie true si la requête a déjà
+// reçu sa réponse — l'appelant n'a qu'à sortir.
+function quotaBloque(req, res, ressource) {
+  const v = canWrite({ ...LICENCE, usage: licenceUsage(), ressource });
+  if (v.ok) return false;
+  res.status(v.code === "licence_lecture_seule" ? 423 : 402).json({ error: v.error, code: v.code });
+  return true;
+}
 
 // --- Auth & rôles ---
 function requireAuth(req, res, next) {
@@ -373,6 +423,7 @@ app.get("/api/me", (req, res) => {
 // --- Gestion des utilisateurs (admin) ---
 app.get("/api/users", requireAuth, requireAdmin, (req, res) => res.json(userstore.listUsers()));
 app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
+  if (quotaBloque(req, res, "utilisateurs")) return;
   try { const u = userstore.addUser(req.body || {}); logAudit(req, "create", "user", u.email || u.name || ""); res.json(u); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -402,6 +453,7 @@ app.get("/api/campuses", requireAuth, (req, res) => {
   res.json(store.listCampuses().filter((c) => a === null || a.includes(c.id)));
 });
 app.post("/api/campuses", requireAuth, requireAdmin, (req, res) => {
+  if (quotaBloque(req, res, "campus")) return;
   if (!req.body?.name || !String(req.body.name).trim()) return res.status(400).json({ error: "nom requis" });
   const c = store.addCampus(req.body); logAudit(req, "create", "campus", c.name);
   res.json(c);
@@ -1444,6 +1496,7 @@ app.post("/api/learners", requireAuth, (req, res) => {
   const { campusId, nom, prenom } = req.body || {};
   if (!requireCampus(req, res, campusId)) return;
   if (!String(nom || "").trim() || !String(prenom || "").trim()) return res.status(400).json({ error: "nom et prénom requis" });
+  if (quotaBloque(req, res, "apprenants")) return;
   const l = store.addLearner(req.body);
   logAudit(req, "create", "apprenant", `${l.prenom} ${l.nom}`);
   res.json(l);
@@ -3764,6 +3817,20 @@ ${r.blocs.map((b) => `<tr><td>${esc(b.code ? b.code + " — " : "")}${esc(b.labe
 <p style="font-size:12.5px;">${r.certification.titreComplet ? "<b style=\"color:#0B6E5F;\">Tous les blocs sont acquis.</b>" : `<b>${r.certification.acquis}/${r.certification.total} bloc(s) acquis.</b> Reste à valider : ${esc(r.certification.resteAValider.join(", ")) || "—"}`}</p>` : ""}
 <div class="foot">Les moyennes sont pondérées par les coefficients du référentiel ; les notes sont ramenées sur 20. Une absence non convertie en note n'entre pas dans le calcul (elle est signalée séparément). Document édité par Campus Manager.</div>
 </body></html>`);
+});
+
+// ===== Licence de l'instance =====
+// Lisible par tout utilisateur connecté : un directeur qui bute sur un plafond
+// doit pouvoir constater lui-même où il en est, sans passer par le support.
+app.get("/api/licence", requireAuth, (req, res) => {
+  const etat = licenceState(LICENCE);
+  res.json({
+    ...etat,
+    client: LICENCE.client || null,
+    quotas: quotaReport({ plan: etat.plan, usage: licenceUsage() }),
+    modulesDetail: etat.modules.map((m) => ({ id: m, label: MODULES[m] || m })),
+    plans: Object.fromEntries(Object.entries(PLANS).map(([id, p]) => [id, { label: p.label, cible: p.cible }])),
+  });
 });
 
 // ===== Déclarations annuelles (SIFA, BPF) =====

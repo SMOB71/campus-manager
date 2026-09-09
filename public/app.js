@@ -186,6 +186,7 @@ async function enterApp() {
   state.tasks = me?.tasks || state.tasks;
   state.variants = me?.visitVariants || state.variants;
   state.campuses = await api.get("/api/campuses") || [];
+  state.licence = await api.get("/api/licence").catch(() => null);
   navOpen = Object.fromEntries(NAV_GROUPS.map((g) => [g, false])); saveNavOpen(); // dropdowns repliés à la connexion
   renderNav();
   setView("accueil");
@@ -384,12 +385,37 @@ const NAV = [
   { id: "historique", label: "Historique", icon: I.hist, group: "Atelier" },
   { id: "emails", label: "Emails", icon: I.mail, admin: true, group: "Administration" },
   { id: "utilisateurs", label: "Utilisateurs", icon: I.users, admin: true, group: "Administration" },
+  { id: "licence", label: "Licence & abonnement", icon: I.shield, admin: true, group: "Administration" },
   { id: "journal", label: "Journal d'audit", icon: I.journal, admin: true, group: "Administration" },
   { id: "backups", label: "Sauvegardes", icon: I.save, admin: true, group: "Administration" },
   { id: "parametres", label: "Paramètres", icon: I.sliders, admin: true, group: "Administration" },
   { id: "rgpd", label: "RGPD & conformité", icon: I.shield, admin: true, group: "Administration" },
   { id: "change-pw", label: "Changer le mot de passe", icon: I.lock, group: "Administration", action: "changePassword" },
 ];
+// Bandeau de licence : affiché en haut de chaque vue dès qu'il y a quelque chose
+// à dire. Découvrir un plafond au moment d'inscrire un apprenant, c'est le
+// découvrir trop tard — on prévient avant, pas pendant.
+function renderLicenceBanner() {
+  const l = state.licence;
+  const hote = $("#licence-banner");
+  if (!hote) return;
+  const quotaChaud = (l?.quotas || []).filter((q) => q.depasse || q.proche);
+  if (!l || (!l.alerte && !quotaChaud.length)) { hote.innerHTML = ""; hote.hidden = true; return; }
+  const grave = l.lectureSeule || quotaChaud.some((q) => q.depasse);
+  const messages = [];
+  if (l.alerte) messages.push(esc(l.alerte));
+  for (const q of quotaChaud) {
+    messages.push(q.depasse
+      ? `Plafond atteint : ${q.utilise}/${q.plafond} ${esc(q.label)}.`
+      : `Bientôt au plafond : ${q.utilise}/${q.plafond} ${esc(q.label)}.`);
+  }
+  hote.hidden = false;
+  hote.innerHTML = `<div class="licence-banner${grave ? " grave" : ""}">
+    <div class="grow">${messages.join(" ")}</div>
+    ${isAdmin() ? '<button class="btn-ghost btn-sm" id="lic-go">Voir la licence</button>' : ""}</div>`;
+  $("#lic-go")?.addEventListener("click", () => setView("licence"));
+}
+
 function navItems() { return NAV.filter((n) => !n.admin || isAdmin()); }
 const NAV_CHEV = '<svg class="nav-chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M6 9l6 6 6-6"/></svg>';
 let navOpen = null;
@@ -429,8 +455,9 @@ function setView(v) {
   if (grp) { const o = loadNavOpen(); if (o[grp] === false) { o[grp] = true; saveNavOpen(); } }
   renderNav();
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
+  renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -4826,6 +4853,55 @@ async function openRuptureForm(cid, rupt) {
     document.querySelector(".modal-bg")?.remove();
     await openContractFiche(cid);
   });
+}
+
+// ---------- Vue : Licence & abonnement ----------
+async function renderLicence() {
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const l = await api.get("/api/licence");
+  state.licence = l;
+  renderLicenceBanner();
+
+  const barre = (q) => {
+    if (q.plafond == null) return `<div class="sub muted">${q.utilise} — sans plafond</div>`;
+    const teinte = q.depasse ? "var(--bad)" : q.proche ? "var(--warn, #C77700)" : "var(--good)";
+    return `<div class="sub muted" style="margin-bottom:4px;">${q.utilise} / ${q.plafond} (${q.pourcent} %)</div>
+      <div style="height:7px;border-radius:4px;background:var(--line,#e3ded3);overflow:hidden;">
+        <div style="height:100%;width:${Math.min(100, q.pourcent)}%;background:${teinte};"></div></div>`;
+  };
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <div class="ttl" style="font-size:15px;">Plan ${esc(l.planLabel)}${l.client ? ` — ${esc(l.client)}` : ""}</div>
+      <p class="muted" style="margin:6px 0 0;">
+        ${l.validUntil ? `Licence valable jusqu'au <b>${esc(l.validUntil)}</b>${l.joursRestants != null ? ` (${l.joursRestants} jour(s))` : ""}.` : "Licence sans échéance."}
+        ${l.lectureSeule ? " L'instance est en <b>lecture seule</b>." : ""}
+      </p>
+      <p class="muted" style="margin:8px 0 0;">
+        Quel que soit l'état de la licence, la <b>consultation</b> et l'<b>export</b> de vos données restent ouverts.
+        Émargements scellés, contrats, factures et bulletins sont les pièces dont vous répondez devant un contrôleur :
+        ils ne vous sont jamais retenus.
+      </p>
+    </div>
+
+    <div class="section-title">Consommation</div>
+    <div class="card card-pad">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;">
+        ${(l.quotas || []).map((q) => `<div><div class="ttl" style="text-transform:capitalize;">${esc(q.label)}</div>${barre(q)}</div>`).join("")}
+      </div>
+    </div>
+
+    <div class="section-title">Modules inclus</div>
+    <div class="card"><div class="list">
+      ${(l.modulesDetail || []).map((m) => `<div class="item"><span class="pill done">inclus</span><div class="grow"><div class="ttl" style="font-weight:500;text-transform:capitalize;">${esc(m.id)}</div><div class="sub muted">${esc(m.label)}</div></div></div>`).join("")}
+    </div></div>
+
+    <div class="section-title">Autres plans</div>
+    <div class="card"><div class="list">
+      ${Object.entries(l.plans || {}).map(([id, p]) => `<div class="item"><div class="grow"><div class="ttl">${esc(p.label)}${id === l.plan ? ' <span class="pill">plan actuel</span>' : ""}</div><div class="sub muted">${esc(p.cible)}</div></div></div>`).join("")}
+    </div></div>
+    <p class="sub muted" style="margin-top:12px;">Le changement de plan se fait avec Ruliora : il modifie l'abonnement et les plafonds de cette instance.</p>`;
 }
 
 // ---------- Vue : Déclarations annuelles (SIFA, BPF) ----------
