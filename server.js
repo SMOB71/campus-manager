@@ -22,7 +22,8 @@ import * as sessionstore from "./lib/sessionstore.js";
 import * as attendancestore from "./lib/attendancestore.js";
 import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STATUSES } from "./lib/attendance.js";
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, RUPTURE_MODES, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
-import { learnerReport, ranking, classStats, mention, blockReport, certificationSummary } from "./lib/grades.js";
+import { learnerReport, ranking, classStats, mention, blockReport } from "./lib/grades.js";
+import { applyExemptions, certification, MOTIFS as ACQUIS_MOTIFS, validateExemption } from "./lib/acquis.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
 import { buildSifa, buildBpf, toCsv, SIFA_COLUMNS, BPF_FINANCEURS, sifaObservationDate } from "./lib/declarations.js";
@@ -3813,11 +3814,20 @@ function buildClassReports(classId, campusId, { from = null, to = null } = {}) {
   const grades = store.listGrades({}).filter((g) => idsEval.has(g.assessmentId));
   const peers = learnersOfClassActive(classId, campusId);
   const blocks = blocksOfClass(classId);
+  // Une seule lecture pour toute la classe : une par apprenant relirait le
+  // fichier autant de fois qu'il y a d'inscrits.
+  const exemptionsParApprenant = new Map();
+  for (const e of store.listBlockExemptions({})) {
+    if (!exemptionsParApprenant.has(e.learnerId)) exemptionsParApprenant.set(e.learnerId, []);
+    exemptionsParApprenant.get(e.learnerId).push(e);
+  }
   const all = peers.map((l) => {
     const r = learnerReport({ learnerId: l.id, assessments, grades, modules, from, to });
     // Certification : statut par bloc, sans compensation entre blocs.
-    const blocs = blockReport({ modules: r.modules, blocks });
-    return { ...r, blocs, certification: certificationSummary(blocs) };
+    // Les décisions d'acquis s'appliquent APRÈS le calcul des moyennes : un bloc
+    // dispensé garde ses notes éventuelles, lisibles sous `statutEvalue`.
+    const blocs = applyExemptions(blockReport({ modules: r.modules, blocks }), exemptionsParApprenant.get(l.id) || []);
+    return { ...r, blocs, certification: certification(blocs) };
   });
   const { ranks, total } = ranking(all);
   const classAvg = new Map();
@@ -3911,11 +3921,52 @@ ${r.blocs?.length ? `<h2 style="font-family:Georgia,serif;font-size:16px;margin:
 <table><thead><tr><th>Bloc</th><th style="text-align:center;">Moyenne</th><th style="text-align:center;">Seuil</th><th style="text-align:center;">Statut</th></tr></thead><tbody>
 ${r.blocs.map((b) => `<tr><td>${esc(b.code ? b.code + " — " : "")}${esc(b.label)}<div style="font-size:11px;color:#4A5568;">${b.evaluees}/${b.total} matière(s) évaluée(s)</div></td>
   <td style="text-align:center;font-weight:700;">${fmt(b.moyenne)}</td><td style="text-align:center;color:#4A5568;">${b.seuil}</td>
-  <td style="text-align:center;font-weight:700;color:${b.status === "acquis" ? "#0B6E5F" : b.status === "non_acquis" ? "#B03A2E" : "#4A5568"};">${b.status === "acquis" ? "Acquis" : b.status === "non_acquis" ? "Non acquis" : "En cours"}${b.elimine ? " (note éliminatoire)" : ""}</td></tr>`).join("")}
+  <td style="text-align:center;font-weight:700;color:${b.status === "acquis" || b.status === "acquis_dispense" ? "#0B6E5F" : b.status === "non_acquis" ? "#B03A2E" : "#4A5568"};">${
+    b.status === "acquis" ? "Acquis"
+    : b.status === "acquis_dispense" ? `Acquis par dispense<div style="font-weight:400;font-size:11px;color:#4A5568;">${esc(b.dispense?.motifLabel || "")}${b.dispense?.opposable ? "" : " — justificatif manquant"}</div>`
+    : b.status === "non_acquis" ? "Non acquis" : "En cours"}${b.elimine ? " (note éliminatoire)" : ""}</td></tr>`).join("")}
 </tbody></table>
-<p style="font-size:12.5px;">${r.certification.titreComplet ? "<b style=\"color:#0B6E5F;\">Tous les blocs sont acquis.</b>" : `<b>${r.certification.acquis}/${r.certification.total} bloc(s) acquis.</b> Reste à valider : ${esc(r.certification.resteAValider.join(", ")) || "—"}`}</p>` : ""}
+<p style="font-size:12.5px;">${
+  r.certification.titreComplet ? "<b style=\"color:#0B6E5F;\">Tous les blocs sont acquis.</b>"
+  : r.certification.blocageDocumentaire ? `<b style="color:#B03A2E;">Tous les blocs sont acquis, mais le titre ne peut pas être délivré :</b> justificatif manquant pour ${esc(r.certification.dispensesNonJustifiees.join(", "))}.`
+  : `<b>${r.certification.acquis}/${r.certification.total} bloc(s) acquis.</b> Reste à valider : ${esc(r.certification.resteAValider.join(", ")) || "—"}`}</p>
+${r.certification.origines?.length ? `<p style="font-size:11.5px;color:#4A5568;">Origine des blocs non évalués ici : ${r.certification.origines.map((o) => `${esc(o.bloc)} — ${esc(o.motifLabel)}${o.opposable ? "" : " <b style=\"color:#B03A2E;\">(pièce manquante)</b>"}`).join(" · ")}.</p>` : ""}` : ""}
 <div class="foot">Les moyennes sont pondérées par les coefficients du référentiel ; les notes sont ramenées sur 20. Une absence non convertie en note n'entre pas dans le calcul (elle est signalée séparément). Document édité par Campus Manager.</div>
 </body></html>`);
+});
+
+// ===== Acquis, dispenses, équivalences, allègements =====
+// Le sens de ces décisions est expliqué dans lib/acquis.js : un ALLÈGEMENT
+// dispense de suivre la formation, une DISPENSE dispense de passer l'épreuve.
+// Les confondre délivre un bloc jamais évalué, ou convoque à une épreuve dont
+// l'apprenant est exempté.
+app.get("/api/acquis/motifs", requireAuth, (req, res) => res.json(ACQUIS_MOTIFS));
+
+app.get("/api/learners/:id/acquis", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  res.json(store.listBlockExemptions({ learnerId: l.id }));
+});
+
+app.put("/api/learners/:id/acquis/:blocId", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const v = validateExemption({ ...req.body, learnerId: l.id, blocId: req.params.blocId });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.setBlockExemption({ ...v.exemption, decidePar: v.exemption.decidePar || req.user.name || req.user.email });
+  logAudit(req, "update", "acquis", `${l.prenom} ${l.nom} — bloc ${req.params.blocId} : ${ACQUIS_MOTIFS[v.exemption.motif]?.label || v.exemption.motif}`);
+  // Les avertissements remontent : ils n'empêchent pas d'enregistrer, mais ils
+  // empêcheront la délivrance du titre tant qu'ils ne sont pas levés.
+  res.json({ ...saved, warnings: v.warnings });
+});
+
+app.delete("/api/learners/:id/acquis/:blocId", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const ok = store.deleteBlockExemption(l.id, req.params.blocId);
+  if (!ok) return res.status(404).json({ error: "aucune décision sur ce bloc" });
+  logAudit(req, "delete", "acquis", `${l.prenom} ${l.nom} — bloc ${req.params.blocId}`);
+  res.json({ ok: true });
 });
 
 // ===== Licence de l'instance =====

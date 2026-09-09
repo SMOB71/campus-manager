@@ -3577,6 +3577,7 @@ async function openLearnerFiche(lid) {
       <button class="btn-ghost btn-sm" id="lr-portal">🔗 Lien portail</button>
       <button class="btn-ghost btn-sm" id="lr-consent">🛡 Autorisations</button>
       <button class="btn-ghost btn-sm" id="lr-certif">📜 Certificat de réalisation</button>
+      <button class="btn-ghost btn-sm" id="lr-acquis">🎓 Acquis &amp; dispenses</button>
       <button class="btn-ghost btn-sm" id="lr-export">⬇ Export RGPD</button>
       ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger" id="lr-del">Supprimer (RGPD)</button>` : ""}
     </div>`);
@@ -3586,6 +3587,7 @@ async function openLearnerFiche(lid) {
   $("#lr-consent").onclick = () => openConsentForm(l, reopen);
   $("#lr-export").onclick = () => window.open(`/api/learners/${l.id}/export`, "_blank");
   $("#lr-certif").onclick = () => openCertificat(l);
+  $("#lr-acquis").onclick = () => openAcquis(l);
   $("#lr-del")?.addEventListener("click", async () => {
     if (!confirm(`Supprimer définitivement le dossier de ${l.prenom} ${l.nom} (inscriptions comprises) ?`)) return;
     await api.del(`/api/learners/${lid}`);
@@ -4466,6 +4468,103 @@ async function openCertificat(l) {
   $("#cr-from").addEventListener("change", recharger);
   $("#cr-to").addEventListener("change", recharger);
   $("#cr-print").onclick = () => window.open(`/api/learners/${l.id}/certificat-realisation?format=html&from=${$("#cr-from").value}&to=${$("#cr-to").value}&issue=${$("#cr-issue").value}`, "_blank");
+}
+
+// Acquis, dispenses, équivalences et allègements par bloc.
+// L'écran doit rendre IMPOSSIBLE la confusion que le domaine fait tout le temps :
+// un allègement dispense de suivre la formation, une dispense d'épreuve vaut
+// acquisition. Les deux cases sont donc affichées séparément, avec leur effet
+// écrit en clair sous le sélecteur.
+async function openAcquis(l) {
+  const [motifs, decisions, rapport] = await Promise.all([
+    api.get("/api/acquis/motifs"),
+    api.get(`/api/learners/${l.id}/acquis`),
+    api.get(`/api/learners/${l.id}/report`),
+  ]);
+  if (rapport?.error) { alert(rapport.error); return; }
+  const blocs = rapport?.blocs || [];
+  if (!blocs.length) { alert("Aucun bloc de compétences au référentiel de cette classe."); return; }
+  const parBloc = new Map((decisions || []).map((d) => [d.blocId, d]));
+
+  const ligne = (b) => {
+    const d = parBloc.get(b.blocId);
+    const statut = b.status === "acquis_dispense" ? `<span class="pill done">Acquis par dispense</span>`
+      : b.status === "acquis" ? `<span class="pill done">Acquis</span>`
+      : b.status === "non_acquis" ? `<span class="pill overdue">Non acquis</span>` : `<span class="pill">En cours</span>`;
+    return `<div class="item" data-bloc="${esc(b.blocId)}" style="flex-direction:column;align-items:stretch;gap:8px;">
+      <div style="display:flex;gap:10px;align-items:center;">
+        <div class="grow"><div class="ttl">${esc(b.code ? b.code + " — " : "")}${esc(b.label)}</div>
+          <div class="sub muted">${b.evaluees}/${b.total} matière(s) évaluée(s)${b.moyenne != null ? " · moyenne " + String(b.moyenne).replace(".", ",") : ""}</div></div>
+        ${statut}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="flex:1;min-width:220px;"><label class="field-label">Décision</label>
+          <select class="txt ac-motif"><option value="">— aucune —</option>
+            ${Object.entries(motifs).map(([k, m]) => `<option value="${k}" ${d?.motif === k ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></div>
+        <div style="min-width:150px;"><label class="field-label">Date de décision</label><input class="txt ac-date" type="date" value="${esc(d?.dateDecision || "")}"></div>
+      </div>
+      <div class="ac-detail" ${d?.motif ? "" : "hidden"}>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 6px;">
+          <label class="sub"><input type="checkbox" class="ac-ep" ${d?.dispenseEpreuve ? "checked" : ""}> Dispensé de l'<b>épreuve</b> (vaut acquisition)</label>
+          <label class="sub"><input type="checkbox" class="ac-fo" ${d?.dispenseFormation ? "checked" : ""}> Dispensé de <b>suivre la formation</b> (n'acquiert rien)</label>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input class="txt ac-just grow" placeholder="Pièce justificative (relevé de notes, notification de jury…)" value="${esc(d?.justificatif || "")}" style="min-width:240px;">
+          <input class="txt ac-par" placeholder="Décidé par" value="${esc(d?.decidePar || "")}" style="max-width:190px;">
+        </div>
+        <div class="sub muted ac-aide" style="margin-top:5px;"></div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-primary btn-sm ac-save">Enregistrer</button>
+        ${d ? '<button class="btn-ghost btn-sm btn-danger ac-del">Retirer la décision</button>' : ""}
+        <span class="sub ac-msg" style="align-self:center;"></span>
+      </div>
+    </div>`;
+  };
+
+  openModal(`Acquis & dispenses — ${l.prenom} ${l.nom}`, `
+    <p class="muted" style="margin-top:0;">Un <b>allègement de parcours</b> dispense de <i>suivre</i> la formation : l'apprenant passe quand même l'épreuve, rien n'est validé.
+    Une <b>dispense d'épreuve</b>, une <b>équivalence</b> ou un <b>bloc déjà acquis</b> valent acquisition : le bloc est validé sans être évalué ici.</p>
+    <div class="list">${blocs.map(ligne).join("")}</div>
+    <p class="hint muted">Depuis la loi du 5 septembre 2018, les blocs de compétences sont acquis définitivement : un bloc validé lors d'une session antérieure n'est pas à repasser.
+    Sans pièce justificative, la décision reste enregistrée mais <b>le titre ne pourra pas être délivré</b>.</p>`);
+
+  $$(".item[data-bloc]").forEach((row) => {
+    const motif = $(".ac-motif", row), detail = $(".ac-detail", row), aide = $(".ac-aide", row);
+    const ep = $(".ac-ep", row), fo = $(".ac-fo", row), msg = $(".ac-msg", row);
+    const rafraichir = ({ appliquerDefauts }) => {
+      const m = motifs[motif.value];
+      detail.hidden = !m;
+      if (!m) return;
+      // Le motif propose des valeurs par défaut ; l'utilisateur peut les changer.
+      if (appliquerDefauts) { ep.checked = m.dispenseEpreuve; fo.checked = m.dispenseFormation; }
+      aide.textContent = m.aide;
+    };
+    rafraichir({ appliquerDefauts: false });
+    motif.addEventListener("change", () => rafraichir({ appliquerDefauts: true }));
+
+    $(".ac-save", row).addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+      msg.textContent = ""; msg.style.color = "";
+      if (!motif.value) { msg.textContent = "Choisir une décision."; msg.style.color = "var(--bad)"; return; }
+      const r = await api.put(`/api/learners/${l.id}/acquis/${row.dataset.bloc}`, {
+        motif: motif.value, dispenseEpreuve: ep.checked, dispenseFormation: fo.checked,
+        justificatif: $(".ac-just", row).value.trim(), dateDecision: $(".ac-date", row).value,
+        decidePar: $(".ac-par", row).value.trim(),
+      });
+      if (r?.error) { msg.textContent = r.error; msg.style.color = "var(--bad)"; return; }
+      // Le refetch est attendu AVANT de rendre la main : sans cela le bouton
+      // redevient cliquable pendant le rechargement et la décision part deux fois.
+      document.querySelector(".modal-bg")?.remove();
+      await openAcquis(l);
+    }));
+
+    $(".ac-del", row)?.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+      if (!confirm("Retirer cette décision ? Le bloc redeviendra à évaluer.")) return;
+      await api.del(`/api/learners/${l.id}/acquis/${row.dataset.bloc}`);
+      document.querySelector(".modal-bg")?.remove();
+      await openAcquis(l);
+    }));
+  });
 }
 
 // ---------- Vue : Contrats d'alternance ----------

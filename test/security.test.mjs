@@ -843,6 +843,88 @@ test("comité : cycle complet et action rattachée à une séance", async () => 
   assert.equal(ko.status, 400);
 });
 
+test("acquis & dispenses : le bulletin d'un redoublant partiel cesse d'être faux", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Acquis E2E" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: {
+    name: "Titre Test",
+    modules: [{ code: "U1", label: "Technique", coefficient: 2 }, { code: "U2", label: "Gestion", coefficient: 2 }],
+  } })).json();
+  // Deux blocs, un par module : le bloc 2 sera « déjà acquis » l'an dernier.
+  const avecBlocs = await (await req(`/api/curricula/${cur.id}`, { method: "PATCH", ...opts, json: {
+    blocks: [
+      { code: "B1", label: "Bloc technique", moduleIds: [cur.modules[0].id] },
+      { code: "B2", label: "Bloc gestion", moduleIds: [cur.modules[1].id] },
+    ],
+  } })).json();
+  const blocs = avecBlocs.blocks || [];
+  assert.equal(blocs.length, 2, "le référentiel doit porter deux blocs");
+
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "T1", curriculumId: cur.id } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Redoublant", prenom: "Partiel" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  // Il valide le bloc 1 cette année.
+  const ev = await (await req("/api/assessments", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, label: "DS", moduleId: cur.modules[0].id, coefficient: 1, maxScore: 20 } })).json();
+  await req(`/api/assessments/${ev.id}/grades`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: l.id, score: 15 }] } });
+
+  // AVANT : le bloc 2, acquis l'an dernier, sort « en cours » — le document est faux.
+  const avant = await (await req(`/api/learners/${l.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(avant.certification.titreComplet, false);
+  assert.equal(avant.certification.acquis, 1);
+
+  // Décision d'acquis, SANS justificatif : elle s'applique au suivi…
+  const sansPiece = await req(`/api/learners/${l.id}/acquis/${blocs[1].id}`, { method: "PUT", ...opts, json: { motif: "acquis_anterieur" } });
+  assert.equal(sansPiece.status, 200);
+  assert.ok((await sansPiece.json()).warnings.some((w) => /pièce justificative/.test(w)));
+
+  const partiel = await (await req(`/api/learners/${l.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(partiel.certification.acquis, 2, "les deux blocs sont acquis au sens du suivi");
+  assert.equal(partiel.certification.titreComplet, false, "mais le titre reste bloqué sans pièce");
+  assert.equal(partiel.certification.blocageDocumentaire, true);
+  assert.deepEqual(partiel.certification.dispensesNonJustifiees, ["B2"]);
+
+  // …et une fois la pièce au dossier, le titre devient complet.
+  await req(`/api/learners/${l.id}/acquis/${blocs[1].id}`, { method: "PUT", ...opts, json: {
+    motif: "acquis_anterieur", justificatif: "Relevé de notes session 2025", dateDecision: "2026-09-01", decidePar: "Mme Martin",
+  } });
+  const apres = await (await req(`/api/learners/${l.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(apres.certification.titreComplet, true);
+  assert.equal(apres.certification.acquisParDispense, 1);
+  assert.equal(apres.certification.origines[0].bloc, "B2");
+
+  // Le bulletin imprimé doit DIRE « acquis par dispense » — pas « en cours ».
+  const html = await (await req(`/api/learners/${l.id}/bulletin`, { cookie: a.cookie })).text();
+  assert.match(html, /Acquis par dispense/);
+  assert.match(html, /session précédente/);
+
+  // Un ALLÈGEMENT, lui, ne valide rien.
+  await req(`/api/learners/${l.id}/acquis/${blocs[1].id}`, { method: "PUT", ...opts, json: {
+    motif: "allegement", justificatif: "Décision d'allègement", dateDecision: "2026-09-01", decidePar: "Mme Martin",
+  } });
+  const allege = await (await req(`/api/learners/${l.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(allege.certification.titreComplet, false, "un allègement dispense de suivre, pas de valider");
+  assert.equal(allege.certification.acquisParDispense, 0);
+
+  // Une décision qui ne dispense de rien est refusée.
+  const vide = await req(`/api/learners/${l.id}/acquis/${blocs[0].id}`, { method: "PUT", ...opts, json: { motif: "allegement", dispenseEpreuve: false, dispenseFormation: false } });
+  assert.equal(vide.status, 400);
+
+  // Cloisonnement : un directeur d'un autre campus ne touche pas ce dossier.
+  const d = await login("dir@test.co", "pw12345678");
+  if (d.cookie) {
+    const interdit = await req(`/api/learners/${l.id}/acquis/${blocs[0].id}`, { method: "PUT", cookie: d.cookie, csrf: d.csrf, json: { motif: "vae" } });
+    assert.equal(interdit.status, 403);
+    assert.equal((await req(`/api/learners/${l.id}/acquis`, { cookie: d.cookie })).status, 403);
+  }
+
+  // Retrait : le bloc redevient à évaluer.
+  assert.equal((await req(`/api/learners/${l.id}/acquis/${blocs[1].id}`, { method: "DELETE", ...opts })).status, 200);
+  const retire = await (await req(`/api/learners/${l.id}/report`, { cookie: a.cookie })).json();
+  assert.equal(retire.certification.acquis, 1);
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");
