@@ -27,6 +27,7 @@ import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_S
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
 import { buildSifa, buildBpf, toCsv, SIFA_COLUMNS, BPF_FINANCEURS, sifaObservationDate } from "./lib/declarations.js";
 import { licenceState, quotaReport, canWrite, PLANS, MODULES } from "./lib/licence.js";
+import * as stripe from "./lib/stripe.js";
 import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRateLimiter, PORTAL_KINDS, KIND_LABEL } from "./lib/portal.js";
 import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
@@ -152,6 +153,43 @@ app.use((req, res, next) => {
   next();
 });
 app.use((req, res, next) => { res.on("finish", () => console.log(new Date().toISOString(), req.method, req.url, "->", res.statusCode)); next(); });
+// --- Webhook Stripe ---
+// Monté AVANT express.json() et servi en corps BRUT : la signature Stripe porte
+// sur les octets reçus. Re-sérialiser du JSON parsé change les espaces et rend
+// toute signature invalide — panne silencieuse, et impossible à diagnostiquer
+// depuis les logs Stripe qui n'affichent qu'un « 400 ».
+//
+// Il est délibérément HORS de la protection CSRF et de l'authentification : son
+// authentification À LUI, c'est la signature HMAC, qui est plus forte qu'une
+// session. Aucune autre route ne bénéficie de cette exemption.
+app.post("/api/stripe/webhook", express.raw({ type: "*/*", limit: "1mb" }), (req, res) => {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET || "";
+  const brut = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+  const v = stripe.verifySignature({ payload: brut, header: req.get("stripe-signature"), secret });
+  if (!v.ok) {
+    console.warn(new Date().toISOString(), "webhook Stripe refusé :", v.error);
+    return res.status(400).json({ error: v.error });
+  }
+  let evenement;
+  try { evenement = JSON.parse(brut); } catch { return res.status(400).json({ error: "corps illisible" }); }
+
+  const courant = store.getSettings().licence || {};
+  const r = stripe.applyEvent(courant, evenement, { correspondance: stripe.correspondanceDepuisEnv() });
+  if (r.applique) {
+    store.updateSettings({ licence: r.etat });
+    try {
+      store.addAudit({ userName: "Stripe", action: "update", target: "licence",
+        detail: `${evenement.type} → ${r.etat.statutLibelle}${r.etat.plan ? ` (${r.etat.plan})` : ""}, valide jusqu'au ${r.etat.validUntil || "?"}` });
+    } catch { /* le journal ne doit jamais faire échouer un webhook */ }
+    console.log(new Date().toISOString(), "licence mise à jour par Stripe :", evenement.type, r.etat.statutLibelle);
+  } else {
+    console.log(new Date().toISOString(), "webhook Stripe sans effet :", r.motif);
+  }
+  // 2xx dans tous les cas où la signature est bonne : un événement qu'on ignore
+  // et auquel on répondrait par une erreur serait réémis indéfiniment.
+  res.json({ recu: true, applique: r.applique, motif: r.motif || null });
+});
+
 app.use(express.json({ limit: "4mb" }));
 app.use(cookieParser());
 
@@ -190,6 +228,23 @@ const LICENCE = {
   validUntil: process.env.LICENCE_VALID_UNTIL || null,
   suspendue: process.env.LICENCE_SUSPENDUE === "1",
 };
+// L'état persisté (posé par le webhook Stripe) l'emporte sur le .env : c'est lui
+// qui suit l'abonnement réel. Le .env reste la valeur de départ d'une instance
+// qui n'a pas encore reçu d'événement.
+function licenceEffective() {
+  let persiste = {};
+  try { persiste = store.getSettings().licence || {}; } catch { /* store indisponible */ }
+  return {
+    plan: persiste.plan || LICENCE.plan,
+    client: LICENCE.client,
+    validUntil: persiste.validUntil ?? LICENCE.validUntil,
+    suspendue: persiste.suspendue ?? LICENCE.suspendue,
+    statutStripe: persiste.statutStripe || null,
+    statutLibelle: persiste.statutLibelle || null,
+    resiliationProgrammee: persiste.resiliationProgrammee || false,
+    majLe: persiste.majLe || null,
+  };
+}
 function licenceUsage() {
   try {
     return {
@@ -212,7 +267,7 @@ app.use((req, res, next) => {
   // ils restent ouverts quel que soit l'état de la licence.
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
   if (LICENCE_EXEMPT.has(req.path)) return next();
-  const etat = licenceState(LICENCE);
+  const etat = licenceState(licenceEffective());
   if (!etat.lectureSeule) return next();
   // 423 Locked : la ressource existe et reste lisible, seule l'écriture est fermée.
   return res.status(423).json({ error: etat.alerte, code: "licence_lecture_seule" });
@@ -221,7 +276,7 @@ app.use((req, res, next) => {
 // Garde de quota, posée au point de création. Renvoie true si la requête a déjà
 // reçu sa réponse — l'appelant n'a qu'à sortir.
 function quotaBloque(req, res, ressource) {
-  const v = canWrite({ ...LICENCE, usage: licenceUsage(), ressource });
+  const v = canWrite({ ...licenceEffective(), usage: licenceUsage(), ressource });
   if (v.ok) return false;
   res.status(v.code === "licence_lecture_seule" ? 423 : 402).json({ error: v.error, code: v.code });
   return true;
@@ -3823,10 +3878,13 @@ ${r.blocs.map((b) => `<tr><td>${esc(b.code ? b.code + " — " : "")}${esc(b.labe
 // Lisible par tout utilisateur connecté : un directeur qui bute sur un plafond
 // doit pouvoir constater lui-même où il en est, sans passer par le support.
 app.get("/api/licence", requireAuth, (req, res) => {
-  const etat = licenceState(LICENCE);
+  const eff = licenceEffective();
+  const etat = licenceState(eff);
   res.json({
     ...etat,
-    client: LICENCE.client || null,
+    client: eff.client || null,
+    statutStripe: eff.statutStripe, statutLibelle: eff.statutLibelle,
+    resiliationProgrammee: eff.resiliationProgrammee, majLe: eff.majLe,
     quotas: quotaReport({ plan: etat.plan, usage: licenceUsage() }),
     modulesDetail: etat.modules.map((m) => ({ id: m, label: MODULES[m] || m })),
     plans: Object.fromEntries(Object.entries(PLANS).map(([id, p]) => [id, { label: p.label, cible: p.cible }])),

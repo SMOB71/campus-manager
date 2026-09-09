@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHmac } from "node:crypto";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ENV_BASE = {
@@ -57,11 +58,16 @@ const appel = (inst, s, chemin, { method = "GET", json } = {}) => fetch(inst.bas
 });
 
 const PORT = 3900 + (process.pid % 60);
-let expiree, plafonnee;
+const WHSEC = "whsec_integration_0123456789";
+let expiree, plafonnee, abonnee;
 
 before(async () => {
   expiree = await demarrer("exp", PORT, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2020-01-01", LICENCE_CLIENT: "CFA Test" });
   plafonnee = await demarrer("cap", PORT + 1, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
+  abonnee = await demarrer("sub", PORT + 2, {
+    LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2026-01-01",
+    STRIPE_WEBHOOK_SECRET: WHSEC, STRIPE_PRICE_RESEAU: "price_res",
+  });
 });
 after(() => {
   for (const i of instances) { try { i.srv.kill("SIGKILL"); } catch { /* ignore */ } rmSync(i.dir, { recursive: true, force: true }); }
@@ -133,4 +139,91 @@ test("plan Essentiel : les apprenants restent créables tant que le plafond n'es
   assert.ok(campusId, "il faut un campus pour inscrire un apprenant");
   const r = await appel(plafonnee, s, "/api/learners", { method: "POST", json: { campusId, nom: "Test", prenom: "Quota" } });
   assert.equal(r.status, 200, "300 places au plan Essentiel : le premier apprenant ne doit pas être bloqué");
+});
+
+// ---------- Webhook Stripe ----------
+
+function envoyerWebhook(inst, evenement, { secret = WHSEC, ts = null } = {}) {
+  const brut = JSON.stringify(evenement);
+  const horodatage = ts ?? Math.floor(Date.now() / 1000);
+  const sig = createHmac("sha256", secret).update(`${horodatage}.${brut}`, "utf8").digest("hex");
+  return fetch(inst.base + "/api/stripe/webhook", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Stripe-Signature": `t=${horodatage},v1=${sig}` },
+    body: brut,
+  });
+}
+const abonnement = (over = {}) => ({
+  id: "sub_int", status: "active", customer: "cus_int",
+  current_period_end: 2_000_000_000, cancel_at_period_end: false,
+  items: { data: [{ price: { id: "price_res" } }] }, ...over,
+});
+
+test("webhook : sans signature valide, rien n'est appliqué", async () => {
+  // Le webhook n'a ni session ni jeton CSRF : sa seule authentification est la
+  // signature. Si elle ne tenait pas, n'importe qui prolongerait sa licence.
+  const evenement = { id: "evt_faux", type: "customer.subscription.updated", created: Math.floor(Date.now() / 1000), data: { object: abonnement() } };
+
+  const sans = await fetch(abonnee.base + "/api/stripe/webhook", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(evenement),
+  });
+  assert.equal(sans.status, 400);
+
+  const mauvaisSecret = await envoyerWebhook(abonnee, evenement, { secret: "whsec_pirate" });
+  assert.equal(mauvaisSecret.status, 400);
+
+  // Signature juste mais horodatage ancien : c'est la forme d'un rejeu.
+  const rejeu = await envoyerWebhook(abonnee, evenement, { ts: Math.floor(Date.now() / 1000) - 3600 });
+  assert.equal(rejeu.status, 400);
+
+  const s = await connecter(abonnee);
+  const l = await (await appel(abonnee, s, "/api/licence")).json();
+  assert.equal(l.plan, "essentiel", "aucune de ces tentatives ne doit avoir changé le plan");
+  assert.equal(l.validUntil, "2026-01-01");
+});
+
+test("webhook signé : la licence suit l'abonnement, et l'événement n'agit qu'une fois", async () => {
+  const evenement = {
+    id: "evt_int_1", type: "customer.subscription.updated",
+    created: Math.floor(Date.now() / 1000), data: { object: abonnement() },
+  };
+  const r = await envoyerWebhook(abonnee, evenement);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).applique, true);
+
+  const s = await connecter(abonnee);
+  const l = await (await appel(abonnee, s, "/api/licence")).json();
+  assert.equal(l.plan, "reseau", "l'état persisté doit primer sur le plan du .env");
+  assert.equal(l.validUntil, "2033-05-18");
+  assert.equal(l.lectureSeule, false, "l'instance était expirée au démarrage : l'abonnement la remet en écriture");
+
+  // Stripe réémet tant qu'il n'a pas de 2xx : le doublon doit être sans effet.
+  const bis = await envoyerWebhook(abonnee, evenement);
+  assert.equal(bis.status, 200);
+  const b = await bis.json();
+  assert.equal(b.applique, false);
+  assert.match(b.motif, /déjà appliqué/);
+});
+
+test("webhook : une résiliation ferme l'écriture mais laisse lire et exporter", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const r = await envoyerWebhook(abonnee, {
+    id: "evt_int_2", type: "customer.subscription.deleted", created: now,
+    data: { object: abonnement({ status: "canceled" }) },
+  });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).applique, true);
+
+  const s = await connecter(abonnee);
+  const l = await (await appel(abonnee, s, "/api/licence")).json();
+  assert.equal(l.suspendue, true);
+  assert.equal(l.lectureSeule, true);
+
+  const ecriture = await appel(abonnee, s, "/api/campuses", { method: "POST", json: { name: "Après résiliation" } });
+  assert.equal(ecriture.status, 423);
+
+  for (const chemin of ["/api/campuses", "/api/learners", "/api/export/learners"]) {
+    const lecture = await appel(abonnee, s, chemin);
+    assert.ok(lecture.status < 400, `${chemin} doit rester ouvert après résiliation → ${lecture.status}`);
+  }
 });
