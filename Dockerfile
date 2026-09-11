@@ -10,6 +10,9 @@ RUN npm install --omit=dev
 COPY server.js ./
 COPY lib ./lib
 COPY public ./public
+# Les scripts de maintenance (reprise, sauvegarde) doivent voyager avec l image :
+# les monter a la main au moment ou on en a besoin, c est les oublier.
+COPY scripts ./scripts
 
 ENV NODE_ENV=production
 ENV PORT=3200

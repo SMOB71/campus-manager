@@ -27,7 +27,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 import path from "node:path";
 import {
   planCreate, renderEnv, renderNginx, dockerRunArgs, toRegistry, auditRegistry,
-  validateSlug, instanceDir, conteneurName, RACINE, IMAGE,
+  validateSlug, instanceDir, conteneurName, RACINE, IMAGE, RESEAU, PG_HOTE, dbName, dbRole,
 } from "../lib/provisioning.js";
 import { PLANS } from "../lib/licence.js";
 
@@ -162,7 +162,8 @@ function cmdCreate() {
 
   let vhost = null, vhostPrecedent = null;
   try {
-    etape(1, "dossiers");
+    etape(1, "dossiers et réseau de la flotte");
+    run("docker", ["network", "create", RESEAU]);
     if (APPLY) { mkdirSync(path.join(inst.dossier, "data"), { recursive: true }); chmodSync(inst.dossier, 0o750); }
     else dire(`${c.d}    (simulé) mkdir -p ${inst.dossier}/data${c.n}`);
 
@@ -188,7 +189,22 @@ function cmdCreate() {
     if (APPLY) writeFileSync(vhost, renderNginx(inst, { tls: true }));
     rechargerNginx(vhost, vhostPrecedent);
 
-    etape(6, `image ${IMAGE}`);
+    etape(6, `base de données dédiée ${dbName(inst.slug)}`);
+    // Une base ET un rôle par client : l'isolation entre organismes n'est pas
+    // logique mais physique. Un rôle qui n'a aucun droit sur les autres bases ne
+    // peut pas les lire, quelle que soit l'erreur commise dans le code.
+    // CREATE DATABASE n'accepte pas de paramètre lié : le nom vient de dbName(),
+    // qui ne produit que [a-z0-9_] à partir d'un slug déjà validé.
+    run("docker", ["exec", PG_HOTE, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c",
+      `create role ${dbRole(inst.slug)} login password '${inst.dbPassword}'`]);
+    run("docker", ["exec", PG_HOTE, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c",
+      `create database ${dbName(inst.slug)} owner ${dbRole(inst.slug)}`]);
+    // Retirer le droit par défaut sur `public` : sans cela, tout rôle connecté
+    // à cette base pourrait y créer des objets.
+    run("docker", ["exec", PG_HOTE, "psql", "-U", "postgres", "-d", dbName(inst.slug), "-v", "ON_ERROR_STOP=1", "-c",
+      `revoke all on schema public from public; grant all on schema public to ${dbRole(inst.slug)}`]);
+
+    etape(7, `image ${IMAGE}`);
     // On ne reconstruit pas ici : l'image est commune à la flotte et se met à
     // jour par `update`. La construire à chaque création ferait diverger les
     // instances entre elles selon leur date de mise en service.
@@ -197,10 +213,10 @@ function cmdCreate() {
       if (!images) throw new Error(`image ${IMAGE} absente — la construire d'abord depuis ${SOURCE}`);
     }
 
-    etape(7, "démarrage du conteneur");
+    etape(8, "démarrage du conteneur");
     run("docker", dockerRunArgs(inst, { racine: RACINE_FLOTTE }));
 
-    etape(8, "enregistrement au registre");
+    etape(9, "enregistrement au registre");
     if (APPLY) ecrireRegistre([...registre, toRegistry(inst)]);
 
     dire(`\n${c.g}✓ instance ${inst.slug} ${APPLY ? "créée" : "simulée"}${c.n}`);

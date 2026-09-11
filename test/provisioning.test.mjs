@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   validateSlug, allocatePort, planCreate, renderEnv, renderNginx, dockerRunArgs,
   toRegistry, auditRegistry, motDePasseInitial, secret, SLUGS_RESERVES, PORT_BASE,
+  dbName, dbRole, RESEAU,
 } from "../lib/provisioning.js";
 
 const BASE = { slug: "cfa-lumiere", nom: "CFA Lumière", adminEmail: "direction@cfa-lumiere.fr", plan: "reseau" };
@@ -59,6 +60,7 @@ test("création : instance complète, secrets distincts, plafonds du plan", () =
   assert.equal(r.plafonds.apprenantsMax, 2000);
   // Deux secrets identiques signeraient un générateur cassé
   assert.notEqual(i.dataKey, i.sessionSecret);
+  assert.notEqual(i.dataKey, i.dbPassword);
   assert.ok(i.dataKey.length >= 32 && i.sessionSecret.length >= 32);
   assert.ok(i.adminPassword.length >= 12);
 });
@@ -101,7 +103,7 @@ test("le registre ne contient AUCUN secret", () => {
   const i = planCreate([], BASE, OPTS).instance;
   const publique = toRegistry(i);
   const serialise = JSON.stringify(publique);
-  for (const [champ, valeur] of [["dataKey", i.dataKey], ["sessionSecret", i.sessionSecret], ["adminPassword", i.adminPassword]]) {
+  for (const [champ, valeur] of [["dataKey", i.dataKey], ["sessionSecret", i.sessionSecret], ["adminPassword", i.adminPassword], ["dbPassword", i.dbPassword]]) {
     assert.equal(publique[champ], undefined, `${champ} ne doit pas entrer au registre`);
     assert.equal(serialise.includes(valeur), false, `la valeur de ${champ} ne doit apparaître nulle part`);
   }
@@ -119,7 +121,7 @@ test("rendu .env : secrets exploitables, avertissement sur la clé, licence port
   assert.match(env, /NE JAMAIS régénérer DATA_KEY/);
   // Une valeur avec un saut de ligne casserait le fichier : les secrets sont en
   // base64url précisément pour que cela ne puisse pas arriver.
-  for (const s of [i.dataKey, i.sessionSecret, i.adminPassword]) {
+  for (const s of [i.dataKey, i.sessionSecret, i.adminPassword, i.dbPassword]) {
     assert.equal(/[\n\r"'\\ ]/.test(s), false, `secret non sûr dans un .env : ${s}`);
   }
   // Sans échéance, la ligne est commentée et non vide — une valeur vide serait
@@ -182,4 +184,20 @@ test("mot de passe initial : épelable au téléphone, sans caractère ambigu", 
   }
   // Et les secrets machine, eux, sont sûrs dans un fichier et une URL
   assert.match(secret(32), /^[A-Za-z0-9_-]+$/);
+});
+
+test("isolation entre clients : une base et un rôle PAR organisme", () => {
+  // L'isolation n'est pas logique mais physique : une requête mal filtrée ne
+  // peut pas franchir une frontière qui n'existe pas au niveau SQL.
+  const i = planCreate([], BASE, OPTS).instance;
+  const env = renderEnv(i);
+  assert.match(env, new RegExp(`^DATABASE_URL=postgres://cm_cfa_lumiere:${i.dbPassword}@campus-pg:5432/cm_cfa_lumiere$`, "m"));
+  assert.equal(dbName("cfa-lumiere"), "cm_cfa_lumiere", "les tirets ne sont pas valides dans un identifiant SQL non cité");
+  assert.equal(dbRole("cfa-lumiere"), "cm_cfa_lumiere");
+  // Le mot de passe doit traverser une URL de connexion sans encodage : un « / »
+  // ou un « @ » y couperait la chaîne en deux.
+  assert.match(i.dbPassword, /^[A-Za-z0-9_-]+$/);
+  // Le conteneur rejoint le réseau de la flotte, sinon il ne voit pas la base.
+  const args = dockerRunArgs(i);
+  assert.equal(args[args.indexOf("--network") + 1], RESEAU);
 });
