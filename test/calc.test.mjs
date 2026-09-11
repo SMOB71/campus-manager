@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   marginOf, healthScore, schoolYearRange, extractPnlPostes,
-  buildOpeningTasks, buildOpeningBudget, OPENING_TEMPLATE, OPENING_LOTS,
+  buildOpeningTasks, buildOpeningBudget, OPENING_TEMPLATE, OPENING_LOTS, OPENING_FAMILIES,
 } from "../lib/calc.js";
 
 test("marginOf = CA - masse salariale - charges", () => {
@@ -63,6 +63,72 @@ test("buildOpeningTasks : dates à rebours de la rentrée", () => {
   assert.equal(m15.offset, Math.round(15 * 30.4)); // 456 j
   assert.ok(m15.dueDate < "2027-09-06");
   assert.equal(buildOpeningTasks("date-invalide").length, 0);
+});
+
+test("OPENING_FAMILIES est déduit du modèle, pas recopié", () => {
+  // Une liste parallèle finirait par diverger : le jour où une commande est ajoutée
+  // au modèle sans sa famille, le délai saisi ne s'appliquerait plus à rien.
+  const cmd = OPENING_TEMPLATE.filter((t) => t.family);
+  assert.equal(OPENING_FAMILIES.length, cmd.length);
+  assert.ok(cmd.every((t) => t.needM != null && t.m > t.needM), "toute commande a une date de livraison requise, antérieure à la commande");
+  assert.equal(new Set(OPENING_FAMILIES.map((f) => f.k)).size, OPENING_FAMILIES.length, "clefs uniques");
+  assert.ok(OPENING_FAMILIES.every((f) => f.defaultLeadWeeks > 0));
+});
+
+test("délai fournisseur réel : la commande remonte depuis la livraison requise", () => {
+  const fam = OPENING_FAMILIES.find((f) => f.k === "refraction");
+  const base = buildOpeningTasks("2027-09-06");
+  const lent = buildOpeningTasks("2027-09-06", { leadTimes: [{ family: "refraction", leadWeeks: 30, supplier: "Essilor" }] });
+  const rapide = buildOpeningTasks("2027-09-06", { leadTimes: [{ family: "refraction", leadWeeks: 6 }] });
+  const cmd = (ts) => ts.find((t) => t.title.startsWith("COMMANDE postes de réfraction"));
+  // 30 semaines > défaut du modèle → il faut commander PLUS TÔT ; 6 semaines → plus tard.
+  assert.ok(cmd(lent).dueDate < cmd(base).dueDate, "délai long avance la commande");
+  assert.ok(cmd(rapide).dueDate > cmd(base).dueDate, "délai court la retarde");
+  assert.ok(cmd(lent).title.includes("Essilor"), "le fournisseur est porté sur la tâche");
+  // Ancrage sur la livraison requise, pas sur le m du modèle : 30 sem. avant M−1.5.
+  assert.equal(cmd(lent).offset, Math.round((fam.needM + 30 / 4.345) * 30.4));
+  // Un délai absent ou nul ne doit rien déplacer : sinon une ligne à moitié saisie
+  // ferait silencieusement glisser une date critique.
+  assert.equal(cmd(buildOpeningTasks("2027-09-06", { leadTimes: [{ family: "refraction", supplier: "X" }] })).offset, cmd(base).offset);
+});
+
+test("seuil budgétaire : insère la validation AVANT la commande, au palier le plus exigeant", () => {
+  const cfg = {
+    thresholds: [{ label: "Réseau", minAmount: 20000, approver: "Dir. réseau", leadDays: 15 },
+                 { label: "DG", minAmount: 100000, approver: "DG", leadDays: 45 }],
+    leadTimes: [{ family: "refraction", leadWeeks: 20, amount: 145000 },
+                { family: "mobilier", leadWeeks: 10, amount: 38000 },
+                { family: "fournitures", leadWeeks: 2, amount: 900 }],
+  };
+  const ts = buildOpeningTasks("2027-09-06", cfg);
+  const val = ts.filter((t) => t.title.startsWith("Validation budgétaire"));
+  assert.equal(val.length, 2, "900 € ne franchit aucun seuil");
+  const dg = val.find((t) => t.title.includes("« DG »"));
+  assert.ok(dg, "145 000 € relève du palier DG, pas du palier Réseau");
+  assert.equal(dg.owner, "DG");
+  assert.equal(dg.lot, "finance");
+  assert.ok(dg.critical);
+  const cmd = ts.find((t) => t.title.startsWith("COMMANDE postes de réfraction"));
+  assert.ok(dg.dueDate < cmd.dueDate, "la validation précède la commande");
+  assert.equal(dg.offset - cmd.offset, Math.round((20 / 4.345 + 1.5 + 45 / 30.4) * 30.4) - cmd.offset);
+  // Sans montant, pas de validation : on ne fabrique pas un jalon sur une hypothèse.
+  assert.equal(buildOpeningTasks("2027-09-06", { thresholds: cfg.thresholds, leadTimes: [{ family: "refraction", leadWeeks: 20 }] })
+    .filter((t) => t.title.startsWith("Validation budgétaire")).length, 0);
+});
+
+test("jalons de convention réseau : ajoutés, datés, jamais substitués au modèle", () => {
+  const ts = buildOpeningTasks("2027-09-06", {
+    milestones: [{ title: "Validation du dossier par le comité réseau", lot: "gouv", m: 13, critical: true, owner: "Dir. réseau" },
+                 { title: "   ", m: 5 }],
+  });
+  assert.equal(ts.length, OPENING_TEMPLATE.length + 1, "le jalon vide est ignoré, le modèle reste entier");
+  const j = ts.find((t) => t.title === "Validation du dossier par le comité réseau");
+  assert.equal(j.offset, Math.round(13 * 30.4));
+  assert.equal(j.owner, "Dir. réseau");
+  assert.ok(j.critical);
+  // m = 0 est une valeur valide (jalon le jour de la rentrée), pas un « non renseigné ».
+  const j0 = buildOpeningTasks("2027-09-06", { milestones: [{ title: "Jour J", m: 0 }] }).find((t) => t.title === "Jour J");
+  assert.equal(j0.dueDate, "2027-09-06");
 });
 
 test("buildOpeningBudget : répartit le total par lot", () => {

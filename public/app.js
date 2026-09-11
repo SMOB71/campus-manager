@@ -3914,13 +3914,79 @@ function ouvBudgetHtml(o) {
     <div class="actions" style="margin-top:10px;"><button class="btn-ghost btn-sm" id="obg-add">+ Ligne</button><button class="btn-ghost btn-sm" id="obg-seed">Générer un budget type</button><button class="btn-primary btn-sm" id="obg-save">Enregistrer le budget</button><span id="obg-msg" class="status"></span></div>
     <p class="hint muted" style="margin-top:8px;">« Budget type » répartit le budget d'ouverture total par lot (travaux 40 %, marketing 18 %, RH 12 %…). % conso. = engagé / budgété ; dépassement signalé en rouge.</p>`;
 }
+// --- Onglet « Paramètres réseau » ---
+// Les trois choses qu'un modèle de rétroplanning ne peut pas deviner. Elles ne sont
+// pas décoratives : un délai fournisseur réel REMONTE la date de commande depuis la
+// date de livraison requise, et un montant au-dessus d'un seuil INSÈRE la validation
+// budgétaire qui doit la précéder.
+const opmMilestoneRow = (j = {}) => `<tr>
+  <td><input class="txt opm" data-f="title" value="${esc(j.title || "")}" placeholder="Ex. Validation du dossier par le comité réseau"></td>
+  <td><select class="txt opm" data-f="lot" style="width:150px;">${OUV_LOTS.map((l) => `<option value="${l.k}" ${j.lot === l.k ? "selected" : ""}>${l.l}</option>`).join("")}</select></td>
+  <td><input class="txt opm" data-f="m" type="number" step="0.5" style="width:80px;" value="${j.m ?? ""}" placeholder="12"></td>
+  <td><input class="txt opm" data-f="owner" style="width:140px;" value="${esc(j.owner || "")}" placeholder="Responsable"></td>
+  <td style="text-align:center;"><input class="opm" data-f="critical" type="checkbox" ${j.critical ? "checked" : ""}></td>
+  <td><button class="btn-ghost btn-sm opm-del" title="Supprimer">✕</button></td></tr>`;
+
+const opsThresholdRow = (s = {}) => `<tr>
+  <td><input class="txt ops" data-f="label" value="${esc(s.label || "")}" placeholder="Ex. Direction générale"></td>
+  <td><input class="txt ops" data-f="minAmount" type="number" step="1000" style="width:120px;" value="${s.minAmount ?? ""}" placeholder="100000"></td>
+  <td><input class="txt ops" data-f="approver" style="width:160px;" value="${esc(s.approver || "")}" placeholder="Qui valide"></td>
+  <td><input class="txt ops" data-f="leadDays" type="number" style="width:90px;" value="${s.leadDays ?? ""}" placeholder="45"></td>
+  <td><button class="btn-ghost btn-sm ops-del" title="Supprimer">✕</button></td></tr>`;
+
+const oplLeadRow = (fams, l = {}) => `<tr>
+  <td><select class="txt opl" data-f="family" style="width:230px;"><option value="">— famille —</option>${fams.map((f) => `<option value="${f.k}" ${l.family === f.k ? "selected" : ""}>${esc(f.label)}</option>`).join("")}</select></td>
+  <td><input class="txt opl" data-f="supplier" style="width:150px;" value="${esc(l.supplier || "")}" placeholder="Fournisseur"></td>
+  <td><input class="txt opl" data-f="leadWeeks" type="number" step="1" style="width:90px;" value="${l.leadWeeks ?? ""}" placeholder="20"></td>
+  <td><input class="txt opl" data-f="amount" type="number" step="1000" style="width:110px;" value="${l.amount ?? ""}" placeholder="145000"></td>
+  <td class="muted opl-def" style="font-size:12px;">${l.family ? (fams.find((f) => f.k === l.family)?.defaultLeadWeeks ?? "—") + " sem." : "—"}</td>
+  <td><button class="btn-ghost btn-sm opl-del" title="Supprimer">✕</button></td></tr>`;
+
+function ouvParamsHtml(cfg, fams) {
+  return `<p class="hint muted" style="margin-bottom:12px;">Ces réglages valent pour <strong>toutes les ouvertures du réseau</strong>. Ils ne s'appliquent pas tout seuls : enregistre, puis clique « Appliquer à ce rétroplanning » — les tâches déjà renseignées (responsable, étapes, statut) sont conservées.</p>
+
+  <div class="ouv-lot"><div class="ouv-lot-head"><span class="ttl">Jalons de convention de réseau</span><span class="muted">ajoutés au rétroplanning</span></div>
+    <p class="hint muted" style="margin:6px 0;">Les étapes propres à ta convention ISO que le modèle générique ignore. « Mois avant » = nombre de mois avant la rentrée.</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Jalon</th><th>Lot</th><th>Mois avant</th><th>Responsable</th><th>Critique</th><th></th></tr></thead>
+      <tbody id="opm-body">${(cfg.milestones.length ? cfg.milestones : [{}]).map(opmMilestoneRow).join("")}</tbody></table></div>
+    <div class="actions" style="margin-top:8px;"><button class="btn-ghost btn-sm" id="opm-add">+ Jalon</button></div></div>
+
+  <div class="ouv-lot" style="margin-top:16px;"><div class="ouv-lot-head"><span class="ttl">Seuils de validation budgétaire</span><span class="muted">insèrent une tâche avant chaque commande concernée</span></div>
+    <p class="hint muted" style="margin:6px 0;">Un engagement au-dessus d'un seuil génère la validation qui doit le précéder, datée du <strong>délai d'obtention</strong> avant la commande. C'est le seuil le plus exigeant franchi qui s'applique.</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Palier</th><th>À partir de (€)</th><th>Approbateur</th><th>Délai (jours)</th><th></th></tr></thead>
+      <tbody id="ops-body">${(cfg.thresholds.length ? cfg.thresholds : [{}]).map(opsThresholdRow).join("")}</tbody></table></div>
+    <div class="actions" style="margin-top:8px;"><button class="btn-ghost btn-sm" id="ops-add">+ Palier</button></div></div>
+
+  <div class="ouv-lot" style="margin-top:16px;"><div class="ouv-lot-head"><span class="ttl">Délais fournisseurs & engagements</span><span class="muted">déplacent la date de commande</span></div>
+    <p class="hint muted" style="margin:6px 0;">Le modèle suppose un délai par défaut (dernière colonne). Saisis le délai <strong>réel</strong> de ton fournisseur : la date de commande est recalculée à rebours de la date de livraison requise. Le montant sert à déclencher le bon palier de validation.</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Famille d'équipement</th><th>Fournisseur</th><th>Délai réel (sem.)</th><th>Montant (€)</th><th>Défaut modèle</th><th></th></tr></thead>
+      <tbody id="opl-body">${(cfg.leadTimes.length ? cfg.leadTimes : [{}]).map((l) => oplLeadRow(fams, l)).join("")}</tbody></table></div>
+    <div class="actions" style="margin-top:8px;"><button class="btn-ghost btn-sm" id="opl-add">+ Engagement</button></div></div>
+
+  <div class="actions" style="margin-top:16px;">
+    <button class="btn-primary btn-sm" id="opp-save">Enregistrer les paramètres</button>
+    <button class="btn-ghost btn-sm" id="opp-apply">Appliquer à ce rétroplanning</button>
+    <span id="opp-msg" class="status"></span></div>`;
+}
+
 let ouvView = "lot";
+let ouvFamilies = null;
 async function openOuvertureDetail(oid) {
   const o = await api.get(`/api/openings/${oid}`);
   if (!o || o.error) return;
   // Les comités ne sont chargés que pour leur onglet : la modale est reconstruite à
   // chaque mutation, inutile de payer la requête sur les trois autres vues.
   const committees = ouvView === "copil" ? (await api.get(`/api/committees?scope=opening&scopeId=${oid}`)) || [] : [];
+  let opCfg = null;
+  if (ouvView === "params") {
+    opCfg = (await api.get("/api/opening-settings")) || { milestones: [], thresholds: [], leadTimes: [] };
+    // Les familles sont déduites du modèle côté serveur : on les charge une fois par
+    // session plutôt que de les recopier ici, où elles dériveraient au premier ajout.
+    if (!ouvFamilies) ouvFamilies = ((await api.get("/api/openings/meta")) || {}).families || [];
+  }
   const p = ouvProgress(o);
   const byLot = {};
   (o.tasks || []).forEach((t) => { (byLot[t.lot] = byLot[t.lot] || []).push(t); });
@@ -3939,7 +4005,7 @@ async function openOuvertureDetail(oid) {
       ${fkpi(o.budget != null ? eur(o.budget) : "—", "Budget d'ouverture")}
     </div>
     <div class="row" style="margin:10px 0;gap:8px;align-items:center;">
-      <div class="chips" id="ouv-mode"><button class="chip ${ouvView === "lot" ? "active" : ""}" data-m="lot">Par lot</button><button class="chip ${ouvView === "frise" ? "active" : ""}" data-m="frise">Frise</button><button class="chip ${ouvView === "budget" ? "active" : ""}" data-m="budget">Budget</button><button class="chip ${ouvView === "copil" ? "active" : ""}" data-m="copil">Comité</button></div>
+      <div class="chips" id="ouv-mode"><button class="chip ${ouvView === "lot" ? "active" : ""}" data-m="lot">Par lot</button><button class="chip ${ouvView === "frise" ? "active" : ""}" data-m="frise">Frise</button><button class="chip ${ouvView === "budget" ? "active" : ""}" data-m="budget">Budget</button><button class="chip ${ouvView === "copil" ? "active" : ""}" data-m="copil">Comité</button><button class="chip ${ouvView === "params" ? "active" : ""}" data-m="params">Paramètres réseau</button></div>
       <button class="btn-ghost btn-sm" id="ouv-addtask">+ Tâche</button>
       <button class="btn-ghost btn-sm" id="ouv-reseed">Régénérer le type</button>
       <button class="btn-ghost btn-sm" id="ouv-xlsx">Excel</button>
@@ -3948,7 +4014,7 @@ async function openOuvertureDetail(oid) {
       <button class="btn-ghost btn-sm" id="ouv-edit">Modifier</button>
       <button class="btn-ghost btn-sm btn-danger" id="ouv-del">Supprimer</button>
     </div>
-    <div id="ouv-plan">${ouvView === "budget" ? ouvBudgetHtml(o) : ouvView === "copil" ? ouvCopilHtml(committees, o) : ouvView === "frise" ? ouvFriseHtml(frise) : (OUV_LOTS.map(lotSection).join("") || '<p class="muted">Aucune tâche. Ajoute-en ou régénère le rétroplanning type.</p>')}</div>`;
+    <div id="ouv-plan">${ouvView === "params" ? ouvParamsHtml(opCfg, ouvFamilies || []) : ouvView === "budget" ? ouvBudgetHtml(o) : ouvView === "copil" ? ouvCopilHtml(committees, o) : ouvView === "frise" ? ouvFriseHtml(frise) : (OUV_LOTS.map(lotSection).join("") || '<p class="muted">Aucune tâche. Ajoute-en ou régénère le rétroplanning type.</p>')}</div>`;
   openModal(`${o.name}${o.city ? " · " + o.city : ""}`, body);
   $("#ouv-edit").onclick = () => { closeModals(); openOuvertureForm(o); };
   $("#ouv-del").onclick = async () => { if (!confirm("Supprimer ce projet d'ouverture ?")) return; await api.del(`/api/openings/${oid}`); closeModals(); renderOuvertures(); };
@@ -3966,6 +4032,49 @@ async function openOuvertureDetail(oid) {
       const lines = $$("#obg-body tr").map((tr) => { const l = {}; $$(".obg", tr).forEach((i) => (l[i.dataset.f] = i.value)); return l; }).filter((l) => l.label || l.planned || l.committed || l.spent);
       await api.patch(`/api/openings/${oid}/budget`, { lines });
       closeModals(); openOuvertureDetail(oid);
+    });
+  }
+  if (ouvView === "params") {
+    const fams = ouvFamilies || [];
+    // Lire les lignes depuis le DOM plutôt que de tenir un état parallèle : c'est ce
+    // que fait déjà l'onglet Budget, et ça évite qu'un état et un tableau divergent.
+    const lire = (sel, cls) => $$(`${sel} tr`).map((tr) => {
+      const l = {};
+      $$(`.${cls}`, tr).forEach((i) => (l[i.dataset.f] = i.type === "checkbox" ? i.checked : i.value));
+      return l;
+    });
+    const collecte = () => ({
+      milestones: lire("#opm-body", "opm").filter((j) => (j.title || "").trim()),
+      thresholds: lire("#ops-body", "ops").filter((s2) => (s2.label || "").trim() || s2.minAmount),
+      leadTimes: lire("#opl-body", "opl").filter((l) => l.family),
+    });
+    $("#opm-add")?.addEventListener("click", () => $("#opm-body").insertAdjacentHTML("beforeend", opmMilestoneRow()));
+    $("#ops-add")?.addEventListener("click", () => $("#ops-body").insertAdjacentHTML("beforeend", opsThresholdRow()));
+    $("#opl-add")?.addEventListener("click", () => $("#opl-body").insertAdjacentHTML("beforeend", oplLeadRow(fams)));
+    $("#ouv-plan")?.addEventListener("click", (e) => {
+      const b = e.target.closest(".opm-del, .ops-del, .opl-del");
+      if (b) { e.preventDefault(); b.closest("tr").remove(); }
+    });
+    // Le délai par défaut du modèle n'a de sens qu'une fois la famille choisie : on
+    // l'affiche au changement, sinon l'utilisateur corrige un repère invisible.
+    $("#opl-body")?.addEventListener("change", (e) => {
+      const sel = e.target.closest('select.opl[data-f="family"]'); if (!sel) return;
+      const f = fams.find((x) => x.k === sel.value);
+      const cell = sel.closest("tr").querySelector(".opl-def");
+      if (cell) cell.textContent = f ? `${f.defaultLeadWeeks} sem.` : "—";
+    });
+    $("#opp-save")?.addEventListener("click", async () => {
+      const r = await api.put("/api/opening-settings", collecte());
+      $("#opp-msg").textContent = r?.error ? r.error : `Enregistré ✓ ${r.milestones.length} jalons, ${r.thresholds.length} paliers, ${r.leadTimes.length} engagements`;
+    });
+    $("#opp-apply")?.addEventListener("click", async () => {
+      if (!confirm("Appliquer les paramètres réseau à ce rétroplanning ?\n\nLes tâches déjà renseignées (responsable, étapes, commentaires, statut) sont conservées ; le reste est régénéré aux nouvelles dates.")) return;
+      const saved = await api.put("/api/opening-settings", collecte());
+      if (saved?.error) { $("#opp-msg").textContent = saved.error; return; }
+      const r = await api.post(`/api/openings/${oid}/apply-settings`, {});
+      if (r?.error) { $("#opp-msg").textContent = r.error; return; }
+      alert(`Rétroplanning mis à jour ✓\n${r.kept} tâche(s) conservée(s), ${r.rebuilt} régénérée(s).`);
+      ouvView = "lot"; closeModals(); openOuvertureDetail(oid);
     });
   }
   $$(".task-cycle").forEach((b) => b.addEventListener("click", async () => {

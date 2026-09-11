@@ -175,3 +175,27 @@ test("checklist : l'avancement se dérive des étapes et reprend la main sans el
   store.setOpeningTasks(o.id, store.getOpening(o.id).tasks);
   assert.equal(get().steps.length, 1);
 });
+
+test("paramètres d'ouverture réseau : normalisation, zéro préservé, lignes inutiles écartées", () => {
+  const s = store.setOpeningSettings({
+    milestones: [{ title: "  Comité réseau  ", lot: "gouv", m: 0, critical: true }, { title: "   " }],
+    thresholds: [{ label: "DG", minAmount: 100000, approver: "DG", leadDays: 0 }],
+    leadTimes: [{ family: "refraction", leadWeeks: 30, amount: 145000 }, { family: "", supplier: "Orphelin" }],
+  });
+  assert.equal(s.milestones.length, 1, "un jalon sans titre ne sert à rien");
+  assert.equal(s.milestones[0].title, "Comité réseau");
+  // m: 0 et leadDays: 0 sont des valeurs VALIDES (jalon le jour J, validation immédiate).
+  // `Number(v) || null` les aurait effacées en « non renseigné ».
+  assert.equal(s.milestones[0].m, 0);
+  assert.equal(s.thresholds[0].leadDays, 0);
+  // Une ligne sans famille ne s'applique à aucune commande : la garder laisserait
+  // croire qu'un délai fournisseur est pris en compte alors qu'il est ignoré.
+  assert.equal(s.leadTimes.length, 1);
+  assert.ok(s.milestones[0].id && s.leadTimes[0].id);
+
+  // Patch partiel : ce qu'on ne passe pas n'est pas effacé.
+  const s2 = store.setOpeningSettings({ thresholds: [] });
+  assert.equal(s2.milestones.length, 1);
+  assert.equal(s2.thresholds.length, 0);
+  assert.equal(store.getOpeningSettings().leadTimes.length, 1);
+});

@@ -43,7 +43,7 @@ import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.j
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
 import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
-import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
+import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
 import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
 import { testConnection as sfTestConnection, fetchCandidates as sfFetchCandidates } from "./lib/salesforce.js";
@@ -2047,13 +2047,42 @@ app.delete("/api/scenarios/:id", requireAuth, requireAdmin, (req, res) => {
 });
 
 // ===== Ouvertures de campus (rétroplanning) — modèle/logique dans lib/calc.js =====
-app.get("/api/openings/meta", requireAuth, (req, res) => res.json({ lots: OPENING_LOTS }));
+app.get("/api/openings/meta", requireAuth, (req, res) => res.json({ lots: OPENING_LOTS, families: OPENING_FAMILIES }));
+
+// Paramètres d'ouverture au niveau RÉSEAU : jalons de convention, seuils de validation
+// budgétaire, délais fournisseurs réels. Lecture ouverte aux authentifiés (le front en a
+// besoin pour afficher l'onglet), écriture réservée aux admins — ces valeurs déplacent
+// les dates de TOUS les rétroplannings.
+app.get("/api/opening-settings", requireAuth, (req, res) => res.json(store.getOpeningSettings()));
+app.put("/api/opening-settings", requireAuth, requireAdmin, (req, res) => {
+  const s = store.setOpeningSettings(req.body || {});
+  logAudit(req, "update", "opening-settings", `${s.milestones.length} jalons, ${s.thresholds.length} seuils, ${s.leadTimes.length} délais fournisseurs`);
+  res.json(s);
+});
+// Appliquer les paramètres à un rétroplanning existant SANS perdre la saisie humaine :
+// on recalcule le modèle, on garde les tâches déjà renseignées (responsable, étapes,
+// commentaires, statut) et on n'ajoute que ce qui manque. Un re-seed brut effacerait
+// des semaines de travail — c'est l'erreur qu'on ne veut pas offrir en un clic.
+app.post("/api/openings/:id/apply-settings", requireAuth, requireAdmin, (req, res) => {
+  const o = store.getOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: "introuvable" });
+  if (!o.targetDate) return res.status(400).json({ error: "renseigne d'abord la date de rentrée" });
+  const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings());
+  const saisie = (t) => t.owner || t.accountable || t.committeeId || t.notes || t.status !== "todo"
+    || (t.steps || []).length || (t.comments || []).length || (t.outputs || []).length;
+  const gardees = (o.tasks || []).filter(saisie);
+  const vues = new Set(gardees.map((t) => t.title));
+  const tasks = [...gardees, ...seeded.filter((t) => !vues.has(t.title))];
+  store.setOpeningTasks(o.id, tasks);
+  logAudit(req, "update", "opening", `${o.name} — paramètres réseau appliqués (${gardees.length} tâches conservées, ${tasks.length - gardees.length} régénérées)`);
+  res.json({ ...store.getOpening(o.id), kept: gardees.length, rebuilt: tasks.length - gardees.length });
+});
 app.get("/api/openings", requireAuth, requireAdmin, (req, res) => res.json(store.listOpenings()));
 app.get("/api/openings/:id", requireAuth, requireAdmin, (req, res) => { const o = store.getOpening(req.params.id); if (!o) return res.status(404).json({ error: "introuvable" }); res.json(o); });
 app.post("/api/openings", requireAuth, requireAdmin, (req, res) => {
   if (!req.body?.name || !String(req.body.name).trim()) return res.status(400).json({ error: "nom requis" });
   const o = store.addOpening(req.body);
-  if (req.body.seed !== false && o.targetDate) store.setOpeningTasks(o.id, buildOpeningTasks(o.targetDate));
+  if (req.body.seed !== false && o.targetDate) store.setOpeningTasks(o.id, buildOpeningTasks(o.targetDate, store.getOpeningSettings()));
   logAudit(req, "create", "opening", o.name);
   res.json(store.getOpening(o.id));
 });
@@ -2096,7 +2125,7 @@ app.post("/api/openings/:id/seed", requireAuth, requireAdmin, (req, res) => {
   if (!o) return res.status(404).json({ error: "introuvable" });
   if (!o.targetDate) return res.status(400).json({ error: "renseigne d'abord la date de rentrée" });
   const merge = req.body?.merge === true;
-  const seeded = buildOpeningTasks(o.targetDate);
+  const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings());
   store.setOpeningTasks(o.id, merge ? [...(o.tasks || []), ...seeded] : seeded);
   logAudit(req, "seed", "opening", `${o.name} — rétroplanning type`);
   res.json(store.getOpening(o.id));
