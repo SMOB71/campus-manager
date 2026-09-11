@@ -4033,7 +4033,7 @@ function ouvCopilHtml(committees, o) {
               <button class="btn-ghost btn-sm cp-addses" data-cid="${c.id}">+ Séance</button></span>
       </div>
       <div style="padding:0 12px 10px;">
-        <p class="muted" style="margin:6px 0;">${(c.members || []).length ? (c.members || []).map((m) => `${esc(m.name)}${m.role ? ` <span class="muted">(${esc(m.role)})</span>` : ""}`).join(" · ") : "Aucun membre déclaré."}</p>
+        <p class="muted" style="margin:6px 0;">${(c.members || []).length ? (c.members || []).map((m) => m.name ? `${esc(m.name)}${m.role ? ` <span class="muted">(${esc(m.role)})</span>` : ""}${m.userId ? " ✓" : ""}` : `<i>${esc(m.role)} — à pourvoir</i>`).join(" · ") : "Aucun membre déclaré."}</p>
         ${late.length ? `<p class="neg" style="margin:6px 0;">${late.length} action(s) du comité en retard.</p>` : ""}
         <div class="list">${sessions.length ? sessions.map((s) => cpSessionRow(c, s)).join("") : '<p class="muted">Aucune séance.</p>'}</div>
         ${open.length ? `<p class="field-label" style="margin-top:10px;">Décisions</p><ul style="margin:6px 0 0 18px;padding:0;font-size:13.5px;">${open.map((r) => `<li>${esc(r.text)}${r.owner ? ` — <span class="muted">${esc(r.owner)}</span>` : ""}${r.dueDate ? ` <span class="muted">(${esc(r.dueDate)})</span>` : ""}</li>`).join("")}</ul>` : ""}
@@ -4042,17 +4042,27 @@ function ouvCopilHtml(committees, o) {
   }).join("") + add;
 }
 
-function openCommitteeForm(oid, c) {
+async function openCommitteeForm(oid, c) {
   const e = c || {};
   const members = (e.members || []);
-  const memberRow = (m = {}) => `<tr><td><input class="txt cpm" data-f="name" value="${esc(m.name || "")}" placeholder="Nom"></td><td><input class="txt cpm" data-f="role" value="${esc(m.role || "")}" placeholder="Rôle"></td><td><input class="txt cpm" data-f="email" value="${esc(m.email || "")}" placeholder="Email"></td><td><button class="btn-ghost btn-sm cpm-del">×</button></td></tr>`;
+  // Les comptes de l'app, pour rattacher un membre qui en a un : ses actions
+  // remontent alors chez lui. Les autres restent de simples participants nommés —
+  // on ne force personne à créer un compte pour siéger à un comité.
+  const users = await api.get("/api/users").catch(() => []);
+  const memberRow = (m = {}) => `<tr>
+    <td><input class="txt cpm" data-f="name" value="${esc(m.name || "")}" placeholder="Nom"></td>
+    <td><input class="txt cpm" data-f="role" value="${esc(m.role || "")}" placeholder="Rôle"></td>
+    <td><input class="txt cpm" data-f="email" value="${esc(m.email || "")}" placeholder="Email"></td>
+    <td><select class="txt cpm cpm-user" data-f="userId"><option value="">— sans compte —</option>${(Array.isArray(users) ? users : []).map((u) => `<option value="${u.id}" ${m.userId === u.id ? "selected" : ""}>${esc(u.name || u.email)}</option>`).join("")}</select></td>
+    <td><button class="btn-ghost btn-sm cpm-del">×</button></td></tr>`;
   openModal(c ? "Modifier le comité" : "Nouveau comité de pilotage", `
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
       <div><label class="field-label">Nom *</label><input class="txt cpf" data-f="name" value="${esc(e.name || "Comité de pilotage")}"></div>
       <div><label class="field-label">Cadence</label><input class="txt cpf" data-f="cadence" value="${esc(e.cadence || "")}" placeholder="mensuel, bimensuel…"></div>
     </div>
     <p class="field-label" style="margin-top:12px;">Membres</p>
-    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Nom</th><th>Rôle</th><th>Email</th><th></th></tr></thead><tbody id="cpm-body">${members.map(memberRow).join("") || memberRow()}</tbody></table></div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Nom</th><th>Rôle</th><th>Email</th><th>Compte</th><th></th></tr></thead><tbody id="cpm-body">${members.map(memberRow).join("") || memberRow()}</tbody></table></div>
+    <p class="hint muted">Un siège peut être créé sans nom : le rôle suffit tant que la personne n'est pas recrutée. Rattacher un compte permet au membre de retrouver ses actions dans l'application.</p>
     <button class="btn-ghost btn-sm" id="cpm-add" style="margin-top:6px;">+ Membre</button>
     <div class="actions" style="margin-top:14px;">${c ? `<button class="btn-ghost btn-sm btn-danger" id="cp-del">Supprimer</button>` : ""}<button class="btn-primary" id="cp-save">Enregistrer</button></div>`);
   $("#cpm-add").onclick = () => $("#cpm-body").insertAdjacentHTML("beforeend", memberRow());
@@ -4060,7 +4070,10 @@ function openCommitteeForm(oid, c) {
   $("#cp-save").onclick = async () => {
     const body = {}; $$(".cpf").forEach((i) => (body[i.dataset.f] = i.value));
     if (!String(body.name || "").trim()) return;
-    body.members = $$("#cpm-body tr").map((tr) => { const m = {}; $$(".cpm", tr).forEach((i) => (m[i.dataset.f] = i.value)); return m; }).filter((m) => m.name.trim());
+    // On garde un siège dès qu'il porte un nom OU un rôle : « Directeur de campus
+    // (à recruter) » est une information utile, pas une ligne vide.
+    body.members = $$("#cpm-body tr").map((tr) => { const m = {}; $$(".cpm", tr).forEach((i) => (m[i.dataset.f] = i.value)); return m; })
+      .filter((m) => (m.name || "").trim() || (m.role || "").trim());
     if (c) await api.patch(`/api/committees/${c.id}`, body);
     else await api.post("/api/committees", { ...body, scope: "opening", scopeId: oid });
     ouvView = "copil"; closeModals(); openOuvertureDetail(oid);
