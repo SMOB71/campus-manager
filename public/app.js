@@ -3782,10 +3782,19 @@ async function renderJournal() {
 
 // ---------- Vue : Ouvertures de campus (rétroplanning) ----------
 const OUV_LOTS = [
-  { k: "etude", l: "Étude & décision" }, { k: "immo", l: "Locaux & immobilier" },
-  { k: "travaux", l: "Aménagement & travaux" }, { k: "admin", l: "Administratif & juridique" },
-  { k: "offre", l: "Offre & pédagogie" }, { k: "rh", l: "Recrutement équipe" },
-  { k: "marketing", l: "Marketing & admissions" }, { k: "lancement", l: "Lancement & rentrée" },
+  // Doit rester aligne sur OPENING_LOTS (lib/calc.js) : une tache dont le lot est
+  // absent d'ici n'apparait dans AUCUNE section de la vue « Par lot ».
+  { k: "gouv", l: "Gouvernance du projet" },
+  { k: "etude", l: "Étude & décision" },
+  { k: "immo", l: "Locaux & immobilier" },
+  { k: "travaux", l: "Aménagement & travaux" },
+  { k: "admin", l: "Administratif & juridique" },
+  { k: "offre", l: "Offre & pédagogie" },
+  { k: "rh", l: "Recrutement & RH" },
+  { k: "finance", l: "Finance & gestion" },
+  { k: "si", l: "Systèmes d'information" },
+  { k: "marketing", l: "Marketing & admissions" },
+  { k: "lancement", l: "Lancement & rentrée" },
 ];
 const OUV_STATUS = { etude: "Étude", preparation: "Préparation", travaux: "Travaux", lancement: "Lancement", ouvert: "Ouvert", abandonne: "Abandonné" };
 const TASK_STATUS = { todo: "À faire", doing: "En cours", done: "Fait", blocked: "Bloqué" };
