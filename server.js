@@ -28,6 +28,8 @@ import * as suivi from "./lib/suivi.js";
 import * as qualite from "./lib/qualite.js";
 import * as jury from "./lib/jury.js";
 import { risqueDecrochage, tauxAbsenteismeCorrige, classerPromotion } from "./lib/risque.js";
+import * as apikeys from "./lib/apikeys.js";
+import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
 import { buildSifa, buildBpf, toCsv, SIFA_COLUMNS, BPF_FINANCEURS, sifaObservationDate } from "./lib/declarations.js";
@@ -207,6 +209,10 @@ app.use((req, res, next) => {
   // Le portail s'authentifie par en-tête Authorization (jamais par cookie) : une
   // page tierce ne peut pas positionner cet en-tête, donc pas de risque CSRF.
   if (req.path.startsWith("/api/portal/")) return next();
+  // Même raisonnement pour l'API publique : la clé EST l'authentification, et
+  // aucun cookie n'est lu. Exiger un jeton anti-CSRF d'un programme tiers
+  // rendrait l'API inutilisable sans rien protéger de plus.
+  if (req.path.startsWith("/v1/")) return next();
   if (!csrfValid(req)) return res.status(403).json({ error: "Requête refusée (jeton de sécurité invalide). Recharge la page." });
   next();
 });
@@ -4267,6 +4273,235 @@ app.get("/api/risque/decrochage", requireAuth, (req, res) => {
     aTraiter: classes.filter((x) => x.risque.aTraiter).length,
     items: classes,
   });
+});
+
+// ===== API publique /v1 =====
+// Distincte de /api, qui est l'API privée du navigateur : pas le même public,
+// pas la même authentification, pas les mêmes garanties de stabilité.
+const apiLimiter = makeRateLimiter({ max: 120, windowMs: 60000 });
+
+// Gestion des clés (depuis l'interface, donc en session)
+app.get("/api/apikeys", requireAuth, requireAdmin, (req, res) => {
+  res.json(store.listApiKeys().map(apikeys.publique));
+});
+app.post("/api/apikeys", requireAuth, requireAdmin, (req, res) => {
+  const v = apikeys.validateCreation(req.body || {}, { campusIds: allowedCampusIds(req) });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const { cle, identifiant, hash } = apikeys.generate();
+  const saved = store.addApiKey({ ...v.demande, identifiant, hash, createdBy: req.user.name || req.user.email });
+  logAudit(req, "create", "apikey", `${v.demande.nom} (${apikeys.PREFIXE}${identifiant}…) — ${v.demande.scopes.join(", ")}`);
+  // La clé en clair n'est renvoyée QU'ICI, et ne sera jamais relisible.
+  res.json({ ...apikeys.publique(saved), cle, avertissement: "Copiez cette clé maintenant : elle ne sera plus jamais affichée." });
+});
+app.delete("/api/apikeys/:id", requireAuth, requireAdmin, (req, res) => {
+  const k = store.revokeApiKey(req.params.id);
+  if (!k) return res.status(404).json({ error: "clé introuvable ou déjà révoquée" });
+  logAudit(req, "delete", "apikey", `révocation ${k.nom} (${apikeys.PREFIXE}${k.identifiant}…)`);
+  res.json({ ok: true });
+});
+app.get("/api/apikeys/scopes", requireAuth, requireAdmin, (req, res) => res.json(apikeys.SCOPES));
+
+// Authentification machine. Aucun cookie, aucun CSRF : la clé EST
+// l'authentification, et un site tiers ne peut pas forger un en-tête.
+function apiKeyAuth(scope) {
+  return (req, res, next) => {
+    const cle = apikeys.depuisEntete(req.get("authorization"));
+    if (!cle) return res.status(401).json({ error: "clé d'API requise — en-tête Authorization: Bearer cm_live_…" });
+
+    const limite = apiLimiter.check(cle.slice(0, 24));
+    if (!limite.allowed) {
+      res.setHeader("Retry-After", "60");
+      return res.status(429).json({ error: "trop d'appels — réessayer dans une minute" });
+    }
+    const enregistree = store.findApiKeyByHash(apikeys.hash(cle));
+    const jour = new Date().toISOString().slice(0, 10);
+    const v = apikeys.autorise(enregistree, {
+      scope, campusId: req.query.campusId || req.body?.campusId || null,
+      aujourdhui: jour, verifierCampus: !!scope,
+    });
+    if (!v.ok) {
+      // 401 quand la clé elle-même ne vaut rien, 403 quand elle vaut mais ne
+      // suffit pas : la distinction dit à l'intégrateur s'il doit changer de
+      // clé ou en demander une autre portée.
+      const code = ["cle_inconnue", "cle_inactive"].includes(v.code) ? 401 : 403;
+      return res.status(code).json({ error: v.error, code: v.code });
+    }
+    store.touchApiKey(enregistree.id, jour);
+    req.apiKey = enregistree;
+    // Le périmètre de la clé remplace celui d'un utilisateur : tout le code de
+    // cloisonnement existant continue de s'appliquer sans modification.
+    req.user = { role: enregistree.campusIds ? "directeur" : "admin", campusIds: enregistree.campusIds, name: `clé ${enregistree.nom}` };
+    next();
+  };
+}
+
+// Handlers de l'API publique, indexés par l'identifiant de la table ENDPOINTS.
+// Une entrée sans handler ferait échouer le montage au démarrage — la doc ne
+// peut donc pas décrire une route qui n'existe pas.
+const API_HANDLERS = {
+  me: (req, res) => res.json({
+    nom: req.apiKey.nom, apercu: `${apikeys.PREFIXE}${req.apiKey.identifiant}…`,
+    scopes: req.apiKey.scopes, campusIds: req.apiKey.campusIds,
+    expiresAt: req.apiKey.expiresAt || null, version: API_VERSION,
+  }),
+  "learners.list": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    res.json(store.listLearners({ campusId: req.query.campusId, q: req.query.q }));
+  },
+  "learners.get": (req, res) => {
+    const l = store.getLearner(req.params.id);
+    if (!l) return res.status(404).json({ error: "apprenant introuvable" });
+    if (!assertCampus(req, res, l.campusId)) return;
+    res.json({ ...l, enrollments: store.listEnrollments({ learnerId: l.id }), contracts: store.listContracts({ learnerId: l.id }) });
+  },
+  "learners.create": (req, res) => {
+    if (!requireCampus(req, res, req.body?.campusId)) return;
+    const { nom, prenom } = req.body || {};
+    if (!String(nom || "").trim() || !String(prenom || "").trim()) return res.status(400).json({ error: "nom et prénom requis" });
+    if (quotaBloque(req, res, "apprenants")) return;
+    const l = store.addLearner(req.body);
+    logAudit(req, "create", "apprenant", `${l.prenom} ${l.nom} (API)`);
+    res.json(l);
+  },
+  "enrollments.list": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    const items = store.listEnrollments({ campusId: req.query.campusId });
+    res.json(req.query.schoolYear ? items.filter((e) => e.schoolYear === req.query.schoolYear) : items);
+  },
+  "attendance.list": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    // status verrouillé à « locked » : une feuille ouverte est modifiable et ne
+    // prouve rien. L'API publique n'expose que ce qui est opposable.
+    const sheets = attendancestore.listSheets({
+      campusId: req.query.campusId, classId: req.query.classId,
+      from: req.query.from, to: req.query.to, status: "locked",
+    });
+    res.json(sheets.map((s) => ({ id: s.id, date: s.date, start: s.start, end: s.end, classId: s.classId, hash: s.hash, seq: s.seq, stats: sheetStats(s) })));
+  },
+  "attendance.verify": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    res.json(attendancestore.verifyCampusChain(req.query.campusId));
+  },
+  "contracts.list": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    res.json(store.listContracts({ campusId: req.query.campusId, status: req.query.status }));
+  },
+  "billing.fundings": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    res.json(store.listFundings({ campusId: req.query.campusId }));
+  },
+  "billing.invoices": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    const items = store.listInvoices({ campusId: req.query.campusId });
+    res.json(req.query.status ? items.filter((i) => i.status === req.query.status) : items);
+  },
+  "declarations.sifa": (req, res) => {
+    if (!requireCampus(req, res, req.query.campusId)) return;
+    const campusId = req.query.campusId;
+    const d = buildSifa({
+      annee: Number(req.query.annee) || new Date().getFullYear(),
+      learners: store.listLearners({ campusId }), enrollments: store.listEnrollments({ campusId }),
+      contracts: store.listContracts({ campusId }), classes: store.listClasses({ campusId }),
+      curricula: store.listCurricula(), companies: store.listPartners(campusId),
+    });
+    res.json(d);
+  },
+};
+
+for (const e of API_ENDPOINTS) {
+  const handler = API_HANDLERS[e.id];
+  // Fermant au démarrage : mieux vaut ne pas démarrer que servir une API dont
+  // la documentation décrit des routes absentes.
+  if (!handler) throw new Error(`API publique : aucun handler pour « ${e.id} » (${e.method.toUpperCase()} ${e.path})`);
+  app[e.method](e.path, apiKeyAuth(e.scope), handler);
+}
+
+// Spécification et documentation : publiques, sans clé. Une documentation
+// derrière authentification n'est pas une documentation.
+app.get("/v1/openapi.json", (req, res) => {
+  res.json(buildOpenApi({ serveur: `${req.protocol}://${req.get("host")}`, scopes: apikeys.SCOPES }));
+});
+
+app.get("/v1/docs", (req, res) => {
+  const spec = buildOpenApi({ serveur: `${req.protocol}://${req.get("host")}`, scopes: apikeys.SCOPES });
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const groupes = new Map();
+  for (const e of API_ENDPOINTS) {
+    const tag = e.path.split("/")[2];
+    if (!groupes.has(tag)) groupes.set(tag, []);
+    groupes.get(tag).push(e);
+  }
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>API Campus Manager — documentation</title>
+<style>
+:root{--fond:#FBFAF8;--encre:#12212B;--doux:#5B6B72;--trait:#E3DED2;--vert:#0B6E5F;--carte:#fff;--code:#F4F1E9;}
+@media(prefers-color-scheme:dark){:root{--fond:#0C1519;--encre:#E7EDEA;--doux:#96A8AF;--trait:#1F323A;--vert:#5CBBA8;--carte:#12222A;--code:#101E23;}}
+*{box-sizing:border-box}body{margin:0;background:var(--fond);color:var(--encre);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+.wrap{max-width:860px;margin:0 auto;padding:32px 20px 80px;}
+h1{font-family:Georgia,serif;font-size:28px;margin:0 0 4px;}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--vert);margin:34px 0 10px;}
+.chapo{color:var(--doux);margin:0 0 22px;}
+.bloc{background:var(--carte);border:1px solid var(--trait);border-radius:10px;padding:16px 18px;margin:12px 0;}
+.ep{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;}
+.verbe{font:600 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em;text-transform:uppercase;padding:5px 8px;border-radius:5px;background:var(--vert);color:#fff;}
+.verbe.post{background:#8C2F39;}
+code,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;}
+.chemin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;font-weight:600;}
+.portee{margin-left:auto;font-size:12px;color:var(--doux);}
+.desc{color:var(--doux);margin:8px 0 0;font-size:14px;}
+table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13.5px;}
+th{text-align:left;color:var(--doux);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;border-bottom:1px solid var(--trait);}
+td{padding:6px 8px;border-bottom:1px solid var(--trait);vertical-align:top;}
+td.n{font-family:ui-monospace,Menlo,monospace;white-space:nowrap;}
+pre{background:var(--code);border:1px solid var(--trait);border-radius:8px;padding:14px;overflow-x:auto;font-size:13px;}
+.req{color:#8C2F39;font-weight:600;}
+a{color:var(--vert);}
+.note{border-left:3px solid var(--vert);padding-left:14px;margin:16px 0;color:var(--doux);font-size:14px;}
+</style></head><body><div class="wrap">
+<h1>API Campus Manager</h1>
+<p class="chapo">Version ${esc(spec.info.version)} · <a href="/v1/openapi.json">spécification OpenAPI 3.1</a></p>
+
+<h2>Authentification</h2>
+<div class="bloc">
+<p style="margin-top:0;">Toutes les requêtes portent une clé d'API dans l'en-tête <code>Authorization</code>. Une clé se crée depuis l'interface, rubrique <b>Clés d'API</b>.</p>
+<pre>curl -H "Authorization: Bearer cm_live_…" \
+  "${esc(spec.servers[0].url)}/v1/me"</pre>
+<div class="note">La clé n'est affichée <b>qu'une seule fois</b>, à sa création : seule son empreinte est conservée. Une clé ne peut jamais dépasser les droits du compte qui l'a créée, et si elle est restreinte à certains campus, le paramètre <code>campusId</code> devient obligatoire sur chaque appel.</div>
+</div>
+
+<h2>Portées</h2>
+<div class="bloc"><table><thead><tr><th>Portée</th><th>Permet</th></tr></thead><tbody>
+${Object.entries(apikeys.SCOPES).map(([k, v]) => `<tr><td class="n">${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}
+</tbody></table>
+<p class="desc">Une portée <code>:write</code> accorde aussi la lecture de la même ressource — une intégration qui crée des dossiers a toujours besoin de les relire.</p></div>
+
+<h2>Erreurs</h2>
+<div class="bloc"><table><thead><tr><th>Code</th><th>Signification</th></tr></thead><tbody>
+<tr><td class="n">400</td><td>Paramètre requis manquant ou invalide</td></tr>
+<tr><td class="n">401</td><td>Clé absente, inconnue, révoquée ou expirée — changer de clé</td></tr>
+<tr><td class="n">403</td><td>Clé valide mais portée insuffisante, ou campus hors périmètre — demander une autre clé</td></tr>
+<tr><td class="n">402</td><td>Plafond du plan atteint. Les données existantes restent lisibles et exportables</td></tr>
+<tr><td class="n">429</td><td>Trop d'appels — respecter l'en-tête <code>Retry-After</code></td></tr>
+</tbody></table></div>
+
+${[...groupes].map(([tag, liste]) => `<h2>${esc(tag)}</h2>
+${liste.map((e) => `<div class="bloc"><div class="ep">
+  <span class="verbe ${e.method}">${esc(e.method)}</span>
+  <span class="chemin">${esc(e.path)}</span>
+  <span class="portee">${e.scope ? `portée <code>${esc(e.scope)}</code>` : "toute clé valide"}</span></div>
+  <p class="desc">${esc(e.description)}</p>
+  ${e.params.length ? `<table><thead><tr><th>Paramètre</th><th>Description</th></tr></thead><tbody>
+    ${e.params.map((p) => `<tr><td class="n">${esc(p.nom)}${e.path.includes(":" + p.nom) || p.requis ? ' <span class="req">requis</span>' : ""}</td><td>${esc(p.description)}</td></tr>`).join("")}
+  </tbody></table>` : ""}
+  ${e.corps ? `<table><thead><tr><th>Champ du corps</th><th>Type</th></tr></thead><tbody>
+    ${Object.entries(e.corps).map(([k, v]) => `<tr><td class="n">${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}
+  </tbody></table>` : ""}
+</div>`).join("")}`).join("")}
+
+<h2>Stabilité</h2>
+<div class="bloc"><p style="margin:0;">Cette API est versionnée sous <code>/v1</code>. Les routes sous <code>/api</code>, utilisées par l'interface web, ne sont pas publiques et changent sans préavis : ne pas les appeler depuis une intégration.</p></div>
+</div></body></html>`);
 });
 
 // ===== Licence de l'instance =====

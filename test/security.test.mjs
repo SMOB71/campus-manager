@@ -1079,6 +1079,117 @@ test("risque de décrochage : croisement des signaux, et pas de fausse alerte", 
   if (d.cookie) assert.equal((await req(`/api/risque/decrochage?campusId=${campus.id}`, { cookie: d.cookie })).status, 403);
 });
 
+test("API publique : une clé permet d'appeler sans cookie ni jeton CSRF", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus API E2E" } })).json();
+
+  const creee = await (await req("/api/apikeys", { method: "POST", ...opts, json: {
+    nom: "Intégration test", scopes: ["learners:write"], campusIds: [campus.id],
+  } })).json();
+  assert.ok(creee.cle.startsWith("cm_live_"));
+  assert.match(creee.avertissement, /ne sera plus jamais affichée/);
+  // write implique read sur la même ressource
+  assert.deepEqual(creee.scopes, ["learners:read", "learners:write"]);
+
+  const bearer = { Authorization: `Bearer ${creee.cle}` };
+  const appel = (chemin, init = {}) => fetch(BASE + chemin, { ...init, headers: { ...bearer, ...(init.json ? { "Content-Type": "application/json" } : {}) }, body: init.json ? JSON.stringify(init.json) : undefined });
+
+  // /v1/me : une clé restreinte doit pouvoir lire sa propre configuration.
+  const me = await (await appel("/v1/me")).json();
+  assert.equal(me.nom, "Intégration test");
+  assert.deepEqual(me.campusIds, [campus.id]);
+
+  // Lecture, SANS cookie ni jeton CSRF.
+  assert.equal((await appel(`/v1/learners?campusId=${campus.id}`)).status, 200);
+
+  // Écriture : une API inutilisable en POST serait une API décorative.
+  const cree = await appel("/v1/learners", { method: "POST", json: { campusId: campus.id, nom: "Api", prenom: "Cree" } });
+  assert.equal(cree.status, 200, "le POST ne doit pas être bloqué par la protection CSRF");
+  assert.ok((await cree.json()).id);
+
+  // La clé ne relit jamais son secret.
+  const liste = await (await req("/api/apikeys", { cookie: a.cookie })).json();
+  const k = liste.find((x) => x.nom === "Intégration test");
+  assert.equal(JSON.stringify(k).includes(creee.cle), false);
+  assert.match(k.apercu, /^cm_live_.{8}…$/);
+  assert.equal(k.hash, undefined);
+});
+
+test("API publique : tout échec est fermant, et le motif est exploitable", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus API Refus" } })).json();
+  const autre = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus API Autre" } })).json();
+  const k = await (await req("/api/apikeys", { method: "POST", ...opts, json: {
+    nom: "Lecture seule", scopes: ["learners:read"], campusIds: [campus.id],
+  } })).json();
+  const appel = (chemin, cle = k.cle) => fetch(BASE + chemin, { headers: cle ? { Authorization: `Bearer ${cle}` } : {} });
+
+  assert.equal((await appel("/v1/learners", null)).status, 401, "sans clé");
+  assert.equal((await appel("/v1/learners", "cm_live_inventee")).status, 401, "clé inconnue");
+
+  // Portée insuffisante : 403, pas 401 — l'intégrateur doit savoir s'il change
+  // de clé ou s'il en demande une autre portée.
+  const portee = await appel(`/v1/invoices?campusId=${campus.id}`);
+  assert.equal(portee.status, 403);
+  const bodyPortee = await portee.json();
+  assert.equal(bodyPortee.code, "portee_insuffisante");
+  assert.match(bodyPortee.error, /billing:read/);
+
+  // Campus hors périmètre.
+  const hors = await appel(`/v1/learners?campusId=${autre.id}`);
+  assert.equal(hors.status, 403);
+  assert.equal((await hors.json()).code, "campus_hors_perimetre");
+
+  // Campus omis sur une clé restreinte : refusé, jamais élargi.
+  const sans = await appel("/v1/learners");
+  assert.equal(sans.status, 403);
+  assert.equal((await sans.json()).code, "campus_requis");
+
+  // Écriture avec une clé en lecture seule.
+  const ecriture = await fetch(BASE + "/v1/learners", {
+    method: "POST", headers: { Authorization: `Bearer ${k.cle}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ campusId: campus.id, nom: "X", prenom: "Y" }),
+  });
+  assert.equal(ecriture.status, 403);
+
+  // Révocation : effet immédiat.
+  assert.equal((await req(`/api/apikeys/${k.id}`, { method: "DELETE", ...opts })).status, 200);
+  const apres = await appel(`/v1/learners?campusId=${campus.id}`);
+  assert.equal(apres.status, 401);
+  assert.match((await apres.json()).error, /révoquée/);
+});
+
+test("API publique : une clé ne peut pas dépasser les droits de son créateur", async () => {
+  // Un directeur limité à un campus ne doit pas pouvoir émettre une clé qui
+  // ouvre le réseau — ce serait une élévation de privilèges.
+  const d = await login("dir@test.co", "pw12345678");
+  if (!d.cookie) return;
+  // La gestion des clés est réservée à l'administrateur : c'est la protection
+  // la plus simple, et elle se vérifie.
+  assert.equal((await req("/api/apikeys", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: { nom: "X", scopes: ["learners:read"] } })).status, 403);
+  assert.equal((await req("/api/apikeys", { cookie: d.cookie })).status, 403);
+});
+
+test("API publique : documentation et spécification servies sans clé", async () => {
+  // Une documentation derrière authentification n'est pas une documentation.
+  const spec = await req("/v1/openapi.json");
+  assert.equal(spec.status, 200);
+  const j = await spec.json();
+  assert.equal(j.openapi, "3.1.0");
+  assert.ok(j.paths["/v1/learners"].get);
+  assert.ok(j.paths["/v1/learners/{id}"].get, "les paramètres de chemin sont en notation OpenAPI");
+
+  const docs = await req("/v1/docs");
+  assert.equal(docs.status, 200);
+  const html = await docs.text();
+  assert.match(html, /Authorization: Bearer/);
+  assert.match(html, /learners:read/);
+  assert.match(html, /ne sont pas publiques et changent sans préavis/, "on dit à l'intégrateur de ne pas taper sur /api");
+  assert.match(html, /Stabilité/);
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");

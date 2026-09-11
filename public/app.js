@@ -389,6 +389,7 @@ const NAV = [
   { id: "emails", label: "Emails", icon: I.mail, admin: true, group: "Administration" },
   { id: "utilisateurs", label: "Utilisateurs", icon: I.users, admin: true, group: "Administration" },
   { id: "licence", label: "Licence & abonnement", icon: I.shield, admin: true, group: "Administration" },
+  { id: "apikeys", label: "Clés d'API", icon: I.plug, admin: true, group: "Administration" },
   { id: "journal", label: "Journal d'audit", icon: I.journal, admin: true, group: "Administration" },
   { id: "backups", label: "Sauvegardes", icon: I.save, admin: true, group: "Administration" },
   { id: "parametres", label: "Paramètres", icon: I.sliders, admin: true, group: "Administration" },
@@ -460,7 +461,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -5238,6 +5239,75 @@ async function openRuptureForm(cid, rupt) {
     document.querySelector(".modal-bg")?.remove();
     await openContractFiche(cid);
   });
+}
+
+// ---------- Vue : Clés d'API ----------
+async function renderApiKeys() {
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [scopes, cles] = await Promise.all([api.get("/api/apikeys/scopes"), api.get("/api/apikeys")]);
+  const nomCampus = (ids) => !ids ? "tous les campus"
+    : ids.map((id) => state.campuses.find((c) => c.id === id)?.name || id).join(", ");
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Les clés d'API permettent à un logiciel tiers d'appeler votre instance.
+      Une clé n'est affichée <b>qu'une seule fois</b> : seule son empreinte est conservée.
+      Documentation publique : <a href="/v1/docs" target="_blank">/v1/docs</a>.</p>
+    </div>
+
+    <div class="section-title">Clés existantes</div>
+    <div class="card"><div class="list">${(cles || []).map((k) => `<div class="item">
+      <span class="pill ${k.revokedAt ? "overdue" : k.jamaisUtilisee ? "warn" : "done"}">${k.revokedAt ? "révoquée" : k.jamaisUtilisee ? "jamais utilisée" : "active"}</span>
+      <div class="grow"><div class="ttl">${esc(k.nom)} <span class="muted" style="font-weight:400;font-family:ui-monospace,monospace;">${esc(k.apercu || "")}</span></div>
+        <div class="sub muted">${k.scopes.map(esc).join(", ")} · ${esc(nomCampus(k.campusIds))}${k.expiresAt ? ` · expire le ${esc(k.expiresAt)}` : ""}${k.lastUsedAt ? ` · dernier appel ${esc(String(k.lastUsedAt).slice(0, 10))}` : ""}</div></div>
+      ${k.revokedAt ? "" : `<button class="btn-ghost btn-sm btn-danger ak-rev" data-id="${k.id}">Révoquer</button>`}</div>`).join("") || '<p class="muted" style="padding:10px;">Aucune clé.</p>'}</div></div>
+
+    <div class="section-title">Créer une clé</div>
+    <div class="card card-pad">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <input class="txt grow" id="ak-nom" placeholder="Nom (ex. « Export paie »)" style="min-width:220px;">
+        <div><label class="field-label">Expire le (facultatif)</label><input class="txt" id="ak-exp" type="date"></div>
+      </div>
+      <div style="margin-top:10px;"><label class="field-label">Portées</label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;">${Object.entries(scopes).map(([k, v]) => `<label class="sub"><input type="checkbox" class="ak-scope" value="${k}"> <code>${esc(k)}</code> — ${esc(v)}</label>`).join("")}</div></div>
+      ${state.campuses.length > 1 ? `<div style="margin-top:10px;"><label class="field-label">Limiter à des campus (facultatif)</label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;">${state.campuses.map((c) => `<label class="sub"><input type="checkbox" class="ak-campus" value="${c.id}"> ${esc(c.name)}</label>`).join("")}</div></div>` : ""}
+      <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
+        <button class="btn-primary btn-sm" id="ak-add">Créer la clé</button>
+        <span class="sub" id="ak-msg"></span>
+      </div>
+      <p class="hint muted">Une portée <code>:write</code> accorde aussi la lecture de la même ressource. Une clé ne peut jamais dépasser vos propres droits.</p>
+    </div>`;
+
+  $("#ak-add").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const m = $("#ak-msg");
+    const choisies = $$(".ak-scope").filter((c) => c.checked).map((c) => c.value);
+    if (!choisies.length) { m.textContent = "Choisir au moins une portée."; m.style.color = "var(--bad)"; return; }
+    const campusIds = $$(".ak-campus").filter((c) => c.checked).map((c) => c.value);
+    const r = await api.post("/api/apikeys", {
+      nom: $("#ak-nom").value.trim(), scopes: choisies,
+      campusIds: campusIds.length ? campusIds : null, expiresAt: $("#ak-exp").value || null,
+    });
+    if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return; }
+    // La clé n'existera plus nulle part après ce message : on la montre dans une
+    // modale explicite plutôt que dans une ligne de liste qu'on ferme par réflexe.
+    openModal("Clé créée — copiez-la maintenant", `
+      <div class="card card-pad" style="border-left:4px solid var(--bad);"><b>${esc(r.avertissement)}</b></div>
+      <pre style="background:var(--card,#fff);border:1px solid var(--line,#e3ded3);border-radius:8px;padding:14px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:13px;margin-top:12px;">${esc(r.cle)}</pre>
+      <div class="actions"><button class="btn-primary" id="ak-copy">Copier</button></div>
+      <p class="hint muted">Transmettez-la par un canal sûr. Si elle est perdue, révoquez-la et créez-en une autre : elle ne peut pas être relue.</p>`);
+    $("#ak-copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(r.cle); $("#ak-copy").textContent = "Copié"; }
+      catch { $("#ak-copy").textContent = "Copie impossible — sélectionnez le texte"; }
+    };
+    await renderApiKeys();
+  });
+  $$(".ak-rev").forEach((b) => b.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    if (!confirm("Révoquer cette clé ? Toute intégration qui l'utilise cessera immédiatement de fonctionner.")) return;
+    await api.del(`/api/apikeys/${b.dataset.id}`);
+    await renderApiKeys();
+  })));
 }
 
 // ---------- Vue : Licence & abonnement ----------
