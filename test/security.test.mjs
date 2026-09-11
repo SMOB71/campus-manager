@@ -925,6 +925,160 @@ test("acquis & dispenses : le bulletin d'un redoublant partiel cesse d'être fau
   assert.equal(retire.certification.acquis, 1);
 });
 
+test("suivi du parcours : positionnement, aménagements, rencontres, cloisonnement", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Suivi E2E" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Suivi", prenom: "Test" } })).json();
+  // Parcours démarré il y a plus d'un an : la cadence de suivi est donc dépassée.
+  // (Un parcours commencé il y a dix jours sans visite ne doit PAS alerter.)
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2025-2026", dateDebut: "2025-01-15" } });
+
+  // Positionnement daté APRÈS le début : accepté mais signalé, la chronologie
+  // fait la preuve.
+  const tardif = await req(`/api/learners/${l.id}/positionnement`, { method: "PUT", ...opts, json: {
+    date: "2027-05-01", modalite: "entretien", prerequis: "satisfaits", realisePar: "Mme Martin", objectifs: "x",
+  } });
+  assert.equal(tardif.status, 200);
+  assert.ok((await tardif.json()).warnings.some((w) => /après le début de formation/.test(w)));
+
+  // Un aménagement d'ÉPREUVE ne peut pas être « mis en place » par l'organisme.
+  const abusif = await req(`/api/learners/${l.id}/amenagements`, { method: "POST", ...opts, json: { type: "epreuve", description: "Tiers-temps", statut: "en_place" } });
+  assert.equal(abusif.status, 400);
+
+  // Une donnée de santé est refusée, pas seulement déconseillée.
+  const sante = await req(`/api/learners/${l.id}/amenagements`, { method: "POST", ...opts, json: { type: "pedagogique", description: "Salle RDC", diagnostic: "…" } });
+  assert.equal(sante.status, 400);
+
+  const ok = await req(`/api/learners/${l.id}/amenagements`, { method: "POST", ...opts, json: { type: "pedagogique", description: "Supports agrandis", statut: "en_place" } });
+  assert.equal(ok.status, 200);
+
+  // Aucune rencontre en entreprise depuis le début du parcours → alerte.
+  const vide = await (await req(`/api/learners/${l.id}/suivi`, { cookie: a.cookie })).json();
+  assert.equal(vide.etat.tripartites, 0);
+  assert.ok(vide.etat.alerte, "un parcours sans aucune visite doit alerter");
+  assert.equal(vide.amenagements.length, 1);
+
+  // Un appel téléphonique ne vaut pas liaison avec l'entreprise.
+  await req(`/api/learners/${l.id}/suivis`, { method: "POST", ...opts, json: { date: "2027-01-10", type: "appel", realisePar: "M. D", compteRendu: "ok" } });
+  const apresAppel = await (await req(`/api/learners/${l.id}/suivi`, { cookie: a.cookie })).json();
+  assert.equal(apresAppel.etat.tripartites, 0);
+  assert.equal(apresAppel.etat.autresContacts, 1);
+
+  // Cloisonnement
+  const d = await login("dir@test.co", "pw12345678");
+  if (d.cookie) {
+    assert.equal((await req(`/api/learners/${l.id}/suivi`, { cookie: d.cookie })).status, 403);
+    assert.equal((await req(`/api/learners/${l.id}/suivis`, { method: "POST", cookie: d.cookie, csrf: d.csrf, json: { date: "2027-01-10", type: "visite", realisePar: "X" } })).status, 403);
+  }
+});
+
+test("registres qualité : réclamations et sous-traitance", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Qualite E2E" } })).json();
+
+  // Clore sans réponse écrite est refusé : un dossier rangé n'est pas traité.
+  const close = await req("/api/reclamations", { method: "POST", ...opts, json: {
+    campusId: campus.id, date: "2026-09-01", origine: "apprenant", nature: "organisation", objet: "Salle non chauffée", statut: "close",
+  } });
+  assert.equal(close.status, 400);
+
+  const r = await (await req("/api/reclamations", { method: "POST", ...opts, json: {
+    campusId: campus.id, date: "2026-09-01", origine: "apprenant", nature: "organisation", objet: "Salle non chauffée",
+  } })).json();
+  assert.ok(r.id);
+
+  const registre = await (await req(`/api/reclamations?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.equal(registre.total, 1);
+  assert.equal(registre.ouvertes, 1);
+  assert.equal(registre.delaiMoyen, null, "aucune moyenne inventée sur zéro réclamation close");
+
+  // Sous-traitant sur actions financées sans certification : enregistré, mais averti.
+  const st = await req("/api/sous-traitants", { method: "POST", ...opts, json: {
+    campusId: campus.id, nom: "Studio Externe", perimetre: "pedagogique", prestation: "TP", actionsFinancees: true, certifie: false,
+  } });
+  assert.equal(st.status, 200);
+  assert.ok((await st.json()).warnings.some((w) => /prise en charge peut être refusée/.test(w)));
+
+  const liste = await (await req(`/api/sous-traitants?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.deepEqual(liste.registre.aRisque, ["Studio Externe"]);
+
+  // Le registre des sous-traitants est une affaire d'administrateur.
+  const d = await login("dir@test.co", "pw12345678");
+  if (d.cookie) {
+    assert.equal((await req("/api/sous-traitants", { method: "POST", cookie: d.cookie, csrf: d.csrf, json: { campusId: campus.id, nom: "X", perimetre: "autre", prestation: "y" } })).status, 403);
+  }
+  // Sans campusId : 400, jamais de requête pendante.
+  assert.equal((await req("/api/reclamations", { method: "POST", ...opts, json: { date: "2026-09-01" } })).status, 400);
+});
+
+test("jury : le PV n'est signable que si tout est prononcé et motivé", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Jury E2E" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: { name: "Titre Jury", modules: [{ code: "U1", label: "Tech", coefficient: 1 }] } })).json();
+  const avecBlocs = await (await req(`/api/curricula/${cur.id}`, { method: "PATCH", ...opts, json: { blocks: [{ code: "B1", label: "Bloc technique", moduleIds: [cur.modules[0].id] }] } })).json();
+  const blocId = avecBlocs.blocks[0].id;
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "J1", curriculumId: cur.id } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Candidat", prenom: "Jury" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  // Il échoue au calcul : moyenne sous le seuil.
+  const ev = await (await req("/api/assessments", { method: "POST", ...opts, json: { campusId: campus.id, classId: classe.id, label: "E1", moduleId: cur.modules[0].id, coefficient: 1, maxScore: 20 } })).json();
+  await req(`/api/assessments/${ev.id}/grades`, { method: "PATCH", ...opts, json: { entries: [{ learnerId: l.id, score: 7 }] } });
+
+  const session = await (await req("/api/jury/sessions", { method: "POST", ...opts, json: {
+    campusId: campus.id, date: "2027-06-15", intitule: "Session juin 2027", lieu: "Campus", dateConvocation: "2027-06-12",
+  } })).json();
+  // Convocation à 3 jours : motif de contestation, signalé avant l'épreuve.
+  const sessions = await (await req(`/api/jury/sessions?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  const s = sessions.find((x) => x.id === session.id);
+  assert.equal(s.convocation.insuffisant, true);
+  assert.match(s.convocation.alerte, /3 jour\(s\)/);
+
+  // Le jury valide le bloc SANS motiver l'écart : PV non signable.
+  await req(`/api/jury/sessions/${session.id}/proces/${l.id}`, { method: "PUT", ...opts, json: {
+    decisions: { [blocId]: "acquis" }, decisionGlobale: "admis",
+  } });
+  const sansMotif = await (await req(`/api/learners/${l.id}/deliberation?sessionId=${session.id}`, { cookie: a.cookie })).json();
+  assert.equal(sansMotif.ecarts, 1);
+  assert.equal(sansMotif.signable, false);
+  assert.ok(sansMotif.manquantes.some((m) => /écart non motivé/.test(m)));
+
+  // Motivé : le jury est souverain, le PV devient signable.
+  await req(`/api/jury/sessions/${session.id}/proces/${l.id}`, { method: "PUT", ...opts, json: {
+    decisions: { [blocId]: "acquis" }, motifs: { [blocId]: "Situation professionnelle validée en entreprise." }, decisionGlobale: "admis",
+  } });
+  const motive = await (await req(`/api/learners/${l.id}/deliberation?sessionId=${session.id}`, { cookie: a.cookie })).json();
+  assert.equal(motive.signable, true);
+  assert.equal(motive.decisionGlobale, "admis");
+
+  // Convocation postérieure à l'épreuve : refusée.
+  assert.equal((await req("/api/jury/sessions", { method: "POST", ...opts, json: { campusId: campus.id, date: "2027-06-15", intitule: "X", dateConvocation: "2027-07-01" } })).status, 400);
+});
+
+test("risque de décrochage : croisement des signaux, et pas de fausse alerte", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Risque E2E" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Sain", prenom: "Dossier" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", dateDebut: "2026-09-01" } });
+
+  const r = await (await req(`/api/risque/decrochage?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.ok(r.total >= 1);
+  const sien = r.items.find((x) => x.learnerId === l.id);
+  assert.ok(sien, "l'apprenant inscrit doit être évalué");
+  // Aucune donnée d'assiduité ni de note : on n'invente pas un risque.
+  assert.equal(sien.risque.aTraiter, false);
+  assert.equal(sien.risque.resume, "Aucun signal.");
+
+  // Sans campusId : 400, jamais de requête pendante.
+  assert.equal((await req("/api/risque/decrochage", { cookie: a.cookie })).status, 400);
+  const d = await login("dir@test.co", "pw12345678");
+  if (d.cookie) assert.equal((await req(`/api/risque/decrochage?campusId=${campus.id}`, { cookie: d.cookie })).status, 403);
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");

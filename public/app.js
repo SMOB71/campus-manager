@@ -372,6 +372,9 @@ const NAV = [
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
   { id: "declarations", label: "Déclarations (SIFA, BPF)", icon: I.journal, admin: true, group: "Conformité" },
+  { id: "qualite", label: "Réclamations & sous-traitance", icon: I.shield, group: "Conformité" },
+  { id: "decrochage", label: "Risque de décrochage", icon: I.alert, group: "Enseignement" },
+  { id: "jury", label: "Sessions d'examen & jury", icon: I.note, group: "Enseignement" },
   { id: "planning", label: "Emploi du temps", icon: I.agenda, group: "Enseignement" },
   { id: "emargement", label: "Émargement", icon: I.sign, group: "Enseignement" },
   { id: "notes", label: "Notes & bulletins", icon: I.note, group: "Enseignement" },
@@ -457,7 +460,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -3578,6 +3581,7 @@ async function openLearnerFiche(lid) {
       <button class="btn-ghost btn-sm" id="lr-consent">🛡 Autorisations</button>
       <button class="btn-ghost btn-sm" id="lr-certif">📜 Certificat de réalisation</button>
       <button class="btn-ghost btn-sm" id="lr-acquis">🎓 Acquis &amp; dispenses</button>
+      <button class="btn-ghost btn-sm" id="lr-suivi">🤝 Suivi du parcours</button>
       <button class="btn-ghost btn-sm" id="lr-export">⬇ Export RGPD</button>
       ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger" id="lr-del">Supprimer (RGPD)</button>` : ""}
     </div>`);
@@ -3588,6 +3592,7 @@ async function openLearnerFiche(lid) {
   $("#lr-export").onclick = () => window.open(`/api/learners/${l.id}/export`, "_blank");
   $("#lr-certif").onclick = () => openCertificat(l);
   $("#lr-acquis").onclick = () => openAcquis(l);
+  $("#lr-suivi").onclick = () => openSuiviParcours(l);
   $("#lr-del")?.addEventListener("click", async () => {
     if (!confirm(`Supprimer définitivement le dossier de ${l.prenom} ${l.nom} (inscriptions comprises) ?`)) return;
     await api.del(`/api/learners/${lid}`);
@@ -4565,6 +4570,287 @@ async function openAcquis(l) {
       await openAcquis(l);
     }));
   });
+}
+
+// ---------- Suivi du parcours (positionnement, aménagements, rencontres) ----------
+async function openSuiviParcours(l) {
+  const [ref, d] = await Promise.all([api.get("/api/suivi/referentiels"), api.get(`/api/learners/${l.id}/suivi`)]);
+  if (d?.error) { alert(d.error); return; }
+  const p = d.positionnement || {};
+  const alerte = d.etat?.alerte;
+
+  openModal(`Suivi du parcours — ${l.prenom} ${l.nom}`, `
+    ${alerte ? `<div class="card card-pad" style="border-left:4px solid var(--bad);margin-bottom:12px;"><b>${esc(alerte)}</b></div>` : ""}
+    <div class="section-title" style="margin-top:0;">Positionnement à l'entrée</div>
+    <p class="sub muted" style="margin-top:0;">Il fonde l'individualisation du parcours : il est censé <b>précéder</b> l'entrée en formation${d.debutFormation ? ` (débutée le ${esc(d.debutFormation)})` : ""}.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+      <div><label class="field-label">Date</label><input class="txt" id="po-date" type="date" value="${esc(p.date || "")}"></div>
+      <div style="flex:1;min-width:170px;"><label class="field-label">Modalité</label><select class="txt" id="po-mod">${Object.entries(ref.positionnementModalites).map(([k, v]) => `<option value="${k}" ${p.modalite === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+      <div style="flex:1;min-width:210px;"><label class="field-label">Prérequis</label><select class="txt" id="po-pre">${Object.entries(ref.prerequisVerdicts).map(([k, v]) => `<option value="${k}" ${p.prerequis === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+      <input class="txt grow" id="po-obj" placeholder="Objectifs individualisés" value="${esc(p.objectifs || "")}" style="min-width:240px;">
+      <input class="txt" id="po-amg" placeholder="Aménagement proposé" value="${esc(p.amenagementPropose || "")}" style="min-width:200px;">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+      <button class="btn-primary btn-sm" id="po-save">Enregistrer le positionnement</button>
+      <span class="sub" id="po-msg"></span>
+    </div>
+
+    <div class="section-title">Aménagements</div>
+    <p class="sub muted" style="margin-top:0;">Un aménagement <b>d'épreuve</b> est accordé par le certificateur : l'organisme le demande, il ne l'accorde pas.
+    N'enregistrer que l'aménagement à mettre en place — <b>aucune donnée de santé</b>.</p>
+    <div class="list">${(d.amenagements || []).map((a) => `<div class="item"><span class="pill">${esc(ref.amenagementStatuts[a.statut] || "—")}</span>
+      <div class="grow"><div class="ttl" style="font-weight:500;">${esc(ref.amenagementTypes[a.type]?.label || a.type)}</div>
+      <div class="sub muted">${esc(a.description || "")}${a.referenceDecision ? ` · réf. ${esc(a.referenceDecision)}` : ""}</div></div>
+      <button class="btn-ghost btn-sm btn-danger am-del" data-id="${a.id}">✕</button></div>`).join("") || '<p class="muted" style="padding:8px;">Aucun aménagement.</p>'}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">
+      <div style="min-width:190px;"><label class="field-label">Type</label><select class="txt" id="am-type">${Object.entries(ref.amenagementTypes).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div>
+      <div style="min-width:150px;"><label class="field-label">Statut</label><select class="txt" id="am-statut">${Object.entries(ref.amenagementStatuts).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></div>
+      <input class="txt grow" id="am-desc" placeholder="Description de l'aménagement" style="min-width:220px;">
+      <input class="txt" id="am-ref" placeholder="Réf. décision certificateur" style="max-width:200px;">
+      <button class="btn-ghost btn-sm" id="am-add">Ajouter</button>
+      <span class="sub" id="am-msg"></span>
+    </div>
+
+    <div class="section-title">Rencontres en entreprise</div>
+    <p class="sub muted" style="margin-top:0;">Seules la <b>visite</b> et l'<b>entretien tripartite</b> valent liaison avec l'entreprise ; un appel documente l'accompagnement.
+    ${d.etat?.dernier ? `Dernière rencontre le ${esc(d.etat.dernier.date)} (il y a ${d.etat.joursDepuis} jours).` : "Aucune rencontre enregistrée."}</p>
+    <div class="list">${(d.suivis || []).map((s) => `<div class="item"><span class="pill">${esc(ref.suiviTypes[s.type] || s.type)}</span>
+      <div class="grow"><div class="ttl" style="font-weight:500;">${esc(s.date || "")}${s.tuteur ? " · tuteur " + esc(s.tuteur) : ""}</div>
+      <div class="sub muted">${esc(s.compteRendu || "")}${s.difficultes ? ` · difficultés : ${esc(s.difficultes)}` : ""}${s.actions ? ` · action : ${esc(s.actions)}` : ""}</div></div>
+      <button class="btn-ghost btn-sm btn-danger su-del" data-id="${s.id}">✕</button></div>`).join("") || '<p class="muted" style="padding:8px;">Aucune rencontre.</p>'}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">
+      <div><label class="field-label">Date</label><input class="txt" id="su-date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div style="min-width:170px;"><label class="field-label">Type</label><select class="txt" id="su-type">${Object.entries(ref.suiviTypes).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></div>
+      <input class="txt" id="su-tuteur" placeholder="Maître d'apprentissage" style="max-width:190px;">
+      <input class="txt grow" id="su-cr" placeholder="Compte rendu" style="min-width:200px;">
+      <input class="txt" id="su-dif" placeholder="Difficultés" style="max-width:170px;">
+      <input class="txt" id="su-act" placeholder="Action décidée" style="max-width:170px;">
+      <button class="btn-ghost btn-sm" id="su-add">Ajouter</button>
+      <span class="sub" id="su-msg"></span>
+    </div>`);
+
+  const recharger = async () => { document.querySelector(".modal-bg")?.remove(); await openSuiviParcours(l); };
+  const afficher = (cible, r) => {
+    const m = $(cible);
+    if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return false; }
+    if (r?.warnings?.length) { m.textContent = r.warnings.join(" · "); m.style.color = "var(--warn, #C77700)"; }
+    return true;
+  };
+
+  $("#po-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.put(`/api/learners/${l.id}/positionnement`, {
+      date: $("#po-date").value, modalite: $("#po-mod").value, prerequis: $("#po-pre").value,
+      objectifs: $("#po-obj").value.trim(), amenagementPropose: $("#po-amg").value.trim(),
+    });
+    if (!afficher("#po-msg", r)) return;
+    if (!r.warnings?.length) await recharger();
+  });
+  $("#am-add").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post(`/api/learners/${l.id}/amenagements`, {
+      type: $("#am-type").value, statut: $("#am-statut").value,
+      description: $("#am-desc").value.trim(), referenceDecision: $("#am-ref").value.trim(),
+    });
+    if (!afficher("#am-msg", r)) return;
+    await recharger();
+  });
+  $("#su-add").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post(`/api/learners/${l.id}/suivis`, {
+      date: $("#su-date").value, type: $("#su-type").value, tuteur: $("#su-tuteur").value.trim(),
+      compteRendu: $("#su-cr").value.trim(), difficultes: $("#su-dif").value.trim(), actions: $("#su-act").value.trim(),
+    });
+    if (!afficher("#su-msg", r)) return;
+    await recharger();
+  });
+  $$(".am-del").forEach((b) => b.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    await api.del(`/api/amenagements/${b.dataset.id}`); await recharger();
+  })));
+  $$(".su-del").forEach((b) => b.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    await api.del(`/api/suivis/${b.dataset.id}`); await recharger();
+  })));
+}
+
+// ---------- Vue : Réclamations & sous-traitance ----------
+let qualCampus = "";
+async function renderQualite() {
+  if (!qualCampus) qualCampus = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="qu-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${qualCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [ref, reg, st] = await Promise.all([
+    api.get("/api/qualite/referentiels"),
+    api.get(`/api/reclamations?campusId=${qualCampus}`),
+    api.get(`/api/sous-traitants?campusId=${qualCampus}`),
+  ]);
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Ce n'est pas le contenu de ces registres qui est contrôlé, c'est leur <b>tenue</b>.
+      Un registre vide chez un organisme qui forme des centaines d'apprenants ne prouve pas qu'il n'y a eu aucune réclamation.</p>
+    </div>
+
+    <div class="section-title">Réclamations et appels</div>
+    <div class="kpis">
+      <div class="k"><div class="v">${reg.total}</div><div class="l">enregistrées</div></div>
+      <div class="k"><div class="v">${reg.ouvertes}</div><div class="l">ouvertes</div></div>
+      <div class="k${reg.horsDelai ? " k-bad" : ""}"><div class="v">${reg.horsDelai}</div><div class="l">hors délai (${ref.delaiReponseJours} j)</div></div>
+      <div class="k"><div class="v">${reg.delaiMoyen != null ? reg.delaiMoyen + " j" : "—"}</div><div class="l">délai moyen</div></div>
+      <div class="k${reg.sansActionCorrective ? " k-bad" : ""}"><div class="v">${reg.sansActionCorrective}</div><div class="l">closes sans action</div></div>
+    </div>
+    <div class="card"><div class="list">${(reg.items || []).map((r) => `<div class="item">
+      <span class="pill ${r.etat.horsDelai ? "overdue" : r.etat.close ? "done" : "doing"}">${esc(ref.statuts[r.statut] || "Reçue")}</span>
+      <div class="grow"><div class="ttl">${esc(r.objet)} ${r.kind === "appel" ? '<span class="pill">appel</span>' : ""}</div>
+        <div class="sub muted">${esc(r.date)} · ${esc(ref.origines[r.origine] || "")} · ${esc(ref.natures[r.nature] || "")}${r.etat.alerte ? ` · <b>${esc(r.etat.alerte)}</b>` : ""}</div></div>
+      <button class="btn-ghost btn-sm rc-open" data-id="${r.id}">Traiter</button></div>`).join("") || '<p class="muted" style="padding:10px;">Aucune réclamation enregistrée.</p>'}</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end;">
+      <div><label class="field-label">Date</label><input class="txt" id="rc-date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div style="min-width:150px;"><label class="field-label">Type</label><select class="txt" id="rc-kind">${Object.entries(ref.kinds).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></div>
+      <div style="min-width:170px;"><label class="field-label">Origine</label><select class="txt" id="rc-origine">${Object.entries(ref.origines).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></div>
+      <div style="min-width:170px;"><label class="field-label">Nature</label><select class="txt" id="rc-nature">${Object.entries(ref.natures).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></div>
+      <input class="txt grow" id="rc-objet" placeholder="Objet de la réclamation" style="min-width:230px;">
+      <button class="btn-primary btn-sm" id="rc-add">Enregistrer</button>
+      <span class="sub" id="rc-msg"></span>
+    </div>
+
+    <div class="section-title">Sous-traitance</div>
+    <p class="muted" style="margin-top:0;">Le donneur d'ordre reste responsable de la prestation. Un sous-traitant non certifié sur des actions financées peut faire tomber la prise en charge — et c'est vous qui remboursez.</p>
+    ${st.registre.aRisque.length ? `<div class="card card-pad" style="border-left:4px solid var(--bad);"><b>À régulariser :</b> ${st.registre.aRisque.map(esc).join(", ")} — actions financées sans certification attestée.</div>` : ""}
+    <div class="card" style="margin-top:10px;"><div class="list">${(st.items || []).map((s) => `<div class="item">
+      <span class="pill ${s.certifie ? "done" : ""}">${s.certifie ? "certifié" : "non certifié"}</span>
+      <div class="grow"><div class="ttl">${esc(s.nom)}</div>
+        <div class="sub muted">${esc(s.prestation || "")}${s.dateFin ? ` · jusqu'au ${esc(s.dateFin)}` : ""}${s.actionsFinancees ? " · actions financées" : ""}</div></div>
+      ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger st-del" data-id="${s.id}">✕</button>` : ""}</div>`).join("") || '<p class="muted" style="padding:10px;">Aucun sous-traitant enregistré.</p>'}</div></div>
+    ${isAdmin() ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end;">
+      <input class="txt" id="st-nom" placeholder="Raison sociale" style="min-width:190px;">
+      <div style="min-width:180px;"><label class="field-label">Périmètre</label><select class="txt" id="st-per">${Object.entries(ref.perimetres).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></div>
+      <input class="txt grow" id="st-prest" placeholder="Prestation confiée" style="min-width:200px;">
+      <label class="sub"><input type="checkbox" id="st-fin"> actions financées</label>
+      <label class="sub"><input type="checkbox" id="st-cert"> certifié qualité</label>
+      <button class="btn-ghost btn-sm" id="st-add">Ajouter</button>
+      <span class="sub" id="st-msg"></span>
+    </div>` : ""}`;
+
+  $("#qu-campus")?.addEventListener("change", () => { qualCampus = $("#qu-campus").value; renderQualite(); });
+  const msg = (sel, r) => { const m = $(sel); if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return false; }
+    if (r?.warnings?.length) { m.textContent = r.warnings.join(" · "); m.style.color = "var(--warn, #C77700)"; } return true; };
+
+  $("#rc-add").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post("/api/reclamations", { campusId: qualCampus, date: $("#rc-date").value, kind: $("#rc-kind").value,
+      origine: $("#rc-origine").value, nature: $("#rc-nature").value, objet: $("#rc-objet").value.trim() });
+    if (!msg("#rc-msg", r)) return;
+    await renderQualite();
+  });
+  $$(".rc-open").forEach((b) => b.addEventListener("click", () => openReclamation(b.dataset.id, ref)));
+  $("#st-add")?.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post("/api/sous-traitants", { campusId: qualCampus, nom: $("#st-nom").value.trim(),
+      perimetre: $("#st-per").value, prestation: $("#st-prest").value.trim(),
+      actionsFinancees: $("#st-fin").checked, certifie: $("#st-cert").checked });
+    if (!msg("#st-msg", r)) return;
+    await renderQualite();
+  }));
+  $$(".st-del").forEach((b) => b.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    if (!confirm("Retirer ce sous-traitant du registre ?")) return;
+    await api.del(`/api/sous-traitants/${b.dataset.id}`); await renderQualite();
+  })));
+}
+
+async function openReclamation(rid, ref) {
+  const reg = await api.get(`/api/reclamations?campusId=${qualCampus}`);
+  const r = (reg.items || []).find((x) => x.id === rid);
+  if (!r) return;
+  openModal(`Réclamation — ${r.objet}`, `
+    <div class="sub muted" style="margin-bottom:10px;">${esc(r.date)} · ${esc(ref.origines[r.origine] || "")} · ${esc(ref.natures[r.nature] || "")}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+      <div style="min-width:190px;"><label class="field-label">Statut</label><select class="txt" id="rd-statut">${Object.entries(ref.statuts).map(([k, v]) => `<option value="${k}" ${r.statut === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Date de réponse</label><input class="txt" id="rd-date" type="date" value="${esc(r.dateReponse || "")}"></div>
+    </div>
+    <div class="field" style="margin-top:8px;"><label class="field-label">Réponse apportée</label><textarea class="txt" id="rd-rep" rows="3">${esc(r.reponse || "")}</textarea></div>
+    <div class="field"><label class="field-label">Action corrective</label><input class="txt" id="rd-act" value="${esc(r.actionCorrective || "")}" placeholder="Ce que l'organisme change à la suite de cette réclamation"></div>
+    <p class="hint muted">Une réclamation close sans action corrective est <b>traitée, pas exploitée</b> — c'est le point que relève un auditeur.</p>
+    <div class="actions"><button class="btn-primary" id="rd-save">Enregistrer</button><span class="sub" id="rd-msg" style="align-self:center;"></span></div>`);
+  $("#rd-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const res = await api.patch(`/api/reclamations/${rid}`, { statut: $("#rd-statut").value, dateReponse: $("#rd-date").value,
+      reponse: $("#rd-rep").value.trim(), actionCorrective: $("#rd-act").value.trim() });
+    const m = $("#rd-msg");
+    if (res?.error) { m.textContent = res.error; m.style.color = "var(--bad)"; return; }
+    document.querySelector(".modal-bg")?.remove();
+    await renderQualite();
+  });
+}
+
+// ---------- Vue : Risque de décrochage ----------
+let decCampusRisque = "";
+async function renderDecrochage() {
+  if (!decCampusRisque) decCampusRisque = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="dr-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${decCampusRisque === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const d = await api.get(`/api/risque/decrochage?campusId=${decCampusRisque}`);
+  if (d?.error) { view.innerHTML = `<p class="muted">${esc(d.error)}</p>`; return; }
+  const teinte = { critique: "overdue", eleve: "overdue", moyen: "warn", faible: "" };
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Un apprenant qui décroche coche presque toujours plusieurs cases à la fois.
+      C'est le <b>croisement</b> qui alerte utilement — et le score ne sert qu'à trier : ce sont les motifs qui se traitent.</p>
+    </div>
+    <div class="kpis">
+      <div class="k"><div class="v">${d.total}</div><div class="l">apprenants suivis</div></div>
+      <div class="k${d.aTraiter ? " k-bad" : ""}"><div class="v">${d.aTraiter}</div><div class="l">à traiter</div></div>
+    </div>
+    <div class="card"><div class="list">${(d.items || []).map((x) => `<div class="item">
+      <span class="pill ${teinte[x.risque.niveau]}">${esc(x.risque.niveauLabel)}</span>
+      <div class="grow"><div class="ttl">${esc(x.nom)}</div><div class="sub muted">${esc(x.risque.resume)}</div></div>
+      <button class="btn-ghost btn-sm dr-fiche" data-id="${x.learnerId}">Ouvrir la fiche</button></div>`).join("") || '<p class="muted" style="padding:10px;">Aucun apprenant inscrit sur ce campus.</p>'}</div></div>`;
+  $("#dr-campus")?.addEventListener("change", () => { decCampusRisque = $("#dr-campus").value; renderDecrochage(); });
+  $$(".dr-fiche").forEach((b) => b.addEventListener("click", () => openLearnerFiche(b.dataset.id)));
+}
+
+// ---------- Vue : Sessions d'examen & jury ----------
+let juryCampus = "";
+async function renderJury() {
+  if (!juryCampus) juryCampus = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="jy-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${juryCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [ref, sessions] = await Promise.all([api.get("/api/jury/referentiels"), api.get(`/api/jury/sessions?campusId=${juryCampus}`)]);
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Les notes disent ce que l'apprenant a <b>obtenu</b> ; le jury dit ce qu'il <b>obtient</b>.
+      Le jury est souverain — mais tout écart avec le calcul doit être motivé au procès-verbal.</p>
+    </div>
+    <div class="card"><div class="list">${(sessions || []).map((s) => `<div class="item">
+      <span class="pill ${s.convocation.insuffisant || !s.convocation.convoquee ? "overdue" : "done"}">${esc(ref.statuts[s.statut] || "Planifiée")}</span>
+      <div class="grow"><div class="ttl">${esc(s.intitule)}</div>
+        <div class="sub muted">${esc(s.date)}${s.lieu ? " · " + esc(s.lieu) : ""}${s.convocation.alerte ? ` · <b>${esc(s.convocation.alerte)}</b>` : ` · convoquée ${s.convocation.prevenanceJours} j avant`}</div></div>
+      ${isAdmin() ? `<button class="btn-ghost btn-sm btn-danger jy-del" data-id="${s.id}">✕</button>` : ""}</div>`).join("") || '<p class="muted" style="padding:10px;">Aucune session planifiée.</p>'}</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end;">
+      <div><label class="field-label">Date de l'épreuve</label><input class="txt" id="jy-date" type="date"></div>
+      <div><label class="field-label">Convocation envoyée le</label><input class="txt" id="jy-conv" type="date"></div>
+      <input class="txt grow" id="jy-int" placeholder="Intitulé de la session" style="min-width:200px;">
+      <input class="txt" id="jy-lieu" placeholder="Lieu" style="max-width:170px;">
+      <button class="btn-primary btn-sm" id="jy-add">Planifier</button>
+      <span class="sub" id="jy-msg"></span>
+    </div>
+    <p class="sub muted" style="margin-top:10px;">Délai de prévenance annoncé : <b>${ref.delaiConvocationJours} jours</b>. Une convocation plus tardive est un motif de contestation, et c'est l'organisme qui perd.</p>`;
+
+  $("#jy-campus")?.addEventListener("change", () => { juryCampus = $("#jy-campus").value; renderJury(); });
+  $("#jy-add").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post("/api/jury/sessions", { campusId: juryCampus, date: $("#jy-date").value,
+      dateConvocation: $("#jy-conv").value || null, intitule: $("#jy-int").value.trim(), lieu: $("#jy-lieu").value.trim() });
+    const m = $("#jy-msg");
+    if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return; }
+    await renderJury();
+  });
+  $$(".jy-del").forEach((b) => b.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    if (!confirm("Supprimer cette session ?")) return;
+    await api.del(`/api/jury/sessions/${b.dataset.id}`); await renderJury();
+  })));
 }
 
 // ---------- Vue : Contrats d'alternance ----------

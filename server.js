@@ -24,6 +24,10 @@ import { sheetStats, periodStats, effectiveEntries, STATUS_LABEL, ATTENDANCE_STA
 import { validateContract, contractAlerts, minimumWage, isValidSiret, RUPTURE_LABEL, RUPTURE_MODES, SMIC_MENSUEL_DEFAUT } from "./lib/contracts.js";
 import { learnerReport, ranking, classStats, mention, blockReport } from "./lib/grades.js";
 import { applyExemptions, certification, MOTIFS as ACQUIS_MOTIFS, validateExemption } from "./lib/acquis.js";
+import * as suivi from "./lib/suivi.js";
+import * as qualite from "./lib/qualite.js";
+import * as jury from "./lib/jury.js";
+import { risqueDecrochage, tauxAbsenteismeCorrige, classerPromotion } from "./lib/risque.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
 import { buildSifa, buildBpf, toCsv, SIFA_COLUMNS, BPF_FINANCEURS, sifaObservationDate } from "./lib/declarations.js";
@@ -3967,6 +3971,302 @@ app.delete("/api/learners/:id/acquis/:blocId", requireAuth, (req, res) => {
   if (!ok) return res.status(404).json({ error: "aucune décision sur ce bloc" });
   logAudit(req, "delete", "acquis", `${l.prenom} ${l.nom} — bloc ${req.params.blocId}`);
   res.json({ ok: true });
+});
+
+// ===== Individualisation et suivi du parcours =====
+const aujourdhui = () => new Date().toISOString().slice(0, 10);
+
+app.get("/api/suivi/referentiels", requireAuth, (req, res) => res.json({
+  positionnementModalites: suivi.POSITIONNEMENT_MODALITES,
+  prerequisVerdicts: suivi.PREREQUIS_VERDICTS,
+  amenagementTypes: suivi.AMENAGEMENT_TYPES,
+  amenagementStatuts: suivi.AMENAGEMENT_STATUTS,
+  suiviTypes: suivi.SUIVI_TYPES,
+  cadenceJours: suivi.CADENCE_DEFAUT_JOURS,
+}));
+
+// Dossier de suivi complet d'un apprenant : positionnement, aménagements,
+// rencontres, et l'état de la cadence. Une seule requête — l'écran en a besoin
+// d'un bloc.
+app.get("/api/learners/:id/suivi", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut))
+    || store.listEnrollments({ learnerId: l.id })[0] || null;
+  const contrat = store.listContracts({ learnerId: l.id })[0] || null;
+  const suivis = store.listSuivis({ learnerId: l.id });
+  res.json({
+    positionnement: store.getPositionnement(l.id),
+    amenagements: store.listAmenagements({ learnerId: l.id }),
+    suivis,
+    etat: suivi.etatSuivi({
+      suivis, debut: enr?.dateDebut || contrat?.dateDebut || null, aujourdhui: aujourdhui(),
+      ruptureOuverte: !!(contrat?.rupture && !["resolue", "confirmee"].includes(contrat.rupture.stage)),
+    }),
+    debutFormation: enr?.dateDebut || contrat?.dateDebut || null,
+  });
+});
+
+app.put("/api/learners/:id/positionnement", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const enr = store.listEnrollments({ learnerId: l.id })[0] || null;
+  const v = suivi.validatePositionnement(req.body || {}, { debutFormation: enr?.dateDebut || null });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.setPositionnement({ ...req.body, learnerId: l.id, realisePar: String(req.body.realisePar || "").trim() || req.user.name || req.user.email });
+  logAudit(req, "update", "positionnement", `${l.prenom} ${l.nom}`);
+  res.json({ ...saved, warnings: v.warnings });
+});
+
+app.post("/api/learners/:id/amenagements", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const v = suivi.validateAmenagement(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.addAmenagement({ ...req.body, learnerId: l.id, date: req.body.date || aujourdhui() });
+  logAudit(req, "create", "amenagement", `${l.prenom} ${l.nom} — ${suivi.AMENAGEMENT_TYPES[req.body.type]?.label || ""}`);
+  res.json({ ...saved, warnings: v.warnings });
+});
+app.patch("/api/amenagements/:rid", requireAuth, (req, res) => {
+  const a = store.listAmenagements({}).find((x) => x.id === req.params.rid);
+  if (!a) return res.status(404).json({ error: "aménagement introuvable" });
+  const l = store.getLearner(a.learnerId);
+  if (!l || !assertCampus(req, res, l.campusId)) return;
+  const v = suivi.validateAmenagement({ ...a, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  logAudit(req, "update", "amenagement", `${l.prenom} ${l.nom}`);
+  res.json({ ...store.updateAmenagement(req.params.rid, req.body || {}), warnings: v.warnings });
+});
+app.delete("/api/amenagements/:rid", requireAuth, (req, res) => {
+  const a = store.listAmenagements({}).find((x) => x.id === req.params.rid);
+  if (!a) return res.status(404).json({ error: "aménagement introuvable" });
+  const l = store.getLearner(a.learnerId);
+  if (!l || !assertCampus(req, res, l.campusId)) return;
+  store.deleteAmenagement(req.params.rid);
+  logAudit(req, "delete", "amenagement", `${l.prenom} ${l.nom}`);
+  res.json({ ok: true });
+});
+
+app.post("/api/learners/:id/suivis", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const v = suivi.validateSuivi(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.addSuivi({ ...req.body, learnerId: l.id, realisePar: String(req.body.realisePar || "").trim() || req.user.name || req.user.email });
+  logAudit(req, "create", "suivi", `${l.prenom} ${l.nom} — ${suivi.SUIVI_TYPES[req.body.type] || ""}`);
+  res.json({ ...saved, warnings: v.warnings });
+});
+app.delete("/api/suivis/:rid", requireAuth, (req, res) => {
+  const s = store.listSuivis({}).find((x) => x.id === req.params.rid);
+  if (!s) return res.status(404).json({ error: "suivi introuvable" });
+  const l = store.getLearner(s.learnerId);
+  if (!l || !assertCampus(req, res, l.campusId)) return;
+  store.deleteSuivi(req.params.rid);
+  logAudit(req, "delete", "suivi", `${l.prenom} ${l.nom}`);
+  res.json({ ok: true });
+});
+
+// ===== Registres qualité : réclamations et sous-traitance =====
+app.get("/api/qualite/referentiels", requireAuth, (req, res) => res.json({
+  origines: qualite.RECLAMATION_ORIGINES, natures: qualite.RECLAMATION_NATURES,
+  kinds: qualite.RECLAMATION_KINDS, statuts: qualite.RECLAMATION_STATUTS,
+  delaiReponseJours: qualite.DELAI_REPONSE_JOURS,
+  perimetres: qualite.SOUS_TRAITANCE_PERIMETRES,
+}));
+
+app.get("/api/reclamations", requireAuth, (req, res) => {
+  const items = scopeByCampus(req, store.listReclamations({ campusId: req.query.campusId }));
+  res.json(qualite.registreReclamations(items, aujourdhui()));
+});
+app.post("/api/reclamations", requireAuth, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = qualite.validateReclamation(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.addReclamation(req.body);
+  logAudit(req, "create", "reclamation", `${req.body.objet}`);
+  res.json({ ...saved, warnings: v.warnings });
+});
+app.patch("/api/reclamations/:rid", requireAuth, (req, res) => {
+  const r = store.getReclamation(req.params.rid);
+  if (!r) return res.status(404).json({ error: "réclamation introuvable" });
+  if (!assertCampus(req, res, r.campusId)) return;
+  const v = qualite.validateReclamation({ ...r, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  logAudit(req, "update", "reclamation", `${r.objet}`);
+  res.json({ ...store.updateReclamation(req.params.rid, req.body || {}), warnings: v.warnings });
+});
+app.delete("/api/reclamations/:rid", requireAuth, requireAdmin, (req, res) => {
+  const r = store.getReclamation(req.params.rid);
+  if (!r) return res.status(404).json({ error: "réclamation introuvable" });
+  if (!assertCampus(req, res, r.campusId)) return;
+  store.deleteReclamation(req.params.rid);
+  logAudit(req, "delete", "reclamation", `${r.objet}`);
+  res.json({ ok: true });
+});
+
+app.get("/api/sous-traitants", requireAuth, (req, res) => {
+  const items = scopeByCampus(req, store.listSousTraitants({ campusId: req.query.campusId }));
+  res.json({ items, registre: qualite.registreSousTraitance(items, aujourdhui()) });
+});
+app.post("/api/sous-traitants", requireAuth, requireAdmin, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = qualite.validateSousTraitant(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.addSousTraitant(req.body);
+  logAudit(req, "create", "sous-traitant", req.body.nom);
+  res.json({ ...saved, warnings: v.warnings });
+});
+app.patch("/api/sous-traitants/:rid", requireAuth, requireAdmin, (req, res) => {
+  const s = store.getSousTraitant(req.params.rid);
+  if (!s) return res.status(404).json({ error: "sous-traitant introuvable" });
+  if (!assertCampus(req, res, s.campusId)) return;
+  const v = qualite.validateSousTraitant({ ...s, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  logAudit(req, "update", "sous-traitant", s.nom);
+  res.json({ ...store.updateSousTraitant(req.params.rid, req.body || {}), warnings: v.warnings });
+});
+app.delete("/api/sous-traitants/:rid", requireAuth, requireAdmin, (req, res) => {
+  const s = store.getSousTraitant(req.params.rid);
+  if (!s) return res.status(404).json({ error: "sous-traitant introuvable" });
+  if (!assertCampus(req, res, s.campusId)) return;
+  store.deleteSousTraitant(req.params.rid);
+  logAudit(req, "delete", "sous-traitant", s.nom);
+  res.json({ ok: true });
+});
+
+// ===== Sessions d'examen et jury =====
+app.get("/api/jury/referentiels", requireAuth, (req, res) => res.json({
+  statuts: jury.SESSION_STATUTS, decisions: jury.DECISIONS_JURY,
+  decisionsBloc: jury.DECISIONS_BLOC, roles: jury.ROLES_JURY,
+  delaiConvocationJours: jury.DELAI_CONVOCATION_JOURS,
+}));
+
+app.get("/api/jury/sessions", requireAuth, (req, res) => {
+  const items = scopeByCampus(req, store.listJurySessions({ campusId: req.query.campusId }));
+  res.json(items.map((s) => ({ ...s, convocation: jury.etatConvocation(s) })));
+});
+app.post("/api/jury/sessions", requireAuth, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = jury.validateSession(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.addJurySession(req.body);
+  logAudit(req, "create", "jury", req.body.intitule);
+  res.json({ ...saved, warnings: v.warnings });
+});
+app.patch("/api/jury/sessions/:rid", requireAuth, (req, res) => {
+  const s = store.getJurySession(req.params.rid);
+  if (!s) return res.status(404).json({ error: "session introuvable" });
+  if (!assertCampus(req, res, s.campusId)) return;
+  const v = jury.validateSession({ ...s, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  logAudit(req, "update", "jury", s.intitule);
+  res.json({ ...store.updateJurySession(req.params.rid, req.body || {}), warnings: v.warnings });
+});
+app.delete("/api/jury/sessions/:rid", requireAuth, requireAdmin, (req, res) => {
+  const s = store.getJurySession(req.params.rid);
+  if (!s) return res.status(404).json({ error: "session introuvable" });
+  if (!assertCampus(req, res, s.campusId)) return;
+  store.deleteJurySession(req.params.rid);
+  logAudit(req, "delete", "jury", s.intitule);
+  res.json({ ok: true });
+});
+
+// Délibération d'un apprenant : confronte le calcul et ce que le jury prononce.
+app.get("/api/learners/:id/deliberation", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut))
+    || store.listEnrollments({ learnerId: l.id })[0];
+  if (!enr?.classId) return res.status(400).json({ error: "apprenant sans classe — créer l'inscription d'abord" });
+  const r = buildLearnerReport(l, enr.classId, {});
+  const pv = (store.getJurySession(req.query.sessionId) || {}).proces || {};
+  const dossier = pv[l.id] || {};
+  res.json({
+    apprenant: `${l.prenom} ${l.nom}`,
+    ...jury.deliberation({
+      blocsCalcules: r.blocs || [],
+      decisions: dossier.decisions || {}, motifs: dossier.motifs || {},
+      decisionGlobale: dossier.decisionGlobale || null,
+    }),
+  });
+});
+
+// Le procès-verbal est porté par la session : une délibération concerne une
+// promotion, pas un apprenant isolé.
+app.put("/api/jury/sessions/:rid/proces/:learnerId", requireAuth, (req, res) => {
+  const s = store.getJurySession(req.params.rid);
+  if (!s) return res.status(404).json({ error: "session introuvable" });
+  if (!assertCampus(req, res, s.campusId)) return;
+  const l = store.getLearner(req.params.learnerId);
+  if (!l || !assertCampus(req, res, l.campusId)) return res.status(404).json({ error: "apprenant introuvable" });
+  const proces = { ...(s.proces || {}) };
+  proces[l.id] = {
+    decisions: req.body?.decisions || {}, motifs: req.body?.motifs || {},
+    decisionGlobale: req.body?.decisionGlobale || null,
+    saisiPar: req.user.name || req.user.email, saisiLe: new Date().toISOString(),
+  };
+  store.updateJurySession(s.id, { proces });
+  logAudit(req, "update", "jury", `PV ${s.intitule} — ${l.prenom} ${l.nom} : ${jury.DECISIONS_JURY[req.body?.decisionGlobale] || "en cours"}`);
+  res.json({ ok: true });
+});
+
+// ===== Risque de décrochage =====
+// Toutes les données existaient ; aucune ne disait rien seule. C'est le
+// croisement qui alerte utilement.
+app.get("/api/risque/decrochage", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const classId = req.query.classId || undefined;
+  const apprenants = store.listLearners({ campusId });
+  const contrats = store.listContracts({ campusId });
+  const evaluations = [];
+
+  for (const l of apprenants) {
+    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut));
+    if (!enr) continue;
+    if (classId && enr.classId !== classId) continue;
+
+    // Assiduité : sur les feuilles closes, corrigée des blocs allégés — sinon on
+    // alerterait sur un apprenant dispensé de suivre, donc à jour.
+    const sheets = attendancestore.listSheets({ campusId, classId: enr.classId, status: "locked" });
+    let prevues = 0, manquees = 0, injustifiees = 0;
+    for (const s of sheets) {
+      const st = sheetStats(s);
+      const e = effectiveEntries(s).find((x) => x.learnerId === l.id);
+      if (!e) continue;
+      prevues += st.durationMinutes;
+      if (e.status === "absent" || e.status === "excuse") {
+        manquees += st.durationMinutes;
+        if (e.status === "absent" && !e.justified) injustifiees++;
+      } else if (e.status === "retard") manquees += Math.min(Number(e.minutesLate) || 0, st.durationMinutes);
+    }
+
+    const rapport = enr.classId ? buildLearnerReport(l, enr.classId, {}) : null;
+    const blocs = rapport?.blocs || [];
+    const contrat = contrats.find((c) => c.learnerId === l.id) || null;
+    const suivis = store.listSuivis({ learnerId: l.id });
+    const etatS = suivi.etatSuivi({ suivis, debut: enr.dateDebut || null, aujourdhui: aujourdhui() });
+
+    evaluations.push({
+      learnerId: l.id, nom: `${l.prenom} ${l.nom}`, classId: enr.classId || null,
+      risque: risqueDecrochage({
+        tauxAbsenteisme: tauxAbsenteismeCorrige({ minutesPrevues: prevues, minutesManquees: manquees }),
+        absencesNonJustifiees: injustifiees,
+        moyenne: rapport?.average ?? null,
+        blocsTotal: blocs.length,
+        blocsNonAcquis: blocs.filter((b) => b.status === "non_acquis").length,
+        ruptureOuverte: !!(contrat?.rupture && !["resolue", "confirmee"].includes(contrat.rupture.stage)),
+        sansContrat: !contrat && enr.statut === "stagiaire",
+        joursSansSuivi: etatS.joursDepuis,
+      }),
+    });
+  }
+  const classes = classerPromotion(evaluations);
+  res.json({
+    total: classes.length,
+    aTraiter: classes.filter((x) => x.risque.aTraiter).length,
+    items: classes,
+  });
 });
 
 // ===== Licence de l'instance =====
