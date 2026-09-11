@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/calc.test.mjs test/schedule.test.mjs test/generator.test.mjs test/store.test.mjs test/learners.test.mjs test/portal.test.mjs test/grades.test.mjs test/acquis.test.mjs test/suivi.test.mjs test/qualite.test.mjs test/jury.test.mjs test/risque.test.mjs test/apikeys.test.mjs test/publicapi.test.mjs test/licence-integration.test.mjs test/stripe.test.mjs test/licence.test.mjs test/provisioning.test.mjs test/declarations.test.mjs test/billing.test.mjs test/contracts.test.mjs test/attendance.test.mjs test/migration-attendance.test.mjs test/salesforce.test.mjs test/si.test.mjs test/security.test.mjs"
+    "test": "node --test test/calc.test.mjs test/schedule.test.mjs test/generator.test.mjs test/store.test.mjs test/learners.test.mjs test/portal.test.mjs test/grades.test.mjs test/acquis.test.mjs test/suivi.test.mjs test/qualite.test.mjs test/jury.test.mjs test/risque.test.mjs test/db.test.mjs test/apikeys.test.mjs test/publicapi.test.mjs test/licence-integration.test.mjs test/stripe.test.mjs test/licence.test.mjs test/provisioning.test.mjs test/declarations.test.mjs test/billing.test.mjs test/contracts.test.mjs test/attendance.test.mjs test/migration-attendance.test.mjs test/salesforce.test.mjs test/si.test.mjs test/security.test.mjs"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^9.0.1",
@@ -26,6 +26,7 @@
     "nodemailer": "^9.0.3",
     "openai": "^4.77.0",
     "pdf-parse": "^1.1.1",
+    "pg": "^8.23.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }
