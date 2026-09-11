@@ -227,6 +227,34 @@ app.use((req, res, next) => {
   next();
 });
 
+// --- Durabilité des écritures ---
+// La réponse d'une mutation ne doit PAS partir avant que l'écriture soit
+// durable : sinon un arrêt entre la réponse et la confirmation perdrait une
+// donnée que le client croit enregistrée. Un seul point de passage ici, plutôt
+// que 197 `await` dispersés dans les routes — et donc aucun oubli possible.
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+  const envoyerJson = res.json.bind(res);
+  const envoyer = res.send.bind(res);
+  let enCours = false;
+  const differer = (emission) => (corps) => {
+    if (enCours) return emission(corps);   // ré-entrance (ex. gestion d'erreur)
+    enCours = true;
+    store.flush().then(
+      () => emission(corps),
+      (e) => {
+        console.error(new Date().toISOString(), "flush :", e.message);
+        if (!res.headersSent) res.status(500);
+        emission({ error: "enregistrement non confirmé — l'opération a été annulée, réessayer" });
+      },
+    );
+    return res;
+  };
+  res.json = differer(envoyerJson);
+  res.send = differer(envoyer);
+  next();
+});
+
 // --- Licence de l'instance ---
 // Le plan par DÉFAUT est le plus large. Contre-intuitif pour un SaaS, mais une
 // instance déjà en service dont le .env ne porte pas de plan ne doit pas se
@@ -5676,6 +5704,17 @@ if (process.env.RETENTION !== "off" && cron.validate(retentionCron)) {
     } catch (e) { console.error("[retention] echec :", e?.message || e); }
   }, { timezone: "Europe/Paris" });
   console.log(`[retention] purge planifiee (${retentionCron}, Europe/Paris)`);
+}
+
+// Le chargement précède l'écoute : accepter une requête avant d'avoir lu la
+// base servirait une application vide, ce qu'un utilisateur interpréterait
+// comme une perte de données.
+try {
+  const mode = await store.init();
+  console.log("persistance :", mode.mode === "postgres" ? `PostgreSQL (${mode.collections} collections)` : "fichier JSON");
+} catch (e) {
+  console.error("PERSISTANCE INDISPONIBLE :", e.message);
+  process.exit(1);
 }
 
 app.listen(PORT, () => {

@@ -23,7 +23,7 @@ fi
 
 docker run --rm --network "$RESEAU" -v "$PWD":/app -w /app \
   -e DATABASE_URL_TEST="postgres://postgres:test@${BASE}:5432/campus_test" \
-  node:20-alpine node --test test/db.test.mjs
+  node:20-alpine node --test test/db.test.mjs test/pg-integration.test.mjs
 
 echo
 echo "Pour arreter la base de test : docker rm -f ${BASE}"

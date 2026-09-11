@@ -104,3 +104,58 @@ siBase("l'écriture d'une ligne ne dépend PAS du volume — c'est tout l'objet 
   // Dix fois plus de données ne doivent pas doubler le coût d'une écriture.
   assert.ok(grand < petit * 2 + 1, `écriture non constante : ${petit.toFixed(2)} ms → ${grand.toFixed(2)} ms`);
 });
+
+siBase("RIEN N'EST PERDU : après écriture, la base relue doit égaler la mémoire", async () => {
+  // C'est LE test qui protège la classification « muté en place / jamais muté ».
+  // Une collection mal classée perdrait ses mises à jour : la mémoire les
+  // porterait, la base non — et personne ne s'en apercevrait avant un
+  // redémarrage. On le vérifie ici, à chaque exécution.
+  process.env.DATABASE_URL = URL_TEST;
+  const store = await import("../lib/store.js?rechargement=" + Math.random());
+  await store.init();
+
+  const campus = store.addCampus({ name: "Campus Round-trip" });
+  const l = store.addLearner({ campusId: campus.id, nom: "Aller", prenom: "Retour" });
+  const e = store.addEnrollment({ learnerId: l.id, campusId: campus.id, schoolYear: "2026-2027" });
+
+  // Mutation EN PLACE : c'est exactement ce qu'une comparaison de références
+  // laisserait passer.
+  store.updateLearner(l.id, { telephone: "0611223344", ine: "INE-RT" });
+  store.updateEnrollment(e.id, { statut: "stagiaire" });
+  await store.flush();
+
+  const enBase = await db.loadAll();
+  const lBase = enBase.learners.find((x) => x.id === l.id);
+  assert.equal(lBase.telephone, "0611223344", "mise à jour en place perdue — collection mal classée");
+  assert.equal(lBase.ine, "INE-RT");
+  assert.equal(enBase.enrollments.find((x) => x.id === e.id).statut, "stagiaire");
+
+  // Suppression
+  store.deleteLearner(l.id);
+  await store.flush();
+  assert.equal((await db.loadAll()).learners.find((x) => x.id === l.id), undefined);
+});
+
+siBase("classification : une collection mutée en place NE DOIT PAS manquer à la liste", async () => {
+  // Test STRUCTUREL : il relit le code source du magasin. Si quelqu'un ajoute
+  // demain un Object.assign sur une collection absente de la liste, sa mise à
+  // jour serait silencieusement perdue en base — la mémoire la porterait, la
+  // base non, et personne ne le verrait avant un redémarrage. Ce test le refuse.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../lib/store.js", import.meta.url), "utf8");
+  const store = await import("../lib/store.js");
+  const manquantes = [];
+  for (const c of db.COLLECTION_NAMES) {
+    if (store.COLLECTIONS_MUTEES_EN_PLACE.has(c)) continue;
+    const re = new RegExp("(?:const|let)\\s+(\\w+)\\s*=\\s*\\(?db\\." + c + "\\b[^;]{0,200};", "g");
+    let m;
+    while ((m = re.exec(src))) {
+      const v = m[1];
+      const suite = src.slice(m.index, m.index + 1200);
+      const assign = new RegExp("Object\\.assign\\(\\s*" + v + "\\b");
+      const champ = new RegExp("\\b" + v + "\\.[A-Za-z_]+\\s*=[^=]");
+      if (assign.test(suite) || champ.test(suite)) { manquantes.push(c); break; }
+    }
+  }
+  assert.deepEqual(manquantes, [], `mutées en place mais absentes de COLLECTIONS_MUTEES_EN_PLACE : ${manquantes.join(", ")}`);
+});
