@@ -136,26 +136,90 @@ siBase("RIEN N'EST PERDU : après écriture, la base relue doit égaler la mémo
   assert.equal((await db.loadAll()).learners.find((x) => x.id === l.id), undefined);
 });
 
-siBase("classification : une collection mutée en place NE DOIT PAS manquer à la liste", async () => {
-  // Test STRUCTUREL : il relit le code source du magasin. Si quelqu'un ajoute
-  // demain un Object.assign sur une collection absente de la liste, sa mise à
-  // jour serait silencieusement perdue en base — la mémoire la porterait, la
-  // base non, et personne ne le verrait avant un redémarrage. Ce test le refuse.
+siBase("COUVERTURE DE touch() : aucune modification sur place ne doit échapper", async () => {
+  // Le chemin chaud ne sérialise plus rien : une modification sur place n'est
+  // détectée QUE si la fonction appelle touch(). Un oubli perdrait la mise à
+  // jour en base sans que rien ne le signale avant un redémarrage.
+  // Ce test exerce les mutations en place réelles, puis compare la mémoire à la
+  // base ligne à ligne.
+  process.env.DATABASE_URL = URL_TEST;
+  const store = await import("../lib/store.js?couverture=" + Math.random());
+  await store.init();
+
+  const campus = store.addCampus({ name: "Campus Couverture" });
+  const l = store.addLearner({ campusId: campus.id, nom: "A", prenom: "B" });
+  const e = store.addEnrollment({ learnerId: l.id, campusId: campus.id, schoolYear: "2026-2027" });
+  const cur = store.addCurriculum({ name: "Cur", modules: [{ code: "U1", label: "M", coefficient: 1 }] });
+  const k = store.addClass({ campusId: campus.id, name: "K1", curriculumId: cur.id });
+  const t = store.addTeacher({ campusId: campus.id, name: "Prof" });
+  const r = store.addRoom({ campusId: campus.id, name: "Salle" });
+  const pa = store.addPartner({ campusId: campus.id, name: "Entreprise" });
+
+  // Mutations EN PLACE — chacune passe par Object.assign ou une affectation de champ.
+  store.updateLearner(l.id, { telephone: "0600000000", ine: "INE-COUV" });
+  store.updateEnrollment(e.id, { statut: "stagiaire" });
+  store.updateClass(k.id, { name: "K1 renommée" });
+  store.updateTeacher(t.id, { email: "prof@x.fr" });
+  store.updateRoom(r.id, { capacity: 30 });
+  store.updatePartner(pa.id, { siret: "73282932000074" });
+  store.updateCurriculum(cur.id, { name: "Cur renommé" });
+  store.updateCampusPart(campus.id, { city: "Lyon" });
+  store.setConsent(l.id, { image: true });
+
+  store.updateCampus(campus.id, { city: "Lyon" });
+  // Remplacements PAR INDEX : reprendre une décision existante remplace la ligne
+  // à sa place dans le tableau — ni ajout, ni suppression, ni Object.assign.
+  store.setPositionnement({ learnerId: l.id, date: "2026-08-01", modalite: "entretien", prerequis: "satisfaits", realisePar: "X" });
+  store.setPositionnement({ learnerId: l.id, date: "2026-08-15", modalite: "test", prerequis: "satisfaits", realisePar: "Y" });
+
+  const v = await store.verifierCoherence();
+  assert.deepEqual(v.ecarts, [], "modification(s) sur place perdue(s) — touch() manquant : " +
+    v.ecarts.map((x) => `${x.collection}/${x.id} (${x.motif})`).join(", "));
+  assert.equal(v.ok, true);
+
+  // Et la base porte bien les nouvelles valeurs.
+  const enBase = await db.loadAll();
+  assert.equal(enBase.learners.find((x) => x.id === l.id).telephone, "0600000000");
+  assert.equal(enBase.enrollments.find((x) => x.id === e.id).statut, "stagiaire");
+  assert.equal(enBase.classes.find((x) => x.id === k.id).name, "K1 renommée");
+  assert.equal(enBase.campuses.find((x) => x.id === campus.id).city, "Lyon");
+  const pos = enBase.positionnements.filter((x) => x.learnerId === l.id);
+  assert.equal(pos.length, 1, "un seul positionnement par apprenant");
+  assert.equal(pos[0].date, "2026-08-15", "le remplacement par index doit être persisté");
+});
+
+siBase("STRUCTUREL : toute fonction mutant une ligne sur place appelle touch()", async () => {
+  // Le chemin chaud ne sérialise plus rien (c'était 326 à 432 ms par écriture à
+  // 30 campus). La contrepartie est une discipline, et une discipline non
+  // vérifiée se perd. Ce test relit lib/store.js et échoue si une fonction
+  // modifie une ligne sur place sans la marquer — y compris par accès calculé
+  // `row[k] = …`, forme qui m'avait échappé au premier passage.
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../lib/store.js", import.meta.url), "utf8");
-  const store = await import("../lib/store.js");
-  const manquantes = [];
-  for (const c of db.COLLECTION_NAMES) {
-    if (store.COLLECTIONS_MUTEES_EN_PLACE.has(c)) continue;
-    const re = new RegExp("(?:const|let)\\s+(\\w+)\\s*=\\s*\\(?db\\." + c + "\\b[^;]{0,200};", "g");
-    let m;
-    while ((m = re.exec(src))) {
-      const v = m[1];
-      const suite = src.slice(m.index, m.index + 1200);
-      const assign = new RegExp("Object\\.assign\\(\\s*" + v + "\\b");
-      const champ = new RegExp("\\b" + v + "\\.[A-Za-z_]+\\s*=[^=]");
-      if (assign.test(suite) || champ.test(suite)) { manquantes.push(c); break; }
+  const lignes = src.split("\n");
+  const oublis = [];
+  for (let i = 0; i < lignes.length; i++) {
+    if (!lignes[i].includes("write(db)")) continue;
+    let debut = i;
+    while (debut > 0 && !/^export (?:async )?function /.test(lignes[debut])) debut--;
+    const nom = (/^export (?:async )?function (\w+)/.exec(lignes[debut]) || [])[1] || "?";
+    const corps = lignes.slice(debut, i).join("\n");
+    const marques = new Set([...corps.matchAll(/touch\("(\w+)", (\w+)\)/g)].map((m) => m[1] + "|" + m[2]));
+    // Forme distincte : remplacement d'une ligne PAR INDEX (db.x[i] = ligne).
+    // Même tableau, même longueur, référence de ligne différente : le raccourci
+    // de diff() ne la voit pas. C'est ainsi que deux cas m'avaient échappé.
+    for (const m of corps.matchAll(/db\.(\w+)\[[^\]]+\]\s*=\s*(\w+)\s*[;,)]/g)) {
+      const [, coll, v] = m;
+      if (!marques.has(coll + "|" + v)) oublis.push(`${nom} → ${coll} (remplacement par index de ${v})`);
+    }
+    for (const m of corps.matchAll(/(?:const|let)\s+(\w+)\s*=\s*\(?db\.(\w+)\b/g)) {
+      const [, v, coll] = m;
+      const apres = corps.slice(m.index + m[0].length);
+      const enPlace = new RegExp(`Object\\.assign\\(\\s*${v}\\b`).test(apres)
+        || new RegExp(`\\b${v}\\.[A-Za-z_]+\\s*=[^=]`).test(apres)
+        || new RegExp(`\\b${v}\\[[^\\]]+\\]\\s*=[^=]`).test(apres);
+      if (enPlace && !marques.has(coll + "|" + v)) oublis.push(`${nom} → ${coll} (variable ${v})`);
     }
   }
-  assert.deepEqual(manquantes, [], `mutées en place mais absentes de COLLECTIONS_MUTEES_EN_PLACE : ${manquantes.join(", ")}`);
+  assert.deepEqual(oublis, [], "modification sur place non marquée :\n  " + oublis.join("\n  "));
 });

@@ -1365,9 +1365,13 @@ app.get("/api/export/:kind", requireAuth, (req, res) => {
     const classes = new Map(store.listClasses({}).map((k) => [k.id, k.name]));
     const enr = new Map();
     for (const e of store.listEnrollments({})) if (!enr.has(e.learnerId)) enr.set(e.learnerId, e);
+    // Le nom du campus se résolvait par un listCampuses().find() DANS la boucle :
+    // sur 15 000 apprenants et 30 campus, c'était 15 000 copies de la liste et
+    // 450 000 comparaisons. Une table de correspondance, construite une fois.
+    const nomCampus = new Map(store.listCampuses().map((c) => [c.id, c.name]));
     const rows = scopeByCampus(req, store.listLearners({})).map((l) => {
       const e = enr.get(l.id);
-      return { Campus: store.listCampuses().find((c) => c.id === l.campusId)?.name || "", Nom: l.nom, "Prénom": l.prenom,
+      return { Campus: nomCampus.get(l.campusId) || "", Nom: l.nom, "Prénom": l.prenom,
         "Civilité": l.civilite, "Né(e) le": l.dateNaissance, INE: l.ine, Email: l.email, "Téléphone": l.telephone,
         RQTH: l.rqth ? "oui" : "", "Année": e?.schoolYear || "", Classe: e ? (classes.get(e.classId) || "") : "", Statut: e?.statut || "" };
     });
@@ -4284,14 +4288,38 @@ app.get("/api/risque/decrochage", requireAuth, (req, res) => {
   const contrats = store.listContracts({ campusId });
   const evaluations = [];
 
+  // Ce calcul se faisait PAR APPRENANT : pour chacun, on reconstruisait le
+  // bulletin de toute sa classe et on relisait ses feuilles d'émargement. Sur un
+  // campus de 500 apprenants, cela faisait 500 fois le même travail — mesuré à
+  // 3 979 ms pour un seul campus, soit deux minutes pour un réseau de 30. Le
+  // coût réel est celui d'une classe, pas d'un apprenant : on le paie une fois.
+  const inscriptionsParApprenant = new Map();
+  for (const e of store.listEnrollments({ campusId })) {
+    if (store.ENROLLMENT_ACTIFS.includes(e.statut) && !inscriptionsParApprenant.has(e.learnerId)) {
+      inscriptionsParApprenant.set(e.learnerId, e);
+    }
+  }
+  const contratsParApprenant = new Map();
+  for (const c of contrats) if (!contratsParApprenant.has(c.learnerId)) contratsParApprenant.set(c.learnerId, c);
+  const suivisParApprenant = new Map();
+  for (const s of store.listSuivis({})) {
+    if (!suivisParApprenant.has(s.learnerId)) suivisParApprenant.set(s.learnerId, []);
+    suivisParApprenant.get(s.learnerId).push(s);
+  }
+  const rapportsParClasse = new Map();   // classId -> Map(learnerId -> rapport)
+  const feuillesParClasse = new Map();   // classId -> feuilles closes
+
   for (const l of apprenants) {
-    const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut));
+    const enr = inscriptionsParApprenant.get(l.id);
     if (!enr) continue;
     if (classId && enr.classId !== classId) continue;
 
     // Assiduité : sur les feuilles closes, corrigée des blocs allégés — sinon on
     // alerterait sur un apprenant dispensé de suivre, donc à jour.
-    const sheets = attendancestore.listSheets({ campusId, classId: enr.classId, status: "locked" });
+    if (!feuillesParClasse.has(enr.classId)) {
+      feuillesParClasse.set(enr.classId, attendancestore.listSheets({ campusId, classId: enr.classId, status: "locked" }));
+    }
+    const sheets = feuillesParClasse.get(enr.classId);
     let prevues = 0, manquees = 0, injustifiees = 0;
     for (const s of sheets) {
       const st = sheetStats(s);
@@ -4304,10 +4332,18 @@ app.get("/api/risque/decrochage", requireAuth, (req, res) => {
       } else if (e.status === "retard") manquees += Math.min(Number(e.minutesLate) || 0, st.durationMinutes);
     }
 
-    const rapport = enr.classId ? buildLearnerReport(l, enr.classId, {}) : null;
+    // Un seul calcul de bulletins par classe, partagé par tous ses inscrits.
+    let rapport = null;
+    if (enr.classId) {
+      if (!rapportsParClasse.has(enr.classId)) {
+        const ctx = buildClassReports(enr.classId, campusId, {});
+        rapportsParClasse.set(enr.classId, ctx.byLearner);
+      }
+      rapport = rapportsParClasse.get(enr.classId).get(l.id) || null;
+    }
     const blocs = rapport?.blocs || [];
-    const contrat = contrats.find((c) => c.learnerId === l.id) || null;
-    const suivis = store.listSuivis({ learnerId: l.id });
+    const contrat = contratsParApprenant.get(l.id) || null;
+    const suivis = suivisParApprenant.get(l.id) || [];
     const etatS = suivi.etatSuivi({ suivis, debut: enr.dateDebut || null, aujourdhui: aujourdhui() });
 
     evaluations.push({
