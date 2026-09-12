@@ -43,6 +43,7 @@ import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.j
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
 import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
+import { analyseChain } from "./lib/chain.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
 import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
@@ -2058,6 +2059,16 @@ app.get("/api/openings/meta", requireAuth, (req, res) => res.json({ lots: OPENIN
 // besoin pour afficher l'onglet), écriture réservée aux admins — ces valeurs déplacent
 // les dates de TOUS les rétroplannings.
 app.get("/api/opening-settings", requireAuth, (req, res) => res.json(store.getOpeningSettings()));
+// Chaîne d'un rétroplanning : marge par tâche, retard propagé, glissement de la rentrée.
+// Route séparée de /api/openings/:id — la liste des ouvertures n'en a pas besoin, et
+// l'analyse se recalcule à chaque appel plutôt que d'être stockée (une date d'échéance
+// modifiée à la main invaliderait un cache silencieusement).
+app.get("/api/openings/:id/chain", requireAuth, requireAdmin, (req, res) => {
+  const o = store.getOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: "introuvable" });
+  if (!o.targetDate) return res.json({ byId: {}, slip: 0, ruptures: [], cycles: [], path: [], datees: 0, noTarget: true });
+  res.json(analyseChain(o.tasks || [], { targetDate: o.targetDate, today: new Date().toISOString().slice(0, 10) }));
+});
 app.put("/api/opening-settings", requireAuth, requireAdmin, (req, res) => {
   const s = store.setOpeningSettings(req.body || {});
   logAudit(req, "update", "opening-settings", `${s.milestones.length} jalons, ${s.thresholds.length} seuils, ${s.leadTimes.length} délais fournisseurs`);
@@ -2072,14 +2083,38 @@ app.post("/api/openings/:id/apply-settings", requireAuth, requireAdmin, (req, re
   if (!o) return res.status(404).json({ error: "introuvable" });
   if (!o.targetDate) return res.status(400).json({ error: "renseigne d'abord la date de rentrée" });
   const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings());
-  const saisie = (t) => t.owner || t.accountable || t.committeeId || t.notes || t.status !== "todo"
-    || (t.steps || []).length || (t.comments || []).length || (t.outputs || []).length;
-  const gardees = (o.tasks || []).filter(saisie);
-  const vues = new Set(gardees.map((t) => t.title));
-  const tasks = [...gardees, ...seeded.filter((t) => !vues.has(t.title))];
-  store.setOpeningTasks(o.id, tasks);
-  logAudit(req, "update", "opening", `${o.name} — paramètres réseau appliqués (${gardees.length} tâches conservées, ${tasks.length - gardees.length} régénérées)`);
-  res.json({ ...store.getOpening(o.id), kept: gardees.length, rebuilt: tasks.length - gardees.length });
+  const avant = o.tasks || [];
+  // Appariement par CLEF de modèle, avec repli sur le titre pour les rétroplannings
+  // générés avant l'existence de la clef. Apparier au titre seul perdait la tâche dès
+  // qu'un fournisseur était saisi (le titre devient « COMMANDE mobilier — Manutan ») et
+  // en fabriquait un doublon avec la saisie humaine d'un côté et la bonne date de l'autre.
+  const parClef = new Map(), parTitre = new Map();
+  for (const t of avant) { if (t.tplKey) parClef.set(t.tplKey, t); parTitre.set(t.title, t); }
+
+  let recales = 0, ajoutees = 0;
+  const repris = new Set();
+  // 1er passage : retrouver l'existant pour construire la table de correspondance des
+  // identifiants — les dépendances des tâches générées pointent vers des ids générés.
+  const cible = new Map();
+  for (const g of seeded) {
+    const ex = (g.tplKey && parClef.get(g.tplKey)) || parTitre.get(g.title) || null;
+    cible.set(g.id, ex ? ex.id : g.id);
+  }
+  const tasks = seeded.map((g) => {
+    const ex = (g.tplKey && parClef.get(g.tplKey)) || parTitre.get(g.title) || null;
+    const deps = (g.dependsOn || []).map((d) => cible.get(d) || d);
+    if (!ex) { ajoutees++; return { ...g, dependsOn: deps }; }
+    repris.add(ex.id); recales++;
+    // On recale ce que les paramètres déterminent (dates, chaîne, criticité, fournisseur)
+    // et on ne touche à RIEN de ce qui a été saisi : responsable, RACI, étapes,
+    // commentaires, livrables, statut, avancement.
+    return { ...ex, title: g.title, dueDate: g.dueDate, offset: g.offset, critical: g.critical, tplKey: g.tplKey, dependsOn: deps };
+  });
+  // Les tâches ajoutées à la main par l'équipe ne sont pas dans le modèle : elles restent.
+  const propres = avant.filter((t) => !repris.has(t.id));
+  store.setOpeningTasks(o.id, [...tasks, ...propres]);
+  logAudit(req, "update", "opening", `${o.name} — paramètres réseau appliqués (${recales} recalées, ${ajoutees} ajoutées, ${propres.length} propres conservées)`);
+  res.json({ ...store.getOpening(o.id), recalees: recales, ajoutees, propres: propres.length });
 });
 app.get("/api/openings", requireAuth, requireAdmin, (req, res) => res.json(store.listOpenings()));
 app.get("/api/openings/:id", requireAuth, requireAdmin, (req, res) => { const o = store.getOpening(req.params.id); if (!o) return res.status(404).json({ error: "introuvable" }); res.json(o); });

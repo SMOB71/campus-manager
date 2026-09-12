@@ -3859,6 +3859,23 @@ function openOuvertureForm(o) {
     }
   });
 }
+// Chaîne de l'ouverture affichée (null si non chargée). Module-level parce que
+// ouvTaskRow est appelé depuis ouvFriseHtml et les sections par lot, sans contexte.
+let ouvChain = null;
+// Ce qu'une ligne de tâche gagne à dire : combien d'autres l'attendent, ce qu'il reste de
+// marge, et si elle subit déjà le retard d'une autre. Sans ça, 161 lignes se valent.
+function chainChips(t) {
+  const c = ouvChain?.byId?.[t.id];
+  if (!c) return "";
+  const out = [];
+  if (c.downstream > 0) out.push(`<span class="pill" title="${c.blocks} tâche(s) juste après, ${c.downstream} en aval au total">bloque ${c.downstream}</span>`);
+  if (c.slack != null && t.status !== "done") {
+    const cls = c.slack <= 0 ? "overdue" : c.slack <= 7 ? "st-task-blocked" : "";
+    out.push(`<span class="pill ${cls}" title="jours avant que le retard ne touche la tâche suivante">marge ${c.slack} j</span>`);
+  }
+  if (c.inherited > 0) out.push(`<span class="pill overdue" title="retard subi du fait d'une tâche amont">+${c.inherited} j hérités</span>`);
+  return out.length ? ` ${out.join(" ")}` : "";
+}
 function ouvTaskRow(t) {
   const dn = daysTo(t.dueDate); const late = t.status !== "done" && dn != null && dn < 0;
   const when = t.dueDate ? `<span class="${late ? "cell-warn" : ""}">${t.dueDate}${dn != null ? ` (${dn < 0 ? Math.abs(dn) + " j de retard" : "J‑" + dn})` : ""}</span>` : "date libre";
@@ -3866,7 +3883,7 @@ function ouvTaskRow(t) {
     <button class="ouv-check st-${t.status} task-cycle" data-tid="${t.id}" title="${TASK_STATUS[t.status]} — cliquer pour changer"></button>
     <div class="grow"><div class="ttl">${t.critical ? '<span class="crit-dot" title="chemin critique"></span>' : ""}${esc(t.title)}</div>
       <div class="sub muted">${when}${t.owner ? " · " + esc(t.owner) : ""}${(t.steps || []).length ? ` · ${(t.steps || []).filter((s) => s.done).length}/${(t.steps || []).length} étapes` : ""}${(t.outputs || []).length ? ` · ${(t.outputs || []).filter((o) => o.status === "validated").length}/${(t.outputs || []).length} livrables` : ""}${t.notes ? " · " + esc(t.notes) : ""}</div></div>
-    <span class="pill st-task-${t.status}">${TASK_STATUS[t.status]}</span>
+    <span class="pill st-task-${t.status}">${TASK_STATUS[t.status]}</span>${chainChips(t)}
     <button class="btn-ghost btn-sm task-edit" data-tid="${t.id}">✎</button>
   </div>`;
 }
@@ -3972,6 +3989,52 @@ function ouvParamsHtml(cfg, fams) {
     <span id="opp-msg" class="status"></span></div>`;
 }
 
+function ouvChainHtml(ch, tasks) {
+  if (ch?.noTarget) return `<p class="empty">Renseigne la date de rentrée : sans elle, aucune marge ni glissement n'est calculable.</p>`;
+  if (!ch || !ch.datees) return `<p class="empty">Aucune tâche datée.</p>`;
+  const by = new Map((tasks || []).map((t) => [t.id, t]));
+  const jour = (n) => `${n} jour${n > 1 ? "s" : ""}`;
+  const cyc = ch.cycles?.length
+    ? `<div class="card card-pad" style="border-left:3px solid #C94B33;margin-bottom:12px;"><div class="ttl">Dépendances circulaires détectées</div>
+       <p class="hint muted" style="margin:6px 0 0;">Ces tâches s'attendent mutuellement, le calcul les a contournées. Corrige-les dans la fiche de tâche, sinon les marges en aval sont fausses.</p>
+       <ul style="margin:6px 0 0;padding-left:18px;">${ch.cycles.slice(0, 5).map((c) => `<li>${esc(c.join(" → "))}</li>`).join("")}</ul></div>`
+    : "";
+  const rupt = ch.ruptures.length
+    ? `<div class="card" style="overflow-x:auto;"><table class="net-table">
+        <thead><tr><th>Tâche en retard</th><th>Lot</th><th>Retard</th><th>Marge</th><th>Repousse de</th><th>En aval</th><th>Responsable</th></tr></thead>
+        <tbody>${ch.ruptures.slice(0, 25).map((r) => `<tr>
+          <td>${esc(r.title)}</td><td class="muted">${esc(lotLabel(r.lot))}</td>
+          <td>${r.ownDelay} j</td><td class="muted">${r.slack == null ? "—" : r.slack + " j"}</td>
+          <td class="${r.cost > 0 ? "cell-warn" : "muted"}">${r.cost > 0 ? r.cost + " j" : "absorbé"}</td>
+          <td>${r.downstream || "—"}</td><td class="muted">${esc(r.owner || "—")}</td></tr>`).join("")}</tbody></table></div>
+       <p class="hint muted" style="margin-top:8px;">Classées par ce qu'elles <strong>coûtent</strong>, pas par leur ancienneté : un retard de 40 jours sans tâche en aval pèse moins qu'un retard de 5 jours à marge nulle dont 20 tâches dépendent.</p>`
+    : `<p class="muted">Aucune tâche en retard.</p>`;
+  const chaine = ch.path.length
+    ? `<div class="list">${ch.path.map((id) => {
+        const t = by.get(id); if (!t) return "";
+        const c = ch.byId[id] || {};
+        const tendu = c.slack != null && c.slack <= 7;
+        return `<div class="ouv-task ${t.status === "done" ? "is-done" : ""}">
+          <button class="ouv-check st-${t.status}" style="cursor:default;"></button>
+          <div class="grow"><div class="ttl">${esc(t.title)}</div>
+            <div class="sub muted">${t.dueDate} · ${esc(lotLabel(t.lot))}${t.owner ? " · " + esc(t.owner) : ""}</div></div>
+          <span class="pill ${tendu ? "overdue" : ""}">${c.slack == null ? "—" : "marge " + c.slack + " j"}</span></div>`;
+      }).join("")}</div>`
+    : `<p class="muted">Chaîne non déterminable.</p>`;
+  return `${cyc}
+    <div class="kpis" style="margin-bottom:12px;">
+      ${fkpi(ch.slip > 0 ? "+" + ch.slip + " j" : "à l'heure", "Glissement de la rentrée", ch.slip > 0 ? "bad" : "good")}
+      ${fkpi(String(ch.ruptures.length), "Tâches en retard", ch.ruptures.length ? "bad" : "good")}
+      ${fkpi(String(ch.ruptures.filter((r) => r.cost > 0).length), "Dont hors marge", ch.ruptures.some((r) => r.cost > 0) ? "bad" : "good")}
+      ${fkpi(String(ch.datees), "Tâches datées")}
+    </div>
+    <p class="hint muted" style="margin-bottom:12px;">${ch.slip > 0
+      ? `Les retards actuels repoussent la rentrée de <strong>${jour(ch.slip)}</strong>. La chaîne ci-dessous est celle qui le détermine : agir ailleurs ne rattrapera rien.`
+      : `Aucun retard ne déborde sa marge : la rentrée n'est pas menacée. La chaîne ci-dessous est la plus tendue du plan — c'est là que le prochain retard coûtera.`}</p>
+    <div class="ouv-lot"><div class="ouv-lot-head"><span class="ttl">Ruptures</span><span class="muted">${ch.ruptures.length}</span></div>${rupt}</div>
+    <div class="ouv-lot" style="margin-top:16px;"><div class="ouv-lot-head"><span class="ttl">${ch.slip > 0 ? "Chaîne qui détermine le glissement" : "Chaîne la plus tendue"}</span><span class="muted">${ch.path.length} jalons</span></div>${chaine}</div>`;
+}
+
 let ouvView = "lot";
 let ouvFamilies = null;
 async function openOuvertureDetail(oid) {
@@ -3980,6 +4043,9 @@ async function openOuvertureDetail(oid) {
   // Les comités ne sont chargés que pour leur onglet : la modale est reconstruite à
   // chaque mutation, inutile de payer la requête sur les trois autres vues.
   const committees = ouvView === "copil" ? (await api.get(`/api/committees?scope=opening&scopeId=${oid}`)) || [] : [];
+  // La chaîne sert partout : les pastilles « bloque N / marge X j » sont sur chaque ligne
+  // de tâche, pas seulement dans son onglet. Une requête, réutilisée par toutes les vues.
+  ouvChain = ouvView === "params" ? null : await api.get(`/api/openings/${oid}/chain`);
   let opCfg = null;
   if (ouvView === "params") {
     opCfg = (await api.get("/api/opening-settings")) || { milestones: [], thresholds: [], leadTimes: [] };
@@ -4003,9 +4069,10 @@ async function openOuvertureDetail(oid) {
       ${fkpi(p.pct + " %", "Avancement", p.pct === 100 ? "good" : "")}
       ${fkpi(p.done + "/" + p.total, "Tâches faites")}
       ${fkpi(o.budget != null ? eur(o.budget) : "—", "Budget d'ouverture")}
+      ${ouvChain?.datees ? fkpi(ouvChain.slip > 0 ? "+" + ouvChain.slip + " j" : "à l'heure", "Glissement rentrée", ouvChain.slip > 0 ? "bad" : "good") : ""}
     </div>
     <div class="row" style="margin:10px 0;gap:8px;align-items:center;">
-      <div class="chips" id="ouv-mode"><button class="chip ${ouvView === "lot" ? "active" : ""}" data-m="lot">Par lot</button><button class="chip ${ouvView === "frise" ? "active" : ""}" data-m="frise">Frise</button><button class="chip ${ouvView === "budget" ? "active" : ""}" data-m="budget">Budget</button><button class="chip ${ouvView === "copil" ? "active" : ""}" data-m="copil">Comité</button><button class="chip ${ouvView === "params" ? "active" : ""}" data-m="params">Paramètres réseau</button></div>
+      <div class="chips" id="ouv-mode"><button class="chip ${ouvView === "lot" ? "active" : ""}" data-m="lot">Par lot</button><button class="chip ${ouvView === "frise" ? "active" : ""}" data-m="frise">Frise</button><button class="chip ${ouvView === "budget" ? "active" : ""}" data-m="budget">Budget</button><button class="chip ${ouvView === "copil" ? "active" : ""}" data-m="copil">Comité</button><button class="chip ${ouvView === "chaine" ? "active" : ""}" data-m="chaine">Chaîne</button><button class="chip ${ouvView === "params" ? "active" : ""}" data-m="params">Paramètres réseau</button></div>
       <button class="btn-ghost btn-sm" id="ouv-addtask">+ Tâche</button>
       <button class="btn-ghost btn-sm" id="ouv-reseed">Régénérer le type</button>
       <button class="btn-ghost btn-sm" id="ouv-xlsx">Excel</button>
@@ -4014,7 +4081,7 @@ async function openOuvertureDetail(oid) {
       <button class="btn-ghost btn-sm" id="ouv-edit">Modifier</button>
       <button class="btn-ghost btn-sm btn-danger" id="ouv-del">Supprimer</button>
     </div>
-    <div id="ouv-plan">${ouvView === "params" ? ouvParamsHtml(opCfg, ouvFamilies || []) : ouvView === "budget" ? ouvBudgetHtml(o) : ouvView === "copil" ? ouvCopilHtml(committees, o) : ouvView === "frise" ? ouvFriseHtml(frise) : (OUV_LOTS.map(lotSection).join("") || '<p class="muted">Aucune tâche. Ajoute-en ou régénère le rétroplanning type.</p>')}</div>`;
+    <div id="ouv-plan">${ouvView === "chaine" ? ouvChainHtml(ouvChain, o.tasks) : ouvView === "params" ? ouvParamsHtml(opCfg, ouvFamilies || []) : ouvView === "budget" ? ouvBudgetHtml(o) : ouvView === "copil" ? ouvCopilHtml(committees, o) : ouvView === "frise" ? ouvFriseHtml(frise) : (OUV_LOTS.map(lotSection).join("") || '<p class="muted">Aucune tâche. Ajoute-en ou régénère le rétroplanning type.</p>')}</div>`;
   openModal(`${o.name}${o.city ? " · " + o.city : ""}`, body);
   $("#ouv-edit").onclick = () => { closeModals(); openOuvertureForm(o); };
   $("#ouv-del").onclick = async () => { if (!confirm("Supprimer ce projet d'ouverture ?")) return; await api.del(`/api/openings/${oid}`); closeModals(); renderOuvertures(); };
@@ -4068,12 +4135,12 @@ async function openOuvertureDetail(oid) {
       $("#opp-msg").textContent = r?.error ? r.error : `Enregistré ✓ ${r.milestones.length} jalons, ${r.thresholds.length} paliers, ${r.leadTimes.length} engagements`;
     });
     $("#opp-apply")?.addEventListener("click", async () => {
-      if (!confirm("Appliquer les paramètres réseau à ce rétroplanning ?\n\nLes tâches déjà renseignées (responsable, étapes, commentaires, statut) sont conservées ; le reste est régénéré aux nouvelles dates.")) return;
+      if (!confirm("Appliquer les paramètres réseau à ce rétroplanning ?\n\nLes échéances et la chaîne de dépendances sont recalculées. Tout ce qui a été saisi est conservé : responsable, RACI, étapes, commentaires, livrables, statut. Les tâches ajoutées à la main restent.")) return;
       const saved = await api.put("/api/opening-settings", collecte());
       if (saved?.error) { $("#opp-msg").textContent = saved.error; return; }
       const r = await api.post(`/api/openings/${oid}/apply-settings`, {});
       if (r?.error) { $("#opp-msg").textContent = r.error; return; }
-      alert(`Rétroplanning mis à jour ✓\n${r.kept} tâche(s) conservée(s), ${r.rebuilt} régénérée(s).`);
+      alert(`Rétroplanning mis à jour ✓\n${r.recalees} tâche(s) recalée(s), ${r.ajoutees} ajoutée(s), ${r.propres} tâche(s) propre(s) conservée(s).`);
       ouvView = "lot"; closeModals(); openOuvertureDetail(oid);
     });
   }
