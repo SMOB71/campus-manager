@@ -43,7 +43,7 @@ import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.j
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
 import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
-import { analyseChain } from "./lib/chain.js";
+import { analyseChain, planRebase, applyRebase } from "./lib/chain.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
 import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
@@ -2073,6 +2073,27 @@ app.put("/api/opening-settings", requireAuth, requireAdmin, (req, res) => {
   const s = store.setOpeningSettings(req.body || {});
   logAudit(req, "update", "opening-settings", `${s.milestones.length} jalons, ${s.thresholds.length} seuils, ${s.leadTimes.length} délais fournisseurs`);
   res.json(s);
+});
+// Rebasage : reprendre le retard et garder le calendrier pour le reste.
+// Un rétroplanning calculé à rebours d'une rentrée trop proche naît avec des tâches déjà
+// échues ; les laisser en rouge n'aide personne. La date projetée de chaque tâche EST sa
+// première date réalisable (pas avant aujourd'hui, et les délais du modèle respectés) :
+// on la pose comme nouvelle échéance. Seul ce qui doit bouger bouge — une tâche à l'heure
+// dont aucun amont ne glisse garde sa date.
+// `apply: false` (défaut) = aperçu, aucune écriture : on ne déplace pas 110 échéances sans
+// que l'utilisateur ait vu combien, de combien, et où ça atterrit.
+app.post("/api/openings/:id/rebase", requireAuth, requireAdmin, (req, res) => {
+  const o = store.getOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: "introuvable" });
+  if (!o.targetDate) return res.status(400).json({ error: "renseigne d'abord la date de rentrée" });
+  const today = new Date().toISOString().slice(0, 10);
+  const ctx = { targetDate: o.targetDate, today, moveTarget: req.body?.moveTarget === true };
+  if (req.body?.apply !== true) return res.json({ preview: true, ...planRebase(o.tasks || [], ctx) });
+  const r = applyRebase(o.tasks || [], ctx);
+  store.setOpeningTasks(o.id, r.tasks);
+  if (r.movedTarget) store.updateOpening(o.id, { targetDate: r.targetDate });
+  logAudit(req, "update", "opening", `${o.name} — rebasage : ${r.count} échéance(s) décalée(s)${r.movedTarget ? `, rentrée reportée au ${r.targetDate}` : ""}`);
+  res.json({ ...store.getOpening(o.id), count: r.count, landing: r.landing, movedTarget: r.movedTarget, targetDate: r.targetDate });
 });
 // Appliquer les paramètres à un rétroplanning existant SANS perdre la saisie humaine :
 // on recalcule le modèle, on garde les tâches déjà renseignées (responsable, étapes,

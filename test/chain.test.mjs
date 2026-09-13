@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyseChain } from "../lib/chain.js";
+import { analyseChain, planRebase, applyRebase } from "../lib/chain.js";
 import { buildOpeningTasks, OPENING_TEMPLATE } from "../lib/calc.js";
 
 // Graphe minimal : A -> B -> C, puis la rentrée. Dates espacées de 10 jours.
@@ -151,4 +151,79 @@ test("toutes les clefs de modèle sont uniques et tous les `after` résolvent", 
   // pointe vers la mauvaise tâche, en silence.
   const ids = buildOpeningTasks("2028-09-04").map((t) => t.id);
   assert.equal(new Set(ids).size, ids.length);
+});
+
+test("rebasage : reprend le retard, garde le calendrier des tâches non touchées", () => {
+  const CIBLE = "2027-09-01", AUJ = "2026-09-13";
+  const ts = buildOpeningTasks(CIBLE);
+  const avant = analyseChain(ts, { targetDate: CIBLE, today: AUJ });
+  assert.ok(avant.ruptures.length > 20, "un plan à 12 mois naît avec des tâches déjà échues");
+
+  const p = planRebase(ts, { targetDate: CIBLE, today: AUJ });
+  assert.equal(p.count, p.moved.length);
+  assert.ok(p.moved.every((m) => m.to >= AUJ), "aucune échéance rebasée avant aujourd'hui");
+  assert.ok(p.moved.every((m) => m.days > 0), "le rebasage ne fait qu'avancer dans le temps");
+
+  const r = applyRebase(ts, { targetDate: CIBLE, today: AUJ, moveTarget: false });
+  const apres = analyseChain(r.tasks, { targetDate: r.targetDate, today: AUJ });
+  assert.equal(apres.ruptures.length, 0, "plus aucune tâche en retard");
+  // Ce qui n'avait pas à bouger n'a pas bougé : c'est ce qui distingue un rebasage
+  // d'un décalage en bloc de tout le plan.
+  const gardees = ts.filter((t, i) => t.dueDate === r.tasks[i].dueDate);
+  assert.ok(gardees.length > 40 && gardees.length < ts.length, `${gardees.length} tâches gardent leur date`);
+  // Rebaser un plan déjà rebasé ne doit plus rien proposer.
+  assert.equal(planRebase(r.tasks, { targetDate: r.targetDate, today: AUJ }).count, 0);
+});
+
+test("rebasage sans report : le dépassement de la rentrée reste VISIBLE", () => {
+  // Le piège : après rebasage les derniers jalons passent après la rentrée, donc leur
+  // offset devient négatif. Les classer « post-rentrée » sur ce critère les sortait du
+  // calcul et ramenait le glissement à zéro — exactement l'information qu'on voulait voir.
+  const CIBLE = "2027-09-01", AUJ = "2026-09-13";
+  const r = applyRebase(buildOpeningTasks(CIBLE), { targetDate: CIBLE, today: AUJ, moveTarget: false });
+  assert.equal(r.targetDate, CIBLE, "la rentrée n'a pas bougé");
+  assert.equal(r.movedTarget, false);
+  const a = analyseChain(r.tasks, { targetDate: CIBLE, today: AUJ });
+  assert.ok(a.slip > 90, `le dépassement reste annoncé (${a.slip} j)`);
+  // Les seules tâches réellement postérieures à la rentrée sont celles du modèle.
+  assert.ok(r.tasks.some((t) => t.afterOpening === true));
+  assert.ok(r.tasks.filter((t) => t.dueDate > CIBLE).length > r.tasks.filter((t) => t.afterOpening).length);
+});
+
+test("rebasage avec report : la rentrée prend la date d'atterrissage, le plan est sain", () => {
+  const CIBLE = "2027-09-01", AUJ = "2026-09-13";
+  const r = applyRebase(buildOpeningTasks(CIBLE), { targetDate: CIBLE, today: AUJ, moveTarget: true });
+  assert.equal(r.movedTarget, true);
+  assert.equal(r.targetDate, r.landing);
+  assert.ok(r.targetDate > CIBLE);
+  const a = analyseChain(r.tasks, { targetDate: r.targetDate, today: AUJ });
+  assert.equal(a.slip, 0);
+  assert.equal(a.ruptures.length, 0);
+  // Les offsets suivent la nouvelle cible : sinon « recalculer les échéances » annulerait
+  // silencieusement le rebasage au prochain changement de date de rentrée.
+  const base = new Date(r.targetDate);
+  for (const t of r.tasks) {
+    assert.equal(t.offset, Math.round((base - new Date(t.dueDate)) / 86400000), `offset désaligné sur « ${t.title} »`);
+  }
+});
+
+test("rebasage d'un plan sain : ne propose rien et n'écrit rien", () => {
+  const CIBLE = "2028-09-04", AUJ = "2026-09-13";
+  const ts = buildOpeningTasks(CIBLE);
+  const p = planRebase(ts, { targetDate: CIBLE, today: AUJ });
+  assert.equal(p.count, 0);
+  assert.equal(p.slip, 0);
+  const r = applyRebase(ts, { targetDate: CIBLE, today: AUJ, moveTarget: true });
+  assert.equal(r.movedTarget, false, "pas de report quand rien ne déborde");
+  assert.deepEqual(r.tasks.map((t) => t.dueDate), ts.map((t) => t.dueDate));
+});
+
+test("rebasage : une tâche déjà faite garde sa date, on ne réécrit pas le passé", () => {
+  const tasks = [
+    { id: "A", title: "A", lot: "gouv", dueDate: "2026-01-01", status: "done", doneAt: "2026-02-01", offset: 100, dependsOn: [] },
+    { id: "B", title: "B", lot: "gouv", dueDate: "2026-03-01", status: "todo", offset: 40, dependsOn: ["A"] },
+  ];
+  const r = applyRebase(tasks, { targetDate: "2027-01-01", today: "2026-09-13" });
+  assert.equal(r.tasks[0].dueDate, "2026-01-01", "la tâche soldée garde son échéance d'origine");
+  assert.equal(r.tasks[1].dueDate, "2026-09-13", "la tâche en retard repart d'aujourd'hui");
 });

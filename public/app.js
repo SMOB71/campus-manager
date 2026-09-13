@@ -4021,7 +4021,15 @@ function ouvChainHtml(ch, tasks) {
           <span class="pill ${tendu ? "overdue" : ""}">${c.slack == null ? "—" : "marge " + c.slack + " j"}</span></div>`;
       }).join("")}</div>`
     : `<p class="muted">Chaîne non déterminable.</p>`;
-  return `${cyc}
+  // Le rebasage ne s'offre que s'il y a quelque chose à reprendre.
+  const reb = ch.ruptures.length
+    ? `<div class="card card-pad" style="border-left:3px solid #0B6E5F;margin-bottom:14px;">
+        <div class="ttl">Reprendre le retard</div>
+        <p class="hint muted" style="margin:6px 0 10px;">Repose chaque tâche en retard à sa première date réalisable — pas avant aujourd'hui, et en respectant les délais du plan. <strong>Les tâches à l'heure dont rien ne bouge en amont gardent leur date.</strong> Rien n'est écrit avant que tu aies vu l'aperçu.</p>
+        <div class="actions"><button class="btn-ghost btn-sm" id="reb-preview">Simuler le rebasage</button><span id="reb-msg" class="status"></span></div>
+        <div id="reb-out"></div></div>`
+    : "";
+  return `${cyc}${reb}
     <div class="kpis" style="margin-bottom:12px;">
       ${fkpi(ch.slip > 0 ? "+" + ch.slip + " j" : "à l'heure", "Glissement de la rentrée", ch.slip > 0 ? "bad" : "good")}
       ${fkpi(String(ch.ruptures.length), "Tâches en retard", ch.ruptures.length ? "bad" : "good")}
@@ -4099,6 +4107,44 @@ async function openOuvertureDetail(oid) {
       const lines = $$("#obg-body tr").map((tr) => { const l = {}; $$(".obg", tr).forEach((i) => (l[i.dataset.f] = i.value)); return l; }).filter((l) => l.label || l.planned || l.committed || l.spent);
       await api.patch(`/api/openings/${oid}/budget`, { lines });
       closeModals(); openOuvertureDetail(oid);
+    });
+  }
+  if (ouvView === "chaine") {
+    const fr = (d) => new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+    $("#reb-preview")?.addEventListener("click", async () => {
+      $("#reb-msg").textContent = "calcul…";
+      const p = await api.post(`/api/openings/${oid}/rebase`, { apply: false });
+      $("#reb-msg").textContent = "";
+      if (p?.error) { $("#reb-msg").textContent = p.error; return; }
+      if (!p.count) { $("#reb-out").innerHTML = `<p class="muted">Rien à rebaser : aucune échéance n'a besoin de bouger.</p>`; return; }
+      const depasse = p.slip > 0;
+      $("#reb-out").innerHTML = `
+        <div class="kpis" style="margin:10px 0;">
+          ${fkpi(String(p.count), "Échéances décalées")}
+          ${fkpi(p.maxShift + " j", "Décalage le plus fort")}
+          ${fkpi(fr(p.landing), "Atterrissage du plan", depasse ? "bad" : "good")}
+          ${fkpi(depasse ? "+" + p.slip + " j" : "dans les temps", "Par rapport à la rentrée", depasse ? "bad" : "good")}
+        </div>
+        <div class="card" style="overflow-x:auto;max-height:260px;"><table class="net-table">
+          <thead><tr><th>Tâche</th><th>Lot</th><th>Avant</th><th>Après</th><th>Décalage</th></tr></thead>
+          <tbody>${p.moved.slice(0, 40).map((m) => `<tr><td>${esc(m.title)}</td><td class="muted">${esc(lotLabel(m.lot))}</td><td class="muted">${m.from}</td><td>${m.to}</td><td class="cell-warn">+${m.days} j</td></tr>`).join("")}</tbody></table></div>
+        ${p.moved.length > 40 ? `<p class="hint muted" style="margin-top:6px;">+ ${p.moved.length - 40} autres.</p>` : ""}
+        <div class="actions" style="margin-top:12px;">
+          <button class="btn-ghost btn-sm" id="reb-keep">Rebaser et garder la rentrée</button>
+          ${depasse ? `<button class="btn-primary btn-sm" id="reb-move">Rebaser et reporter la rentrée au ${fr(p.landing)}</button>` : ""}
+        </div>
+        <p class="hint muted" style="margin-top:8px;">${depasse
+          ? `Garder la rentrée ne la rend pas tenable : le dépassement de <strong>${p.slip} jours</strong> reste affiché, il faudra le résorber en comprimant des délais. Reporter la rentrée assainit le plan.`
+          : `Le plan rebasé tient avant la rentrée : aucun report n'est nécessaire.`}</p>`;
+      const lance = async (moveTarget) => {
+        if (!confirm(`Rebaser ${p.count} échéance(s)${moveTarget ? ` et reporter la rentrée au ${fr(p.landing)}` : ""} ?`)) return;
+        const r = await api.post(`/api/openings/${oid}/rebase`, { apply: true, moveTarget });
+        if (r?.error) { $("#reb-msg").textContent = r.error; return; }
+        alert(`Plan rebasé ✓\n${r.count} échéance(s) décalée(s)${r.movedTarget ? `\nRentrée reportée au ${fr(r.targetDate)}` : ""}`);
+        closeModals(); openOuvertureDetail(oid);
+      };
+      $("#reb-keep")?.addEventListener("click", () => lance(false));
+      $("#reb-move")?.addEventListener("click", () => lance(true));
     });
   }
   if (ouvView === "params") {
