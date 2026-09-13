@@ -223,3 +223,35 @@ siBase("STRUCTUREL : toute fonction mutant une ligne sur place appelle touch()",
   }
   assert.deepEqual(oublis, [], "modification sur place non marquée :\n  " + oublis.join("\n  "));
 });
+
+siBase("planning : le magasin de séances persiste et survit, lui aussi", async () => {
+  // Le planning est le magasin le PLUS écrit de l'application. Il souffrait du
+  // même mal que le magasin principal : fichier unique réécrit en entier.
+  process.env.DATABASE_URL = URL_TEST;
+  const ss = await import("../lib/sessionstore.js?planning=" + Math.random());
+  await ss.init();
+  await db.replaceCollection("sessions", []);
+  await ss.init();   // reflet repris sur une base vide
+
+  const s = ss.addSession({ campusId: "cP", classId: "kP", teacherId: "tP", date: "2027-03-01", start: "09:00", end: "12:00", kind: "cours" });
+  assert.ok(s.id);
+  // Mutation EN PLACE : c'est elle qu'une détection par référence manquerait.
+  ss.updateSession(s.id, { status: "done", notes: "séance assurée" });
+  await ss.flush();
+
+  const v = await ss.verifierCoherence();
+  assert.deepEqual(v.ecarts, [], "modification de séance perdue — touch() manquant");
+
+  const enBase = (await db.loadAll()).sessions || [];
+  const enr = enBase.find((x) => x.id === s.id);
+  assert.equal(enr.status, "done");
+  assert.equal(enr.notes, "séance assurée");
+  // Les colonnes générées rendent le planning interrogeable en SQL, ce que le
+  // fichier chiffré ne permettait pas.
+  const { rows } = await db.getPool().query("select id from sessions where class_id = $1 and date = $2", ["kP", "2027-03-01"]);
+  assert.deepEqual(rows.map((r) => r.id), [s.id]);
+
+  ss.deleteSession(s.id);
+  await ss.flush();
+  assert.equal(((await db.loadAll()).sessions || []).find((x) => x.id === s.id), undefined);
+});

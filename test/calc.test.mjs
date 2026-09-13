@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   marginOf, healthScore, schoolYearRange, extractPnlPostes,
-  buildOpeningTasks, buildOpeningBudget, OPENING_TEMPLATE, OPENING_LOTS, OPENING_FAMILIES,
+  buildOpeningTasks, buildOpeningBudget, OPENING_TEMPLATE, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours,
 } from "../lib/calc.js";
 
 test("marginOf = CA - masse salariale - charges", () => {
@@ -136,6 +136,23 @@ test("jalons de convention réseau : ajoutés, datés, jamais substitués au mod
   // m = 0 est une valeur valide (jalon le jour de la rentrée), pas un « non renseigné ».
   const j0 = buildOpeningTasks("2027-09-06", { milestones: [{ title: "Jour J", m: 0 }] }).find((t) => t.title === "Jour J");
   assert.equal(j0.dueDate, "2027-09-06");
+});
+
+test("dates en UTC : l'aller-retour date ↔ offset est exact des deux côtés d'un changement d'heure", () => {
+  // `setDate(getDate() - n)` opère en heure LOCALE sur une date parsée en UTC : passée
+  // une bascule été/hiver, le résultat recule d'un jour. Symptôme observé en production :
+  // après « recalculer les échéances », onze tâches d'un plan sain redevenaient en retard
+  // et la rentrée glissait d'un jour, sans que rien n'ait changé.
+  assert.equal(dateMoinsJours("2027-12-10", 0), "2027-12-10");
+  assert.equal(dateMoinsJours("2027-12-10", 60), "2027-10-11");   // hiver → été
+  assert.equal(dateMoinsJours("2027-06-15", 120), "2027-02-15");   // été → hiver
+  for (const cible of ["2027-09-01", "2028-09-04", "2027-12-10", "2028-03-26"]) {
+    for (const t of buildOpeningTasks(cible)) {
+      const offset = Math.round((new Date(cible) - new Date(t.dueDate)) / 86400000);
+      assert.equal(dateMoinsJours(cible, offset), t.dueDate, `dérive sur « ${t.title} » (${cible})`);
+      assert.equal(t.offset, offset, `offset incohérent avec l'échéance sur « ${t.title} »`);
+    }
+  }
 });
 
 test("buildOpeningBudget : répartit le total par lot", () => {

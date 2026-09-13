@@ -44,7 +44,7 @@ import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/schedulev
 import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
 import { analyseChain, planRebase, applyRebase } from "./lib/chain.js";
-import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
+import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
 import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
 import { testConnection as sfTestConnection, fetchCandidates as sfFetchCandidates } from "./lib/salesforce.js";
@@ -2154,11 +2154,9 @@ app.patch("/api/openings/:id", requireAuth, requireAdmin, (req, res) => {
   if (req.body?.recompute && o.targetDate && before) {
     const base = new Date(o.targetDate);
     if (!isNaN(base.getTime())) {
-      const tasks = (o.tasks || []).map((t) => {
-        if (t.offset == null) return t;
-        const d = new Date(base); d.setDate(d.getDate() - t.offset);
-        return { ...t, dueDate: d.toISOString().slice(0, 10) };
-      });
+      // Même helper UTC que la génération : une arithmétique en heure locale ici faisait
+      // reculer d'un jour toute échéance située de l'autre côté d'un changement d'heure.
+      const tasks = (o.tasks || []).map((t) => (t.offset == null ? t : { ...t, dueDate: dateMoinsJours(o.targetDate, t.offset) }));
       store.setOpeningTasks(o.id, tasks);
     }
   }
@@ -5846,7 +5844,9 @@ if (process.env.RETENTION !== "off" && cron.validate(retentionCron)) {
 // comme une perte de données.
 try {
   const mode = await store.init();
-  console.log("persistance :", mode.mode === "postgres" ? `PostgreSQL (${mode.collections} collections)` : "fichier JSON");
+  const modeP = await sessionstore.init();
+  console.log("persistance :", mode.mode === "postgres" ? `PostgreSQL (${mode.collections} collections + planning)` : "fichier JSON");
+  if (mode.mode !== modeP.mode) console.warn("ATTENTION : magasin principal et planning sur des persistances différentes");
 } catch (e) {
   console.error("PERSISTANCE INDISPONIBLE :", e.message);
   process.exit(1);

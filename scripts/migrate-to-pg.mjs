@@ -23,6 +23,9 @@ import * as pg from "../lib/db.js";
 const APPLY = process.argv.includes("--apply");
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
+// Le planning vit dans son propre fichier : il doit être repris avec le reste,
+// sinon l'instance démarrerait sur une base sans emploi du temps.
+const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 
 const c = { g: "\x1b[32m", r: "\x1b[31m", j: "\x1b[33m", d: "\x1b[2m", n: "\x1b[0m", b: "\x1b[1m" };
 const mourir = (m) => { console.error(`${c.r}✗ ${m}${c.n}`); process.exit(1); };
@@ -35,6 +38,16 @@ try {
   source = decrypt(fs.readFileSync(DB_FILE, "utf8")) || {};
 } catch (e) {
   mourir(`lecture impossible (DATA_KEY correcte ?) : ${e.message}`);
+}
+if (fs.existsSync(SESSIONS_FILE)) {
+  try {
+    const planning = decrypt(fs.readFileSync(SESSIONS_FILE, "utf8")) || {};
+    source.sessions = Array.isArray(planning.sessions) ? planning.sessions : [];
+  } catch (e) {
+    mourir(`planning illisible (${SESSIONS_FILE}) : ${e.message}`);
+  }
+} else {
+  console.log(`${c.d}pas de fichier de planning — rien à reprendre de ce côté${c.n}`);
 }
 
 console.log(`${c.b}Reprise ${DB_FILE} → PostgreSQL${c.n}`);
