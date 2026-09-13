@@ -3871,9 +3871,9 @@ function chainChips(t) {
   if (c.downstream > 0) out.push(`<span class="pill" title="${c.blocks} tâche(s) juste après, ${c.downstream} en aval au total">bloque ${c.downstream}</span>`);
   if (c.slack != null && t.status !== "done") {
     const cls = c.slack <= 0 ? "overdue" : c.slack <= 7 ? "st-task-blocked" : "";
-    out.push(`<span class="pill ${cls}" title="jours avant que le retard ne touche la tâche suivante">marge ${c.slack} j</span>`);
+    out.push(`<span class="pill ${cls}" title="jours dont cette tâche peut glisser sans repousser la rentrée">marge ${c.slack} j</span>`);
   }
-  if (c.inherited > 0) out.push(`<span class="pill overdue" title="retard subi du fait d'une tâche amont">+${c.inherited} j hérités</span>`);
+  if (c.inherited > 0) out.push(`<span class="pill overdue" title="décalage subi du fait d'une tâche amont, hors retard propre">+${c.inherited} j hérités</span>`);
   return out.length ? ` ${out.join(" ")}` : "";
 }
 function ouvTaskRow(t) {
@@ -4007,7 +4007,7 @@ function ouvChainHtml(ch, tasks) {
           <td>${r.ownDelay} j</td><td class="muted">${r.slack == null ? "—" : r.slack + " j"}</td>
           <td class="${r.cost > 0 ? "cell-warn" : "muted"}">${r.cost > 0 ? r.cost + " j" : "absorbé"}</td>
           <td>${r.downstream || "—"}</td><td class="muted">${esc(r.owner || "—")}</td></tr>`).join("")}</tbody></table></div>
-       <p class="hint muted" style="margin-top:8px;">Classées par ce qu'elles <strong>coûtent</strong>, pas par leur ancienneté : un retard de 40 jours sans tâche en aval pèse moins qu'un retard de 5 jours à marge nulle dont 20 tâches dépendent.</p>`
+       <p class="hint muted" style="margin-top:8px;">« Repousse de » = le retard <strong>au-delà de la marge</strong>, donc ce qu'il coûte réellement à la rentrée. Classées par ce coût et non par ancienneté : un retard de 40 jours avec 50 jours de marge pèse moins qu'un retard de 5 jours à marge nulle dont 20 tâches dépendent.</p>`
     : `<p class="muted">Aucune tâche en retard.</p>`;
   const chaine = ch.path.length
     ? `<div class="list">${ch.path.map((id) => {
@@ -4030,9 +4030,9 @@ function ouvChainHtml(ch, tasks) {
     </div>
     <p class="hint muted" style="margin-bottom:12px;">${ch.slip > 0
       ? `Les retards actuels repoussent la rentrée de <strong>${jour(ch.slip)}</strong>. La chaîne ci-dessous est celle qui le détermine : agir ailleurs ne rattrapera rien.`
-      : `Aucun retard ne déborde sa marge : la rentrée n'est pas menacée. La chaîne ci-dessous est la plus tendue du plan — c'est là que le prochain retard coûtera.`}</p>
+      : `Aucun retard ne déborde sa marge : la rentrée n'est pas menacée. La chaîne ci-dessous est le <strong>chemin critique</strong> — c'est là, et nulle part ailleurs, que le prochain retard coûtera.`}</p>
     <div class="ouv-lot"><div class="ouv-lot-head"><span class="ttl">Ruptures</span><span class="muted">${ch.ruptures.length}</span></div>${rupt}</div>
-    <div class="ouv-lot" style="margin-top:16px;"><div class="ouv-lot-head"><span class="ttl">${ch.slip > 0 ? "Chaîne qui détermine le glissement" : "Chaîne la plus tendue"}</span><span class="muted">${ch.path.length} jalons</span></div>${chaine}</div>`;
+    <div class="ouv-lot" style="margin-top:16px;"><div class="ouv-lot-head"><span class="ttl">${ch.slip > 0 ? "Chaîne qui détermine le glissement" : "Chemin critique"}</span><span class="muted">${ch.path.length} jalons</span></div>${chaine}</div>`;
 }
 
 let ouvView = "lot";

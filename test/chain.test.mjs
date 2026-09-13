@@ -11,47 +11,49 @@ const plan = (over = {}) => [
 ];
 const CTX = { targetDate: "2027-02-01", today: "2027-01-01" };
 
-test("marge = jours jusqu'à la première tâche qui attend, pas jusqu'à la rentrée", () => {
+test("marge = glissement possible sans repousser la rentrée, partagé par la chaîne", () => {
   const a = analyseChain(plan(), CTX);
-  assert.equal(a.byId.A.slack, 10);
-  assert.equal(a.byId.B.slack, 10);
-  assert.equal(a.byId.C.slack, 11); // C n'a pas de suivante → marge jusqu'à la rentrée
+  // Les écarts A→B→C (10 j chacun) sont des DÉLAIS, pas du jeu : le seul jeu réel est
+  // l'écart entre la fin de la chaîne et la rentrée, et il est commun à toute la chaîne.
+  assert.equal(a.byId.A.slack, 11);
+  assert.equal(a.byId.B.slack, 11);
+  assert.equal(a.byId.C.slack, 11);
   assert.equal(a.byId.A.blocks, 1);
   assert.equal(a.byId.A.downstream, 2); // B et C
   assert.equal(a.slip, 0);
 });
 
-test("un retard sous la marge est absorbé : rien ne glisse", () => {
-  // A a 6 jours de retard pour 10 jours de marge → B n'est pas touchée.
+test("un retard décale bien l'aval, mais ne coûte rien s'il tient dans la marge", () => {
+  // Distinction qui fait tout l'intérêt du calcul : le retard de A DÉCALE B de 6 jours
+  // (B héritera), et pourtant il ne COÛTE rien, parce que la chaîne atterrit encore avant
+  // la rentrée. Confondre les deux, c'est soit alerter sur tout, soit n'alerter sur rien.
   const a = analyseChain(plan(), { ...CTX, today: "2027-01-07" });
   assert.equal(a.byId.A.ownDelay, 6);
-  assert.equal(a.byId.B.inherited, 0);
+  assert.equal(a.byId.B.ownDelay, 0, "B n'est pas échue");
+  assert.equal(a.byId.B.inherited, 6, "mais elle est décalée d'autant");
   assert.equal(a.slip, 0);
-  assert.equal(a.ruptures.length, 1);
-  assert.equal(a.ruptures[0].cost, 0, "coût nul : le retard tient dans la marge");
+  assert.equal(a.ruptures.length, 1, "seule A est en retard d'elle-même");
+  assert.equal(a.ruptures[0].cost, 0, "coût nul : 6 j de décalage pour 11 j de marge");
 });
 
-test("un retard non soldé ne se propage pas au-delà d'aujourd'hui : c'est volontaire", () => {
-  // Propriété du modèle, et non un oubli : une tâche non faite peut, au plus tôt, être
-  // soldée AUJOURD'HUI. Si son retard dépasse la marge, c'est que la suivante est elle
-  // aussi déjà dépassée — son retard propre couvre alors le même nombre de jours, et
-  // l'annoncer deux fois gonflerait artificiellement le glissement.
+test("un retard non soldé se propage : les écarts du modèle sont des délais", () => {
+  // A a 25 j de retard. B ne peut pas se faire le jour même : le modèle dit qu'il faut
+  // 10 jours entre les deux. Traiter cet écart comme du jeu libre — l'erreur corrigée —
+  // faisait qu'un plan avec 42 tâches en retard s'affichait à l'heure.
   const a = analyseChain(plan(), { ...CTX, today: "2027-01-26" });
   assert.equal(a.byId.A.ownDelay, 25);
-  assert.equal(a.byId.B.ownDelay, 15);
-  assert.equal(a.byId.B.inherited, 0);
-  assert.equal(a.byId.B.shift, 15);
-  // Ce qui alerte tôt, c'est le COÛT par tâche : retard au-delà de sa propre marge.
-  assert.equal(a.ruptures[0].cost, 15);
+  assert.equal(a.byId.A.projected, "2027-01-26", "au plus tôt : aujourd'hui");
+  assert.equal(a.byId.B.projected, "2027-02-05", "10 jours après A, pas avant");
+  assert.equal(a.byId.C.projected, "2027-02-15");
+  assert.equal(a.slip, 14, "C atterrit 14 j après la rentrée du 1er février");
+  assert.equal(a.path[0], "A", "la chaîne remonte à la tâche qui cause le glissement");
 });
 
-test("le glissement de la rentrée ne se déclare que quand les marges sont mangées", () => {
-  // Tant qu'il reste du jeu en aval, un retard est absorbé — et le dire serait faux.
-  assert.equal(analyseChain(plan(), { ...CTX, today: "2027-01-26" }).slip, 0);
-  // Une fois le jeu consommé, il sort, et la chaîne remonte à la tâche qui le cause.
-  const b = analyseChain(plan(), { ...CTX, today: "2027-02-10" });
-  assert.ok(b.slip > 0);
-  assert.equal(b.path[0], "A");
+test("tant que la chaîne tient avant la rentrée, rien ne glisse", () => {
+  // 6 j de retard : C atterrit le 27 janvier, avant la rentrée du 1er février.
+  const a = analyseChain(plan(), { ...CTX, today: "2027-01-07" });
+  assert.equal(a.byId.C.projected, "2027-01-27");
+  assert.equal(a.slip, 0);
 });
 
 test("une tâche faite EN RETARD pousse quand même : c'est à ça que sert doneAt", () => {
@@ -64,7 +66,8 @@ test("une tâche faite EN RETARD pousse quand même : c'est à ça que sert done
   const tard = analyseChain(tasks, { targetDate: "2027-06-01", today: "2027-01-05" });
   assert.equal(tard.byId.A.ownDelay, 40);
   assert.equal(tard.byId.B.ownDelay, 0, "B n'est pas encore échue");
-  assert.equal(tard.byId.B.inherited, 10, "40 j de retard amont − 30 j de marge");
+  assert.equal(tard.byId.B.projected, "2027-03-12", "30 jours après A, qui a fini le 10 février");
+  assert.equal(tard.byId.B.inherited, 40, "B subit le retard de A sans en avoir le moindre");
   // Sans doneAt, cocher la tâche effaçait le retard et les suivantes repartaient à zéro.
   const sans = analyseChain(tasks.map((t) => (t.id === "A" ? { ...t, doneAt: null } : t)), { targetDate: "2027-06-01", today: "2027-01-05" });
   assert.equal(sans.byId.A.ownDelay, 0);
@@ -77,14 +80,15 @@ test("une tâche faite EN RETARD pousse quand même : c'est à ça que sert done
 
 test("les ruptures sont classées par coût, pas par ancienneté du retard", () => {
   const tasks = [
-    // 40 jours de retard mais aucune tâche en aval et beaucoup de marge → coût nul.
+    // 40 jours de retard mais aucune tâche en aval et 50 j de marge → coût nul.
     { id: "vieux", title: "Vieux retard isolé", lot: "gouv", dueDate: "2026-12-01", status: "todo", dependsOn: [] },
-    // 5 jours de retard, marge nulle, 1 tâche en aval → coût réel.
+    // 5 jours de retard seulement, mais marge nulle et une tâche en aval → coût réel.
     { id: "goulot", title: "Goulot", lot: "immo", dueDate: "2027-01-05", status: "todo", dependsOn: [] },
-    { id: "apres", title: "Après le goulot", lot: "immo", dueDate: "2027-01-05", status: "todo", dependsOn: ["goulot"] },
+    { id: "apres", title: "Après le goulot", lot: "immo", dueDate: "2027-01-20", status: "todo", dependsOn: ["goulot"] },
   ];
-  const a = analyseChain(tasks, { targetDate: "2027-06-01", today: "2027-01-10" });
+  const a = analyseChain(tasks, { targetDate: "2027-01-20", today: "2027-01-10" });
   assert.equal(a.byId.vieux.ownDelay, 40);
+  assert.equal(a.byId.vieux.slack, 50);
   assert.equal(a.byId.goulot.slack, 0);
   assert.equal(a.ruptures[0].id, "goulot", "le goulot passe devant le vieux retard inoffensif");
   assert.equal(a.ruptures[0].cost, 5);
