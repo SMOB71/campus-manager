@@ -4290,6 +4290,8 @@ async function openCommitteeForm(oid, c) {
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
       <div><label class="field-label">Nom *</label><input class="txt cpf" data-f="name" value="${esc(e.name || "Comité de pilotage")}"></div>
       <div><label class="field-label">Cadence</label><input class="txt cpf" data-f="cadence" value="${esc(e.cadence || "")}" placeholder="mensuel, bimensuel…"></div>
+      <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="cp-auto" ${e.autoSendMinutes === false ? "" : "checked"}> Diffuser automatiquement le compte rendu, le lendemain de la séance</label>
+        <p class="hint muted" style="margin:4px 0 0;">Le délai d'un jour laisse le temps de corriger. Décoché, tu diffuses à la main — et l'app te relance au bout de 4 jours si le compte rendu est rédigé mais n'est parti à personne.</p></div>
     </div>
     <p class="field-label" style="margin-top:12px;">Membres</p>
     <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Nom</th><th>Rôle</th><th>Email</th><th>Compte</th><th></th></tr></thead><tbody id="cpm-body">${members.map(memberRow).join("") || memberRow()}</tbody></table></div>
@@ -4300,6 +4302,7 @@ async function openCommitteeForm(oid, c) {
   $("#cpm-body").addEventListener("click", (ev) => { if (ev.target.closest(".cpm-del")) ev.target.closest("tr").remove(); });
   $("#cp-save").onclick = async () => {
     const body = {}; $$(".cpf").forEach((i) => (body[i.dataset.f] = i.value));
+    body.autoSendMinutes = $("#cp-auto").checked;
     if (!String(body.name || "").trim()) return;
     // On garde un siège dès qu'il porte un nom OU un rôle : « Directeur de campus
     // (à recruter) » est une information utile, pas une ligne vide.

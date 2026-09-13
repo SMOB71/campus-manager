@@ -16,15 +16,16 @@ const { convocationHtml, compteRenduHtml, destinataires, runSessionReminders, se
 const envois = [];
 const envoyer = async (m) => { envois.push(m); return { ok: true }; };
 
-function monter({ date, members, minutes } = {}) {
+function monter({ date, members, minutes, autoSendMinutes, status } = {}) {
   const o = store.addOpening({ name: "Iso Test", targetDate: "2028-09-04" });
   store.setOpeningTasks(o.id, buildOpeningTasks(o.targetDate));
   const c = store.addCommittee({
     name: "COPIL Test", scope: "opening", scopeId: o.id, cadence: "mensuel",
     members: members || [{ name: "Claire", role: "Directrice", email: "claire@x.fr" }, { name: "Paul", role: "Architecte" }],
+    ...(autoSendMinutes === undefined ? {} : { autoSendMinutes }),
   });
   const s = store.addSession(c.id, { date });
-  if (minutes != null) store.updateSession(c.id, s.id, { minutes });
+  if (minutes != null || status) store.updateSession(c.id, s.id, { ...(minutes != null ? { minutes } : {}), ...(status ? { status } : {}) });
   return { o, cid: c.id, sid: s.id };
 }
 const dans = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
@@ -104,10 +105,42 @@ test("séance passée sans compte rendu : une relance, une seule", async () => {
   assert.equal(b.relances, 0);
 });
 
-test("séance passée AVEC compte rendu : aucune relance", async () => {
+test("compte rendu écrit : diffusé automatiquement le lendemain, une seule fois", async () => {
   envois.length = 0;
-  monter({ date: dans(-5), minutes: "Décisions prises et actées." });
+  // Le délai d'un jour laisse le temps de corriger un brouillon avant qu'il ne parte.
+  const veille = monter({ date: dans(0), minutes: "Décisions prises et actées." });
+  assert.equal((await runSessionReminders(undefined, { envoyer }))["compte-rendu"], 0, "le jour même : trop tôt");
+  store.updateSession(veille.cid, veille.sid, { date: dans(-1) });
+  store.updateSession(veille.cid, veille.sid, { minutes: "Décisions prises et actées." });
+
+  const a = await runSessionReminders(undefined, { envoyer });
+  assert.equal(a["compte-rendu"], 1);
+  assert.equal(a.relances, 0, "aucune relance : il est parti");
+  assert.ok(envois.some((m) => /^Compte rendu —/.test(m.subject)));
+  const b = await runSessionReminders(undefined, { envoyer });
+  assert.equal(b["compte-rendu"], 0, "jamais deux fois");
+});
+
+test("diffusion automatique désactivée : on relance au lieu d'envoyer", async () => {
+  envois.length = 0;
+  const { cid, sid } = monter({ date: dans(-5), minutes: "Compte rendu rédigé.", autoSendMinutes: false });
+  const a = await runSessionReminders(undefined, { envoyer });
+  assert.equal(a["compte-rendu"], 0, "rien n'est diffusé sans accord");
+  assert.equal(a.relances, 1);
+  assert.ok(envois.some((m) => /rédigé mais non diffusé/.test(m.subject)));
+  // Une fois diffusé à la main, la relance ne revient pas.
+  await sendSessionMail(cid, sid, "compte-rendu", { envoyer });
+  const b = await runSessionReminders(undefined, { envoyer });
+  assert.equal(b.relances, 0);
+});
+
+test("un compte rendu déjà diffusé ne déclenche ni relance ni second envoi", async () => {
+  envois.length = 0;
+  const { cid, sid } = monter({ date: dans(-6), minutes: "Acté." });
+  await sendSessionMail(cid, sid, "compte-rendu", { envoyer });
+  envois.length = 0;
   const r = await runSessionReminders(undefined, { envoyer });
+  assert.equal(r["compte-rendu"], 0);
   assert.equal(r.relances, 0);
   assert.equal(envois.length, 0);
 });

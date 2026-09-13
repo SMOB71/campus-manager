@@ -29,6 +29,9 @@ import * as qualite from "./lib/qualite.js";
 import * as jury from "./lib/jury.js";
 import { risqueDecrochage, tauxAbsenteismeCorrige, classerPromotion } from "./lib/risque.js";
 import * as apikeys from "./lib/apikeys.js";
+import * as compta from "./lib/comptabilite.js";
+import * as paie from "./lib/paie.js";
+import * as deca from "./lib/deca.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -3358,8 +3361,8 @@ if (mailConfigured && process.env.COPIL_REMINDERS !== "off" && cron.validate(cop
   cron.schedule(copilCron, () => {
     runSessionReminders()
       .then((r) => {
-        const n = r.convocation + r.rappel + r.relances;
-        console.log(n ? `[copil] ${r.convocation} convocation(s), ${r.rappel} rappel(s), ${r.relances} relance(s) compte rendu` : "[copil] rien a envoyer");
+        const n = r.convocation + r.rappel + r["compte-rendu"] + r.relances;
+        console.log(n ? `[copil] ${r.convocation} convocation(s), ${r.rappel} rappel(s), ${r["compte-rendu"]} compte(s) rendu, ${r.relances} relance(s)` : "[copil] rien a envoyer");
         if (r.erreurs.length) console.error("[copil] echecs :", r.erreurs.join(" | "));
       })
       .catch((e) => console.error("[copil] echec :", e?.message || e));
@@ -4705,6 +4708,98 @@ ${liste.map((e) => `<div class="bloc"><div class="ep">
 <h2>Stabilité</h2>
 <div class="bloc"><p style="margin:0;">Cette API est versionnée sous <code>/v1</code>. Les routes sous <code>/api</code>, utilisées par l'interface web, ne sont pas publiques et changent sans préavis : ne pas les appeler depuis une intégration.</p></div>
 </div></body></html>`);
+});
+
+// ===== Lot 3 : interfaces sortantes (comptabilité, paie, dépôt du contrat) =====
+
+app.get("/api/compta/plan", requireAuth, requireAdmin, (req, res) => {
+  res.json({ defaut: compta.PLAN_DEFAUT, actuel: store.getSettings().planComptable || compta.PLAN_DEFAUT, journaux: compta.JOURNAUX });
+});
+app.put("/api/compta/plan", requireAuth, requireAdmin, (req, res) => {
+  // Chaque organisme a son plan de comptes : imposer le nôtre garantirait un
+  // rejet par le cabinet.
+  const plan = { ...compta.PLAN_DEFAUT, ...(req.body || {}) };
+  store.updateSettings({ planComptable: plan });
+  logAudit(req, "update", "compta", "plan de comptes");
+  res.json(plan);
+});
+
+// FEC — article A. 47 A-1 du livre des procédures fiscales.
+app.get("/api/compta/fec", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const exerciceDebut = req.query.from || `${new Date().getFullYear() - 1}-01-01`;
+  const exerciceFin = req.query.to || `${new Date().getFullYear() - 1}-12-31`;
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  const invoices = store.listInvoices({ campusId });
+  const payments = invoices.flatMap((i) => store.listPayments({ invoiceId: i.id }).map((p) => ({ ...p, invoiceId: i.id })));
+  const tiersParId = new Map(store.listFundings({ campusId }).map((f) => [f.id, { code: f.id.slice(0, 8).toUpperCase(), nom: f.financeur || "" }]));
+
+  const r = compta.construire({
+    invoices, payments, tiersParId,
+    plan: store.getSettings().planComptable || compta.PLAN_DEFAUT,
+    exerciceDebut, exerciceFin, dateValidation: exerciceFin,
+  });
+
+  if (req.query.format !== "fec") {
+    return res.json({ ...r.controle, exercice: { from: exerciceDebut, to: exerciceFin }, apercu: r.ecritures.slice(0, 20) });
+  }
+  // Un fichier déséquilibré est REJETÉ par l'administration : le produire
+  // reviendrait à livrer une pièce inutilisable en contrôle.
+  if (!r.controle.remettable) {
+    return res.status(409).json({ error: "fichier non remettable", anomalies: r.controle.anomalies });
+  }
+  logAudit(req, "export", "fec", `FEC ${exerciceDebut} → ${exerciceFin} — ${r.ecritures.length} ligne(s)`);
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${compta.nomFichier(campus?.siret, exerciceFin)}"`);
+  res.send(compta.toFec(r.ecritures));
+});
+
+// Préparation de la paie des intervenants.
+app.get("/api/paie/referentiels", requireAuth, requireAdmin, (req, res) =>
+  res.json({ statuts: paie.STATUTS, regles: paie.REGLES_PREPARATION, colonnes: paie.COLONNES_EXPORT }));
+
+app.get("/api/paie/export", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const from = req.query.from || null, to = req.query.to || null;
+  const intervenants = store.listTeachers({ campusId });
+  const seancesParIntervenant = new Map();
+  for (const t of intervenants) {
+    seancesParIntervenant.set(t.id, sessionstore.listSessions({ campusId, teacherId: t.id, from, to }));
+  }
+  const r = paie.preparerExport({ intervenants, seancesParIntervenant, from, to });
+  if (req.query.format !== "xlsx") return res.json(r);
+  if (!r.transmettable) return res.status(409).json({ error: "export incomplet", incomplets: r.incomplets });
+  logAudit(req, "export", "paie", `paie ${from} → ${to} — ${r.lignes.length} intervenant(s)`);
+  return sendXlsx(res, "Paie", r.lignes.map((l) => Object.fromEntries(paie.COLONNES_EXPORT.map((c) => [c.label, l[c.key]]))), `paie-${from || ""}-${to || ""}.xlsx`);
+});
+
+// Suivi du dépôt des contrats d'apprentissage.
+app.get("/api/deca/referentiels", requireAuth, (req, res) =>
+  res.json({ etats: deca.ETATS, delaiTransmission: deca.DELAI_TRANSMISSION_OUVRABLES, delaiDecision: deca.DELAI_DECISION_JOURS }));
+
+app.get("/api/deca", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const noms = new Map(store.listLearners({ campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
+  const entreprises = new Map(store.listPartners(campusId).map((p) => [p.id, p.name]));
+  const contrats = store.listContracts({ campusId })
+    .filter((c) => c.status !== "brouillon")
+    .map((c) => ({ id: c.id, dateDebut: c.dateDebut, depot: c.depot || {},
+      apprenant: noms.get(c.learnerId) || "", employeur: entreprises.get(c.companyId) || "" }));
+  res.json(deca.tableauDeBord(contrats, { aujourdhui: aujourdhui(), feries: store.getSettings().joursFeries || [] }));
+});
+
+app.put("/api/contracts/:id/depot", requireAuth, (req, res) => {
+  const c = store.getContract(req.params.id);
+  if (!c) return res.status(404).json({ error: "contrat introuvable" });
+  if (!assertCampus(req, res, c.campusId)) return;
+  const v = deca.validateDepot(req.body || {}, c);
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const maj = store.updateContract(c.id, { depot: { ...(c.depot || {}), ...req.body } });
+  logAudit(req, "update", "deca", `dépôt contrat ${c.id} : ${deca.ETATS[req.body?.etat]?.label || "mise à jour"}`);
+  res.json({ ...maj, warnings: v.warnings });
 });
 
 // ===== Licence de l'instance =====

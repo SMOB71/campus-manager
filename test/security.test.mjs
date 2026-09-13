@@ -1268,6 +1268,100 @@ test("durées légales : travail de nuit interdit à un mineur, autorisé à un 
   assert.ok(c.some((x) => x.code === "duree-nuit"), `le travail de nuit doit être refusé : ${c.map((x) => x.code).join(", ")}`);
 });
 
+test("FEC : produit, équilibré, et REFUSÉ s'il ne l'est pas", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus FEC", siret: "73282932000074" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Fec", prenom: "Test" } })).json();
+  const f = await (await req("/api/fundings", { method: "POST", ...opts, json: {
+    campusId: campus.id, learnerId: l.id, financeur: "OPCO Test", mode: "forfait", montant: 1000,
+    dateDebut: "2026-01-01", dateFin: "2026-12-31",
+  } })).json();
+  assert.ok(f.id);
+
+  // Sans facture émise, il n'y a pas de fait comptable : le fichier n'est pas
+  // remettable, et c'est la bonne réponse — pas un fichier vide présenté comme bon.
+  const vide = await (await req(`/api/compta/fec?campusId=${campus.id}&from=2026-01-01&to=2026-12-31`, { cookie: a.cookie })).json();
+  assert.equal(vide.remettable, false);
+  assert.equal((await req(`/api/compta/fec?campusId=${campus.id}&from=2026-01-01&to=2026-12-31&format=fec`, { cookie: a.cookie })).status, 409);
+
+  // Une facture se crée depuis son financement (et jamais deux fois pour la même
+  // période), puis s'émet par une route dédiée : une facture émise est immuable.
+  const facture = await (await req(`/api/fundings/${f.id}/invoices`, { method: "POST", ...opts, json: {
+    periodeDebut: "2026-01-01", periodeFin: "2026-12-31", destinataire: "OPCO Test",
+  } })).json();
+  assert.ok(facture.id, JSON.stringify(facture));
+  const emise = await req(`/api/invoices/${facture.id}/issue`, { method: "POST", ...opts, json: {} });
+  assert.equal(emise.status, 200, await emise.text());
+
+  // L'exercice couvre l'année d'émission, quelle qu'elle soit.
+  const an = new Date().getFullYear();
+  const ctrl = await (await req(`/api/compta/fec?campusId=${campus.id}&from=${an}-01-01&to=${an}-12-31`, { cookie: a.cookie })).json();
+  assert.equal(ctrl.equilibre, true, JSON.stringify(ctrl.anomalies));
+  assert.equal(ctrl.remettable, true);
+  assert.equal(ctrl.totalDebit, ctrl.totalCredit);
+
+  const fec = await req(`/api/compta/fec?campusId=${campus.id}&from=${an}-01-01&to=${an}-12-31&format=fec`, { cookie: a.cookie });
+  assert.equal(fec.status, 200);
+  assert.match(fec.headers.get("content-disposition"), new RegExp(`732829320FEC${an}1231\\.txt`), "nom normalisé : SIREN + FEC + clôture");
+  const texte = await fec.text();
+  const lignes = texte.split("\r\n").filter((x) => x !== "");
+  assert.equal(lignes[0].split("\t").length, 18, "18 champs, en-tête compris");
+  for (const ligne of lignes) assert.equal(ligne.split("\t").length, 18);
+  assert.match(lignes[1], new RegExp(`\\t${an}\\d{4}\\t`), "date au format AAAAMMJJ");
+});
+
+test("paie : un indépendant n'entre pas dans l'export, et on sait pourquoi", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Paie" } })).json();
+  const salarie = await (await req("/api/teachers", { method: "POST", ...opts, json: { campusId: campus.id, name: "Salarié Un", status: "vacataire", tauxHoraire: 40, matricule: "M1" } })).json();
+  const indep = await (await req("/api/teachers", { method: "POST", ...opts, json: { campusId: campus.id, name: "Indépendant Deux", status: "prestataire", tauxHoraire: 60 } })).json();
+
+  for (const t of [salarie, indep]) {
+    await req("/api/sessions", { method: "POST", ...opts, json: {
+      campusId: campus.id, teacherId: t.id, date: "2027-01-11", start: "09:00", end: "13:00", kind: "cours" } });
+  }
+  // Les séances doivent être CONSTATÉES pour être payées.
+  const sessions = await (await req(`/api/sessions?campusId=${campus.id}&from=2027-01-01&to=2027-01-31`, { cookie: a.cookie })).json();
+  for (const s of sessions) await req(`/api/sessions/${s.id}`, { method: "PATCH", ...opts, json: { status: "done" } });
+
+  const r = await (await req(`/api/paie/export?campusId=${campus.id}&from=2027-01-01&to=2027-01-31`, { cookie: a.cookie })).json();
+  assert.equal(r.lignes.length, 1, "seul le salarié figure dans la paie");
+  assert.equal(r.lignes[0].nom, "Salarié Un");
+  assert.equal(r.lignes[0].heuresPayees, 4);
+  assert.equal(r.lignes[0].brut, 160);
+  assert.equal(r.exclus.length, 1);
+  assert.match(r.exclus[0].motif, /requalification/, "l'exclusion est motivée, pas silencieuse");
+  assert.match(r.exclus[0].motif, /prestataire/);
+  assert.equal(r.transmettable, true);
+});
+
+test("dépôt du contrat : le silence de l'OPCO est remonté comme un refus", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus DECA" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Deca", prenom: "Test", dateNaissance: "2006-01-01" } })).json();
+  const e = await (await req("/api/partners", { method: "POST", ...opts, json: { campusId: campus.id, name: "Entreprise Deca" } })).json();
+  const c = await (await req("/api/contracts", { method: "POST", ...opts, json: {
+    campusId: campus.id, learnerId: l.id, companyId: e.id, type: "apprentissage",
+    dateDebut: "2020-01-06", dateFin: "2022-01-05", status: "depose",
+  } })).json();
+  assert.ok(c.id);
+
+  await req(`/api/contracts/${c.id}/depot`, { method: "PUT", ...opts, json: { etat: "transmis", dateTransmission: "2020-01-08", opco: "OPCO Test" } });
+
+  const t = await (await req(`/api/deca?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  const ligne = t.lignes.find((x) => x.contratId === c.id);
+  assert.ok(ligne, "le contrat doit figurer au tableau de bord");
+  assert.equal(ligne.risque, "critique");
+  assert.ok(ligne.alertes.some((x) => x.code === "silence_vaut_refus"));
+  assert.equal(t.financementCompromis >= 1, true, "de la trésorerie engagée sans financement");
+
+  // Un état incohérent est refusé.
+  assert.equal((await req(`/api/contracts/${c.id}/depot`, { method: "PUT", ...opts, json: { etat: "accepte" } })).status, 400);
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");
