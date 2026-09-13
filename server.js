@@ -2552,7 +2552,9 @@ app.get("/api/backups", requireAuth, requireAdmin, (req, res) => res.json({
   items: store.listBackupsMeta(),
   config: backup.config(),
   archives: backup.listerArchives(),
+  sante: backup.etatSante(),
 }));
+app.post("/api/backups/verifier-archives", requireAuth, requireAdmin, (req, res) => res.json(backup.verifierArchives()));
 app.put("/api/backups/config", requireAuth, requireAdmin, (req, res) => {
   const c = backup.setConfig(req.body || {});
   planifierSauvegardes();
@@ -3465,6 +3467,31 @@ function planifierSauvegardes() {
   console.log(`[archive] sauvegarde planifiee (${expr}, Europe/Paris) -> ${c.dossier}${c.distant.actif ? ` + ${c.distant.hote}:${c.distant.chemin}` : ""}`);
 }
 planifierSauvegardes();
+
+// SURVEILLANCE DE L'ABSENCE. Si la sauvegarde ne part plus — réglage désactivé par
+// mégarde, conteneur recréé, processus mort —, aucune alerte d'échec n'arrive justement
+// PARCE QUE rien ne tourne. Ce contrôle-ci est indépendant : il regarde la fraîcheur du
+// dossier, pas le résultat d'une exécution.
+const santeCron = process.env.BACKUP_HEALTH_CRON || "40 8 * * *";
+if (cron.validate(santeCron)) {
+  cron.schedule(santeCron, async () => {
+    const s = backup.etatSante();
+    const v = backup.verifierArchives(undefined, { max: 5 });
+    const souci = [...s.alertes, ...(v.details.length ? [`${v.details.length} archive(s) ne se relisent plus`] : [])];
+    if (!souci.length) { console.log(`[archive] sante OK — ${s.archives} archives, derniere il y a ${s.ageHeures} h`); return; }
+    console.error("[archive] SANTE :", souci.join(" | "));
+    const dest = backup.config().alerteEmail;
+    if (mailConfigured && dest) {
+      await sendMail({
+        to: dest, subject: "Campus Manager — la sauvegarde ne va pas bien",
+        html: `<p style="font-family:sans-serif;font-size:14px;">Contrôle quotidien des sauvegardes :</p>
+          <ul style="font-family:sans-serif;font-size:14px;">${souci.map((x) => `<li>${String(x).replace(/[<>&]/g, "")}</li>`).join("")}</ul>
+          <p style="font-family:sans-serif;font-size:13px;color:#5A6672;">${s.archives} archive(s), dernière il y a ${s.ageHeures ?? "—"} h.</p>`,
+      }).catch((e) => console.error("[archive] alerte non envoyee :", e?.message || e));
+    }
+  }, { timezone: "Europe/Paris" });
+  console.log(`[archive] controle de sante planifie (${santeCron}, Europe/Paris)`);
+}
 
 // Board pack mensuel (1er du mois 7h) — si activé dans les paramètres.
 const boardCron = process.env.BOARD_PACK_CRON || "0 7 1 * *";

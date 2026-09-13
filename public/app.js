@@ -4520,7 +4520,16 @@ async function renderBackups() {
   const ko = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " Mo" : Math.max(1, Math.round(n / 1024)) + " Ko");
   const dt = (iso) => (iso ? new Date(iso).toLocaleString("fr-FR") : "—");
 
-  view.innerHTML = `
+  const h = rep.sante || {};
+  const bandeau = h.alertes?.length
+    ? `<div class="card card-pad" style="margin-bottom:14px;border-left:3px solid #C94B33;">
+        <div class="ttl">La sauvegarde n'est pas au niveau</div>
+        <ul style="margin:8px 0 0;padding-left:18px;">${h.alertes.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>
+        <p class="hint muted" style="margin-top:8px;">Contrôle automatique chaque matin, avec alerte email. Surveiller l'échec ne suffit pas : quand rien ne tourne, rien n'échoue.</p></div>`
+    : `<div class="card card-pad" style="margin-bottom:14px;border-left:3px solid #0B6E5F;">
+        <div class="ttl">Sauvegarde saine</div>
+        <p style="margin:8px 0 0;">${h.archives} archive(s), la dernière il y a ${h.ageHeures} h. Chiffrées, copiées hors du serveur.</p></div>`;
+  view.innerHTML = bandeau + `
     <div class="card card-pad" style="margin-bottom:14px;">
       <div class="ttl">Sauvegarde de l'application</div>
       <p style="margin:8px 0 0;">Archive complète de l'état réel — ${rep.mode === "postgres" ? "lue dans <strong>PostgreSQL</strong>" : "lue dans le magasin fichier"} —, <strong>chiffrée</strong>, avec empreinte SHA‑256 vérifiée à la relecture. Elle se restaure dans les deux modes, donc une bascule reste réversible.</p>
@@ -4535,9 +4544,11 @@ async function renderBackups() {
           <div><label class="field-label">Heure</label><input class="txt" id="bk-heure" value="${esc(c.heure || "03:10")}" placeholder="03:10"></div>
           <div><label class="field-label">Conserver (archives)</label><input class="txt" id="bk-ret" type="number" min="1" max="365" value="${c.retention || 30}"></div>
           <div style="grid-column:1/-1;"><label class="field-label">Dossier sur le serveur</label><input class="txt" id="bk-dossier" value="${esc(c.dossier || "")}"></div>
-          <div style="grid-column:1/-1;"><label class="field-label">Alerte email en cas d'échec</label><input class="txt" id="bk-mail" value="${esc(c.alerteEmail || "")}" placeholder="ops@exemple.fr"></div>
+          <div><label class="field-label">Hebdomadaires gardées</label><input class="txt" id="bk-sem" type="number" min="0" max="104" value="${c.semaines ?? 8}"></div>
+          <div><label class="field-label">Mensuelles gardées</label><input class="txt" id="bk-mois" type="number" min="0" max="120" value="${c.mois ?? 12}"></div>
+          <div style="grid-column:1/-1;"><label class="field-label">Alerte email (échec ET absence)</label><input class="txt" id="bk-mail" value="${esc(c.alerteEmail || "")}" placeholder="ops@exemple.fr"></div>
         </div>
-        <p class="hint muted" style="margin-top:8px;">Le dossier doit être dans le volume monté, sinon les archives disparaissent à la recréation du conteneur.</p>
+        <p class="hint muted" style="margin-top:8px;">Le dossier doit être dans le volume monté, sinon les archives disparaissent à la recréation du conteneur. Rétention étagée : les N dernières quotidiennes, puis une par semaine, puis une par mois — garder 30 archives ne donne que 30 jours de profondeur.</p>
       </div>
 
       <div class="card card-pad">
@@ -4559,6 +4570,7 @@ async function renderBackups() {
       <button class="btn-primary btn-sm" id="bk-save">Enregistrer les réglages</button>
       <button class="btn-ghost btn-sm" id="bk-run">Sauvegarder maintenant</button>
       <button class="btn-ghost btn-sm" id="bk-dl">Télécharger une archive</button>
+      <button class="btn-ghost btn-sm" id="bk-verif">Relire les archives</button>
       <label class="btn-ghost btn-sm" style="cursor:pointer;">Restaurer depuis un fichier<input type="file" id="bk-up" accept=".cmbak" style="display:none;"></label>
       <span id="bk-msg" class="status"></span>
     </div>
@@ -4578,6 +4590,7 @@ async function renderBackups() {
   const lire = () => ({
     actif: $("#bk-actif").checked, heure: $("#bk-heure").value, retention: $("#bk-ret").value,
     dossier: $("#bk-dossier").value, alerteEmail: $("#bk-mail").value,
+    semaines: $("#bk-sem").value, mois: $("#bk-mois").value,
     distant: { actif: $("#bk-dactif").checked, hote: $("#bk-hote").value, port: $("#bk-port").value,
                utilisateur: $("#bk-user").value, chemin: $("#bk-chemin").value, cle: $("#bk-cle").value },
   });
@@ -4599,6 +4612,13 @@ async function renderBackups() {
     if (r?.ok) renderBackups();
   };
   $("#bk-dl").onclick = () => { location.href = "/api/backups/telecharger"; };
+  $("#bk-verif").onclick = async () => {
+    $("#bk-msg").textContent = "relecture…";
+    const r = await api.post("/api/backups/verifier-archives", {});
+    $("#bk-msg").textContent = r.details?.length
+      ? `${r.saines}/${r.verifiees} saines — ${r.details.map((d) => `${d.nom} : ${d.error}`).join(" ; ")}`
+      : `${r.saines}/${r.verifiees} archives relues sans erreur ✓`;
+  };
   $$(".bk-get").forEach((b) => (b.onclick = () => { location.href = `/api/backups/telecharger?nom=${encodeURIComponent(b.dataset.n)}`; }));
 
   // Restauration : APERÇU d'abord, toujours. On montre ce qui serait écrasé avant de
