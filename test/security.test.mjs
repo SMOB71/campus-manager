@@ -3,14 +3,15 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { demarrerServeur } from "./_serveur.mjs";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 3500 + (process.pid % 400);
-const BASE = `http://127.0.0.1:${PORT}`;
+// Le port est attribué par le système et lu sur la sortie du serveur : voir _serveur.mjs.
+let BASE = "";
 const dir = mkdtempSync(path.join(os.tmpdir(), "ac-sec-"));
 let srv;
 
@@ -37,16 +38,8 @@ async function login(email, password) {
 }
 
 before(async () => {
-  srv = spawn(process.execPath, ["server.js"], {
-    cwd: ROOT, stdio: "ignore",
-    env: { ...process.env, DATA_DIR: dir, DATA_KEY: "test_key_throwaway_0123456789", SESSION_SECRET: "test_secret", OPENAI_API_KEY: "sk-test", ADMIN_EMAIL: "admin@test.co", APP_PASSWORD: "pw12345678", PORT: String(PORT), NODE_ENV: "test" },
-  });
-  const deadline = Date.now() + 25000;   // marge démarrage à froid (jsdom/scrypt lents au 1er run sur certaines machines)
-  for (;;) {
-    try { const r = await fetch(BASE + "/health"); if (r.ok) break; } catch { /* pas encore prêt */ }
-    if (Date.now() > deadline) throw new Error("serveur non démarré");
-    await new Promise((r) => setTimeout(r, 150));
-  }
+  const r = await demarrerServeur({ ...process.env, DATA_DIR: dir, DATA_KEY: "test_key_throwaway_0123456789", SESSION_SECRET: "test_secret", OPENAI_API_KEY: "sk-test", ADMIN_EMAIL: "admin@test.co", APP_PASSWORD: "pw12345678", NODE_ENV: "test" });
+  srv = r.enfant; BASE = r.base;
 });
 after(() => { try { srv.kill("SIGKILL"); } catch { /* ignore */ } rmSync(dir, { recursive: true, force: true }); });
 

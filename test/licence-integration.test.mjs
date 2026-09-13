@@ -4,6 +4,7 @@
 // vérifier ce que voit vraiment un client.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { demarrerServeur } from "./_serveur.mjs";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -19,20 +20,12 @@ const ENV_BASE = {
 };
 
 const instances = [];
-async function demarrer(nom, port, licence) {
+// Trois instances simultanées, donc trois ports : les deviner à partir du PID les rendait
+// collisionnables entre elles ET avec un serveur résiduel. Le système les attribue.
+async function demarrer(nom, licence) {
   const dir = mkdtempSync(path.join(os.tmpdir(), `ac-lic-${nom}-`));
-  const srv = spawn(process.execPath, ["server.js"], {
-    cwd: ROOT, stdio: "ignore",
-    env: { ...process.env, ...ENV_BASE, ...licence, DATA_DIR: dir, PORT: String(port) },
-  });
-  const base = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 25000;
-  for (;;) {
-    try { const r = await fetch(base + "/health"); if (r.ok) break; } catch { /* pas prêt */ }
-    if (Date.now() > deadline) throw new Error(`instance ${nom} non démarrée`);
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  const inst = { base, srv, dir };
+  const { enfant, base } = await demarrerServeur({ ...process.env, ...ENV_BASE, ...licence, DATA_DIR: dir });
+  const inst = { base, srv: enfant, dir };
   instances.push(inst);
   return inst;
 }
@@ -57,14 +50,13 @@ const appel = (inst, s, chemin, { method = "GET", json } = {}) => fetch(inst.bas
   body: json ? JSON.stringify(json) : undefined,
 });
 
-const PORT = 3900 + (process.pid % 60);
 const WHSEC = "whsec_integration_0123456789";
 let expiree, plafonnee, abonnee;
 
 before(async () => {
-  expiree = await demarrer("exp", PORT, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2020-01-01", LICENCE_CLIENT: "CFA Test" });
-  plafonnee = await demarrer("cap", PORT + 1, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
-  abonnee = await demarrer("sub", PORT + 2, {
+  expiree = await demarrer("exp", { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2020-01-01", LICENCE_CLIENT: "CFA Test" });
+  plafonnee = await demarrer("cap", { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
+  abonnee = await demarrer("sub", {
     LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2026-01-01",
     STRIPE_WEBHOOK_SECRET: WHSEC, STRIPE_PRICE_RESEAU: "price_res",
   });
@@ -234,7 +226,7 @@ test("webhook : une résiliation ferme l'écriture mais laisse lire et exporter"
 // et la conversion d'une candidature.
 
 test("import en masse : le plafond tient, et les lignes refusées sont nommées", async () => {
-  const petite = await demarrer("imp", PORT + 3, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
+  const petite = await demarrer("imp", { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
   const s = await connecter(petite);
   let campus = await (await appel(petite, s, "/api/campuses")).json();
   if (!campus.length) {
@@ -276,7 +268,7 @@ test("import en masse : le plafond tient, et les lignes refusées sont nommées"
 });
 
 test("conversion d'une candidature : refusée au plafond, mais un rattachement reste permis", async () => {
-  const inst = await demarrer("cand", PORT + 4, { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
+  const inst = await demarrer("cand", { LICENCE_PLAN: "essentiel", LICENCE_VALID_UNTIL: "2099-01-01" });
   const s = await connecter(inst);
   let campus = await (await appel(inst, s, "/api/campuses")).json();
   if (!campus.length) {

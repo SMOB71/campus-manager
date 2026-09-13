@@ -5989,7 +5989,10 @@ try {
   process.exit(1);
 }
 
-app.listen(PORT, () => {
-  console.log(`assistant-campus V2 sur http://127.0.0.1:${PORT}`);
+// On journalise le port RÉELLEMENT écouté, pas celui demandé : avec PORT=0 le système en
+// attribue un, et c'est ainsi que les tests peuvent se lier à LEUR serveur plutôt qu'à un
+// résidu qui traînerait sur un port devinable.
+const httpServer = app.listen(PORT, () => {
+  console.log(`assistant-campus V2 sur http://127.0.0.1:${httpServer.address().port}`);
   console.log("routage :", Object.fromEntries(Object.entries(PROMPTS).map(([k, v]) => [k, v.model])));
 });
