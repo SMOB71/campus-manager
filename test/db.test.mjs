@@ -150,40 +150,69 @@ siBase("RIEN N'EST PERDU : après écriture, la base relue doit égaler la mémo
 
   // Mutation d'un objet IMBRIQUÉ dans une ligne — une tâche dans une ouverture, une étape
   // dans une tâche, une séance dans un comité. C'est l'angle mort qui a coûté neuf
-  // fonctions : ni le round-trip ni le test structurel ne descendaient sous la ligne.
+  // fonctions : ni ce round-trip ni le test structurel ne descendaient sous la ligne.
   //
-  // LE FLUSH ENTRE LES PHASES EST INDISPENSABLE, et c'est ce qui rendait le bug invisible.
-  // touch() mémorise la RÉFÉRENCE de la ligne ; pg.put la sérialise plus tard, dans la
-  // chaîne asynchrone. Une mutation non marquée effectuée AVANT que l'écriture en attente
-  // ne parte « monte donc dans le train » et se retrouve en base par accident. La perte
-  // n'est pas systématique : elle dépend de ce qui se passe ensuite sur la même ligne.
-  // Sans flush ici, ce test passait alors que la régression était bien présente.
+  // UNE PHASE PAR FONCTION, SÉPARÉE PAR UN FLUSH. Ce n'est pas de la coquetterie :
+  // touch() mémorise la RÉFÉRENCE de la ligne et pg.put sérialise la ligne ENTIÈRE plus
+  // tard, dans la chaîne asynchrone. Un seul marquage emporte donc toutes les mutations
+  // imbriquées faites avant son exécution — y compris celles qui n'ont rien marqué. En
+  // enchaînant les mutations sans flush, on ne teste plus rien : retirer le touch d'UNE
+  // fonction laissait le test passer, couvert par le touch d'une autre. Le flush vide la
+  // file, donc chaque phase ne peut être sauvée que par son propre marquage.
   const ouv = store.addOpening({ name: "Ouverture round-trip", targetDate: "2028-09-04" });
   const tache = store.addOpeningTask(ouv.id, { title: "Tâche imbriquée", lot: "gouv" });
   const com = store.addCommittee({ name: "COPIL round-trip", scope: "opening", scopeId: ouv.id });
   const seance = store.addSession(com.id, { date: "2027-05-12" });
-  await store.flush();   // ← vide la file : plus aucune écriture en attente sur ces lignes
-
-  // Toutes les mutations imbriquées APRÈS le flush, donc sans écriture marquée derrière
-  // laquelle se glisser. C'est la seule façon de les observer vraiment.
-  store.updateOpeningTask(ouv.id, tache.id, { owner: "Claire", status: "doing" });
-  const etape = store.addTaskStep(ouv.id, tache.id, { text: "Sous-étape" });
-  store.updateTaskStep(ouv.id, tache.id, etape.id, { done: true });
-  const livrable = store.addTaskOutput(ouv.id, tache.id, { label: "Livrable" });
-  store.updateTaskOutput(ouv.id, tache.id, livrable.id, { status: "validated" });
-  store.updateSession(com.id, seance.id, { minutes: "Compte rendu", status: "held" });
   await store.flush();
 
-  const relu = await db.loadAll();
-  const tBase = relu.openings.find((x) => x.id === ouv.id).tasks.find((x) => x.id === tache.id);
-  assert.equal(tBase.owner, "Claire", "responsable de tâche perdu");
-  assert.equal(tBase.steps?.length, 1, "sous-étape perdue — mutation imbriquée non marquée par touch()");
-  assert.equal(tBase.steps[0].done, true, "coche de sous-étape perdue");
-  assert.equal(tBase.outputs?.length, 1, "livrable perdu");
-  assert.equal(tBase.outputs[0].status, "validated", "validation de livrable perdue");
-  const sBase = relu.committees.find((x) => x.id === com.id).sessions[0];
-  assert.equal(sBase.minutes, "Compte rendu", "compte rendu de COPIL perdu");
-  assert.equal(sBase.status, "held");
+  const relire = async () => {
+    const d = await db.loadAll();
+    return {
+      t: d.openings.find((x) => x.id === ouv.id).tasks.find((x) => x.id === tache.id),
+      s: d.committees.find((x) => x.id === com.id).sessions[0],
+    };
+  };
+
+  store.updateOpeningTask(ouv.id, tache.id, { owner: "Claire", status: "doing" });
+  await store.flush();
+  assert.equal((await relire()).t.owner, "Claire", "updateOpeningTask : responsable perdu");
+
+  const etape = store.addTaskStep(ouv.id, tache.id, { text: "Sous-étape" });
+  await store.flush();
+  assert.equal((await relire()).t.steps?.length, 1, "addTaskStep : sous-étape perdue");
+
+  store.updateTaskStep(ouv.id, tache.id, etape.id, { done: true });
+  await store.flush();
+  assert.equal((await relire()).t.steps[0].done, true, "updateTaskStep : coche perdue");
+
+  const livrable = store.addTaskOutput(ouv.id, tache.id, { label: "Livrable" });
+  await store.flush();
+  assert.equal((await relire()).t.outputs?.length, 1, "addTaskOutput : livrable perdu");
+
+  store.updateTaskOutput(ouv.id, tache.id, livrable.id, { status: "validated" });
+  await store.flush();
+  assert.equal((await relire()).t.outputs[0].status, "validated", "updateTaskOutput : validation perdue");
+
+  store.addTaskComment(ouv.id, tache.id, { by: "Claire", text: "Commentaire" });
+  await store.flush();
+  assert.equal((await relire()).t.comments?.length, 1, "addTaskComment : commentaire perdu");
+
+  store.updateSession(com.id, seance.id, { minutes: "Compte rendu", status: "held" });
+  await store.flush();
+  assert.equal((await relire()).s.minutes, "Compte rendu", "updateSession : compte rendu perdu");
+
+  store.linkSessionTask(com.id, seance.id, tache.id);
+  await store.flush();
+  assert.deepEqual((await relire()).s.taskIds, [tache.id], "linkSessionTask : rattachement perdu");
+
+  // Suppressions imbriquées : elles doivent aussi atteindre la base.
+  store.deleteTaskStep(ouv.id, tache.id, etape.id);
+  await store.flush();
+  assert.equal((await relire()).t.steps.length, 0, "deleteTaskStep : suppression perdue");
+
+  store.deleteTaskOutput(ouv.id, tache.id, livrable.id);
+  await store.flush();
+  assert.equal((await relire()).t.outputs.length, 0, "deleteTaskOutput : suppression perdue");
 });
 
 siBase("COUVERTURE DE touch() : aucune modification sur place ne doit échapper", async () => {
