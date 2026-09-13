@@ -2,6 +2,11 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# rsync + client SSH : la copie des archives vers un serveur EXTERNE se fait depuis
+# l'application, avec une cle montee sur l'hote (jamais stockee en base). Sans ces deux
+# binaires, une sauvegarde ne peut pas quitter la machine qu'elle est censee proteger.
+RUN apk add --no-cache openssh-client rsync
+
 # deps d'abord (cache)
 COPY package.json ./
 RUN npm install --omit=dev

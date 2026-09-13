@@ -4511,33 +4511,124 @@ async function openTaskSheet(oid, tid) {
 
 // ---------- Vue : Sauvegardes / Restauration (admin) ----------
 async function renderBackups() {
-  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="bk-now">Sauvegarder maintenant</button>`;
-  $("#bk-now").addEventListener("click", async () => { await api.post("/api/backups", {}); renderBackups(); });
   const view = $("#view");
+  $("#topbar-actions").innerHTML = "";
   view.innerHTML = `<p class="muted">Chargement…</p>`;
   const rep = await api.get("/api/backups") || {};
-  const mode = rep.mode || "fichier";
-  const list = rep.items || [];
-  const kb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " Mo" : Math.max(1, Math.round(n / 1024)) + " Ko");
-  const dt = (iso) => new Date(iso).toLocaleString("fr-FR");
-  if (mode === "postgres") {
-    $("#topbar-actions").innerHTML = "";
-    view.innerHTML = `<div class="card card-pad" style="border-left:3px solid #0B6E5F;">
-      <div class="ttl">Sauvegardes assurées côté serveur</div>
-      <p style="margin:8px 0 0;">Les données sont en <strong>PostgreSQL</strong>. La sauvegarde est un <strong>dump complet chaque nuit à 2h40</strong>, conservé 30 jours, avec alerte par email en cas d'échec. La restauration a été testée : rechargement sans erreur, effectifs identiques à la production.</p>
-      <p class="hint muted" style="margin-top:10px;">La sauvegarde « fichier » de cet écran est désactivée : elle porterait sur un <code>db.json</code> figé depuis la bascule en base. La présenter comme à jour serait trompeur, et la restaurer écraserait la production avec un instantané périmé.</p></div>`;
-    return;
-  }
+  const c = rep.config || {};
+  const d = c.distant || {};
+  const ko = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " Mo" : Math.max(1, Math.round(n / 1024)) + " Ko");
+  const dt = (iso) => (iso ? new Date(iso).toLocaleString("fr-FR") : "—");
+
   view.innerHTML = `
-    <div class="card card-pad" style="margin-bottom:14px;"><p style="margin:0;">Une sauvegarde est créée <strong>automatiquement avant chaque écriture</strong> (30 dernières conservées). Tu peux en créer une manuellement et <strong>restaurer</strong> l'état à un instant donné.</p></div>
-    ${list.length ? `<div class="card"><div class="list">${list.map((b) => `<div class="item"><span class="pill">${esc(b.name.replace("db-", "").slice(0, 10))}</span><div class="grow"><div class="ttl">${dt(b.mtime)}</div><div class="sub muted">${kb(b.size)}</div></div><button class="btn-ghost btn-sm bk-restore" data-name="${esc(b.name)}">Restaurer</button></div>`).join("")}</div></div>` : `<p class="empty">Aucune sauvegarde pour l'instant.</p>`}
-    <p class="hint muted" style="margin-top:12px;">La restauration remplace l'état actuel — une sauvegarde de sécurité de l'état courant est prise juste avant.</p>`;
-  $$(".bk-restore").forEach((b) => b.addEventListener("click", async () => {
-    if (!confirm("Restaurer cette sauvegarde ? L'état actuel sera remplacé (une sauvegarde de sécurité est prise avant).")) return;
-    const r = await api.post("/api/backups/restore", { name: b.dataset.name });
-    if (r.error) { alert(r.error); return; }
-    alert("Restauration effectuée. Rechargement…"); location.reload();
-  }));
+    <div class="card card-pad" style="margin-bottom:14px;">
+      <div class="ttl">Sauvegarde de l'application</div>
+      <p style="margin:8px 0 0;">Archive complète de l'état réel — ${rep.mode === "postgres" ? "lue dans <strong>PostgreSQL</strong>" : "lue dans le magasin fichier"} —, <strong>chiffrée</strong>, avec empreinte SHA‑256 vérifiée à la relecture. Elle se restaure dans les deux modes, donc une bascule reste réversible.</p>
+      <p class="hint muted" style="margin-top:8px;">Indépendante du <code>pg_dump</code> nocturne côté serveur, qui continue de tourner. Deux mécanismes valent mieux qu'un.</p>
+    </div>
+
+    <div class="grid grid-2" style="gap:14px;align-items:start;">
+      <div class="card card-pad">
+        <div class="ttl">Planification & destination locale</div>
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+          <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="bk-actif" ${c.actif ? "checked" : ""}> Sauvegarde automatique quotidienne</label></div>
+          <div><label class="field-label">Heure</label><input class="txt" id="bk-heure" value="${esc(c.heure || "03:10")}" placeholder="03:10"></div>
+          <div><label class="field-label">Conserver (archives)</label><input class="txt" id="bk-ret" type="number" min="1" max="365" value="${c.retention || 30}"></div>
+          <div style="grid-column:1/-1;"><label class="field-label">Dossier sur le serveur</label><input class="txt" id="bk-dossier" value="${esc(c.dossier || "")}"></div>
+          <div style="grid-column:1/-1;"><label class="field-label">Alerte email en cas d'échec</label><input class="txt" id="bk-mail" value="${esc(c.alerteEmail || "")}" placeholder="ops@exemple.fr"></div>
+        </div>
+        <p class="hint muted" style="margin-top:8px;">Le dossier doit être dans le volume monté, sinon les archives disparaissent à la recréation du conteneur.</p>
+      </div>
+
+      <div class="card card-pad">
+        <div class="ttl">Serveur externe</div>
+        <p class="hint muted" style="margin:6px 0 10px;">Une sauvegarde qui ne vit que sur la machine qu'elle protège ne protège de rien. Copie par <code>rsync</code> over SSH, avec une <strong>clé montée sur l'hôte</strong> — la clé privée n'entre jamais dans la base.</p>
+        <div class="grid" style="grid-template-columns:2fr 1fr;gap:10px;">
+          <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="bk-dactif" ${d.actif ? "checked" : ""}> Copier chaque archive vers un serveur externe</label></div>
+          <div><label class="field-label">Hôte</label><input class="txt" id="bk-hote" value="${esc(d.hote || "")}" placeholder="10.10.0.1"></div>
+          <div><label class="field-label">Port</label><input class="txt" id="bk-port" type="number" value="${d.port || 22}"></div>
+          <div><label class="field-label">Utilisateur</label><input class="txt" id="bk-user" value="${esc(d.utilisateur || "root")}"></div>
+          <div><label class="field-label">Chemin distant</label><input class="txt" id="bk-chemin" value="${esc(d.chemin || "")}" placeholder="/opt/backups/campus"></div>
+          <div style="grid-column:1/-1;"><label class="field-label">Clé SSH (chemin dans le conteneur)</label><input class="txt" id="bk-cle" value="${esc(d.cle || "")}"></div>
+        </div>
+        <div class="actions" style="margin-top:10px;"><button class="btn-ghost btn-sm" id="bk-test">Tester la connexion</button><span id="bk-test-msg" class="status"></span></div>
+      </div>
+    </div>
+
+    <div class="actions" style="margin-top:14px;">
+      <button class="btn-primary btn-sm" id="bk-save">Enregistrer les réglages</button>
+      <button class="btn-ghost btn-sm" id="bk-run">Sauvegarder maintenant</button>
+      <button class="btn-ghost btn-sm" id="bk-dl">Télécharger une archive</button>
+      <label class="btn-ghost btn-sm" style="cursor:pointer;">Restaurer depuis un fichier<input type="file" id="bk-up" accept=".cmbak" style="display:none;"></label>
+      <span id="bk-msg" class="status"></span>
+    </div>
+
+    <div class="ouv-lot" style="margin-top:16px;"><div class="ouv-lot-head"><span class="ttl">Archives sur le serveur</span><span class="muted">${(rep.archives || []).length}</span></div>
+      ${(rep.archives || []).length ? `<div class="card" style="overflow-x:auto;"><table class="net-table">
+        <thead><tr><th>Archive</th><th>Date</th><th>Lignes</th><th>Taille</th><th>Source</th><th></th></tr></thead>
+        <tbody>${rep.archives.map((a) => `<tr>
+          <td style="font-family:ui-monospace,monospace;font-size:12px;">${esc(a.nom)}</td>
+          <td>${dt(a.createdAt || a.mtime)}</td>
+          <td>${a.total ?? "—"}</td><td class="muted">${ko(a.octets)}</td>
+          <td class="muted">${esc(a.mode || "—")}${a.chiffre === false ? " · <span class=\"cell-warn\">non chiffrée</span>" : ""}</td>
+          <td><button class="btn-ghost btn-sm bk-get" data-n="${esc(a.nom)}">Télécharger</button>
+              <button class="btn-ghost btn-sm bk-res" data-n="${esc(a.nom)}">Restaurer</button></td></tr>`).join("")}</tbody></table></div>`
+        : `<p class="muted">Aucune archive pour l'instant. « Sauvegarder maintenant » en crée une.</p>`}</div>`;
+
+  const lire = () => ({
+    actif: $("#bk-actif").checked, heure: $("#bk-heure").value, retention: $("#bk-ret").value,
+    dossier: $("#bk-dossier").value, alerteEmail: $("#bk-mail").value,
+    distant: { actif: $("#bk-dactif").checked, hote: $("#bk-hote").value, port: $("#bk-port").value,
+               utilisateur: $("#bk-user").value, chemin: $("#bk-chemin").value, cle: $("#bk-cle").value },
+  });
+  $("#bk-save").onclick = async () => {
+    const r = await api.put("/api/backups/config", lire());
+    $("#bk-msg").textContent = r?.error ? r.error : "Réglages enregistrés ✓ planification reprise immédiatement";
+  };
+  $("#bk-test").onclick = async () => {
+    $("#bk-test-msg").textContent = "connexion…";
+    const r = await api.post("/api/backups/verifier-distant", { distant: lire().distant });
+    $("#bk-test-msg").innerHTML = r?.ok ? `<span style="color:#0B6E5F;">Joignable ✓ ${esc((r.detail || "").split(/\s+/).slice(-2).join(" "))}</span>` : `<span class="cell-warn">${esc(r?.error || "échec")}</span>`;
+  };
+  $("#bk-run").onclick = async () => {
+    $("#bk-msg").textContent = "sauvegarde en cours…";
+    const r = await api.post("/api/backups/run", {});
+    $("#bk-msg").textContent = r?.ok
+      ? `Archive ${r.nom} ✓ ${r.total} lignes${r.distant?.envoye ? ", copiée hors site" : r.distant?.error ? ` — copie externe en échec : ${r.distant.error}` : ""}`
+      : `Échec : ${r?.error || "inconnu"}`;
+    if (r?.ok) renderBackups();
+  };
+  $("#bk-dl").onclick = () => { location.href = "/api/backups/telecharger"; };
+  $$(".bk-get").forEach((b) => (b.onclick = () => { location.href = `/api/backups/telecharger?nom=${encodeURIComponent(b.dataset.n)}`; }));
+
+  // Restauration : APERÇU d'abord, toujours. On montre ce qui serait écrasé avant de
+  // demander confirmation — restaurer sans savoir ce qu'on perd est le geste qui
+  // transforme un incident en catastrophe.
+  const apercuPuisRestaurer = async (appel) => {
+    const p = await appel(false);
+    if (p?.error) { $("#bk-msg").textContent = p.error; return; }
+    const lignes = (p.diff || []).map((x) => `  ${x.collection} : ${x.actuel} → ${x.archive} (${x.delta > 0 ? "+" : ""}${x.delta})`).join("\n");
+    const ok = confirm(`Restaurer l'archive du ${new Date(p.enveloppe.createdAt).toLocaleString("fr-FR")} ?\n\n`
+      + (p.perdus ? `⚠ ${p.perdus} ligne(s) seraient SUPPRIMÉES.\n\n` : "Aucune suppression.\n\n")
+      + (lignes ? `Changements :\n${lignes}\n\n` : "Aucun écart d'effectifs.\n\n")
+      + `Une archive de l'état actuel est prise juste avant.`);
+    if (!ok) return;
+    const r = await appel(true);
+    if (r?.error) { $("#bk-msg").textContent = r.error; return; }
+    alert(`Restauration effectuée ✓\nFilet de sécurité : ${r.filet}\n${r.redemarrageRequis ? "\nRedémarre le service pour recharger l'état en mémoire." : ""}`);
+    location.reload();
+  };
+  $$(".bk-res").forEach((b) => (b.onclick = () => apercuPuisRestaurer((confirmer) =>
+    api.post("/api/backups/restaurer", { nom: b.dataset.n, confirmer }))));
+  $("#bk-up").onchange = async (e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    await apercuPuisRestaurer(async (confirmer) => {
+      const fd = new FormData(); fd.append("fichier", f); fd.append("confirmer", String(confirmer));
+      const res = await fetch("/api/backups/televerser", { method: "POST", body: fd, headers: { "X-CSRF-Token": csrfToken() } });
+      return res.json();
+    });
+    e.target.value = "";
+  };
 }
 
 function openModal(title, bodyHtml, toolsHtml = "") {
