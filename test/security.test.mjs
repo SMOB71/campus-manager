@@ -1357,6 +1357,91 @@ test("dépôt du contrat : le silence de l'OPCO est remonté comme un refus", as
   assert.equal((await req(`/api/contracts/${c.id}/depot`, { method: "PUT", ...opts, json: { etat: "accepte" } })).status, 400);
 });
 
+test("communication : une convocation part, une prospection sans consentement non", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Comm" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: { name: "C", modules: [{ code: "U1", label: "M", coefficient: 1 }] } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "K", curriculumId: cur.id } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Comm", prenom: "Test", email: "comm@test.co" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  const base = { campusId: campus.id, audience: "classe", classId: classe.id, canal: "email" };
+
+  // Sans nature déclarée : refus. On ne tranche pas une question juridique à la
+  // place de l'organisme.
+  const sansNature = await (await req("/api/comm/preparer", { method: "POST", ...opts, json: { ...base, sujet: "X", corps: "Y" } })).json();
+  assert.equal(sansNature.envoyable, false);
+  assert.ok(sansNature.errors.some((e) => /nature du message requise/.test(e)));
+
+  // Convocation : part sans consentement.
+  const gestion = await (await req("/api/comm/preparer", { method: "POST", ...opts, json: {
+    ...base, nature: "gestion", sujet: "Convocation", corps: "Bonjour {{prenom}}, épreuve le 15 juin." } })).json();
+  assert.equal(gestion.envoyable, true);
+  assert.equal(gestion.total, 1);
+  assert.match(gestion.retenus[0].apercu, /Bonjour Test/, "les variables sont résolues");
+
+  // Prospection : bloquée faute de consentement.
+  const prospect = await (await req("/api/comm/preparer", { method: "POST", ...opts, json: {
+    ...base, nature: "prospection", sujet: "JPO", corps: "Venez.", lienRetrait: "https://x.fr/r" } })).json();
+  assert.equal(prospect.total, 0);
+  assert.match(prospect.ecartes[0].motif, /consentement absent/);
+
+  // Aucun fournisseur SMS : on le DIT, on ne fait pas semblant d'avoir envoyé.
+  const sms = await req("/api/comm/envoyer", { method: "POST", ...opts, json: { ...base, canal: "sms", nature: "gestion", corps: "Cours annulé." } });
+  assert.equal(sms.status, 501);
+  assert.match((await sms.json()).error, /n'a pas été envoyé/);
+});
+
+test("signature : niveau annoncé, jeton nominatif, document figé par son empreinte", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Signature" } })).json();
+
+  // Un contrat d'apprentissage sans employeur est refusé.
+  const incomplet = await req("/api/signature/demandes", { method: "POST", ...opts, json: {
+    campusId: campus.id, titre: "Contrat", type: "contrat_apprentissage",
+    document: { numero: "C-1" }, parties: [{ role: "apprenant", nom: "Léa", email: "lea@x.fr" }] } });
+  assert.equal(incomplet.status, 400);
+  assert.match((await incomplet.json()).error, /Employeur/);
+
+  const d = await (await req("/api/signature/demandes", { method: "POST", ...opts, json: {
+    campusId: campus.id, titre: "Contrat d'apprentissage", type: "contrat_apprentissage",
+    document: { numero: "C-1", dateDebut: "2027-09-01" }, expireLe: "2099-12-31",
+    parties: [
+      { role: "apprenant", nom: "Léa", email: "lea@x.fr" },
+      { role: "employeur", nom: "Optique", email: "rh@x.fr" },
+      { role: "organisme", nom: "CFA", email: "dir@x.fr" },
+    ] } })).json();
+  assert.equal(d.liens.length, 3);
+  assert.match(d.avertissement, /ne seront plus affichés/);
+
+  // Le jeton d'un autre ne signe pas à sa place.
+  const usurpation = await req("/api/signature/signer", { method: "POST", json: { demandeId: d.id, partieId: d.liens[0].partieId, jeton: d.liens[1].jeton } });
+  assert.equal(usurpation.status, 403, `id=${d.id} partie=${d.liens[0].partieId} → ${await usurpation.text()}`);
+
+  const ok = await req("/api/signature/signer", { method: "POST", json: { demandeId: d.id, partieId: d.liens[0].partieId, jeton: d.liens[0].jeton } });
+  assert.equal(ok.status, 200);
+  const e = await ok.json();
+  assert.equal(e.etat, "partiel");
+  assert.equal(e.signees, 1);
+  assert.equal(e.niveau, "simple", "le niveau eIDAS est annoncé, jamais surévalué");
+
+  // La liste n'expose ni jeton ni preuve.
+  const liste = await (await req(`/api/signature/demandes?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  const brut = JSON.stringify(liste);
+  assert.equal(brut.includes(d.liens[0].jeton), false, "le jeton n'est jamais relisible");
+  assert.equal(brut.includes("jetonHash"), false);
+
+  // Vérification : intacte, et le document modifié est détecté.
+  const v = await (await req(`/api/signature/demandes/${d.id}/verification`, { cookie: a.cookie })).json();
+  assert.equal(v.intact, true);
+  assert.match(v.reserve, /charge de la preuve/);
+  const altere = await (await req(`/api/signature/demandes/${d.id}/verification?empreinte=autrechose`, { cookie: a.cookie })).json();
+  assert.equal(altere.intact, false);
+  assert.ok(altere.problemes.some((p) => /modifié depuis la demande/.test(p.message)));
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");

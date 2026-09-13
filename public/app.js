@@ -364,6 +364,8 @@ const NAV = [
   { id: "evenements", label: "JPO & événements", icon: I.mega, group: "Recrutement" },
   { id: "finance", label: "Finance", icon: I.euro, group: "Performance" },
   { id: "facturation", label: "Facturation", icon: I.euro, group: "Performance" },
+  { id: "exports", label: "Comptabilité & paie", icon: I.euro, admin: true, group: "Performance" },
+  { id: "deca", label: "Dépôts OPCO", icon: I.brief, group: "Réseau" },
   { id: "objectifs", label: "Objectifs réseau", icon: I.target, group: "Performance" },
   { id: "prevision", label: "Prévision consolidée", icon: I.chart, admin: true, group: "Performance" },
   { id: "indicateurs", label: "Indicateurs", icon: I.chart, group: "Performance" },
@@ -461,7 +463,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -4513,9 +4515,19 @@ async function renderBackups() {
   $("#bk-now").addEventListener("click", async () => { await api.post("/api/backups", {}); renderBackups(); });
   const view = $("#view");
   view.innerHTML = `<p class="muted">Chargement…</p>`;
-  const list = await api.get("/api/backups") || [];
+  const rep = await api.get("/api/backups") || {};
+  const mode = rep.mode || "fichier";
+  const list = rep.items || [];
   const kb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " Mo" : Math.max(1, Math.round(n / 1024)) + " Ko");
   const dt = (iso) => new Date(iso).toLocaleString("fr-FR");
+  if (mode === "postgres") {
+    $("#topbar-actions").innerHTML = "";
+    view.innerHTML = `<div class="card card-pad" style="border-left:3px solid #0B6E5F;">
+      <div class="ttl">Sauvegardes assurées côté serveur</div>
+      <p style="margin:8px 0 0;">Les données sont en <strong>PostgreSQL</strong>. La sauvegarde est un <strong>dump complet chaque nuit à 2h40</strong>, conservé 30 jours, avec alerte par email en cas d'échec. La restauration a été testée : rechargement sans erreur, effectifs identiques à la production.</p>
+      <p class="hint muted" style="margin-top:10px;">La sauvegarde « fichier » de cet écran est désactivée : elle porterait sur un <code>db.json</code> figé depuis la bascule en base. La présenter comme à jour serait trompeur, et la restaurer écraserait la production avec un instantané périmé.</p></div>`;
+    return;
+  }
   view.innerHTML = `
     <div class="card card-pad" style="margin-bottom:14px;"><p style="margin:0;">Une sauvegarde est créée <strong>automatiquement avant chaque écriture</strong> (30 dernières conservées). Tu peux en créer une manuellement et <strong>restaurer</strong> l'état à un instant donné.</p></div>
     ${list.length ? `<div class="card"><div class="list">${list.map((b) => `<div class="item"><span class="pill">${esc(b.name.replace("db-", "").slice(0, 10))}</span><div class="grow"><div class="ttl">${dt(b.mtime)}</div><div class="sub muted">${kb(b.size)}</div></div><button class="btn-ghost btn-sm bk-restore" data-name="${esc(b.name)}">Restaurer</button></div>`).join("")}</div></div>` : `<p class="empty">Aucune sauvegarde pour l'instant.</p>`}
@@ -5588,6 +5600,154 @@ async function renderApiKeys() {
     await api.del(`/api/apikeys/${b.dataset.id}`);
     await renderApiKeys();
   })));
+}
+
+// ---------- Vue : Comptabilité & paie ----------
+let expCampus = "";
+async function renderExports() {
+  if (!expCampus) expCampus = state.campuses[0]?.id || "";
+  const an = new Date().getFullYear() - 1;
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="ex-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${expCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [plan, ref] = await Promise.all([api.get("/api/compta/plan"), api.get("/api/paie/referentiels")]);
+
+  view.innerHTML = `
+    <div class="section-title" style="margin-top:0;">Export comptable (FEC)</div>
+    <p class="muted" style="margin-top:0;">Fichier des écritures comptables, au format attendu par l'administration fiscale (art. A. 47 A-1 du LPF).
+    Il n'est produit que s'il est <b>équilibré</b> : un fichier déséquilibré est rejeté au contrôle, le livrer ne rendrait service à personne.</p>
+    <div class="card card-pad">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div><label class="field-label">Début d'exercice</label><input class="txt" id="fec-from" type="date" value="${an}-01-01"></div>
+        <div><label class="field-label">Fin d'exercice</label><input class="txt" id="fec-to" type="date" value="${an}-12-31"></div>
+        <button class="btn-ghost btn-sm" id="fec-verif">Vérifier</button>
+        <button class="btn-primary btn-sm" id="fec-dl">Télécharger le FEC</button>
+      </div>
+      <div id="fec-res" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="section-title">Plan de comptes</div>
+    <p class="muted" style="margin-top:0;">Chaque organisme a le sien : ces comptes sont ceux qui figureront dans le fichier remis au cabinet.</p>
+    <div class="card card-pad"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;">
+      ${[["client", "Clients"], ["produits", "Produits (prestations)"], ["banque", "Banque"], ["tva", "TVA collectée"]].map(([k, l]) => `
+        <div><label class="field-label">${esc(l)}</label><input class="txt pc" data-k="${k}" value="${esc(plan.actuel[k] || "")}"></div>`).join("")}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+      <button class="btn-ghost btn-sm" id="pc-save">Enregistrer le plan</button><span class="sub" id="pc-msg"></span></div></div>
+
+    <div class="section-title">Préparation de la paie</div>
+    <p class="muted" style="margin-top:0;">Les <b>prestataires facturent</b> : ils sont écartés de l'export et listés à part.
+    Les heures de face-à-face ne sont pas les heures payées — la règle de préparation se déclare sur la fiche de l'intervenant.</p>
+    <div class="card card-pad">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div><label class="field-label">Du</label><input class="txt" id="pa-from" type="date" value="${an + 1}-01-01"></div>
+        <div><label class="field-label">Au</label><input class="txt" id="pa-to" type="date" value="${an + 1}-01-31"></div>
+        <button class="btn-ghost btn-sm" id="pa-verif">Calculer</button>
+        <button class="btn-primary btn-sm" id="pa-dl">Exporter (Excel)</button>
+      </div>
+      <div id="pa-res" style="margin-top:12px;"></div>
+    </div>
+    <p class="sub muted" style="margin-top:12px;">Règles de préparation disponibles : ${Object.values(ref.regles).map((r) => esc(r.label)).join(" · ")}.</p>`;
+
+  $("#ex-campus")?.addEventListener("change", () => { expCampus = $("#ex-campus").value; renderExports(); });
+
+  const periodeFec = () => `campusId=${expCampus}&from=${$("#fec-from").value}&to=${$("#fec-to").value}`;
+  $("#fec-verif").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.get(`/api/compta/fec?${periodeFec()}`);
+    $("#fec-res").innerHTML = r.remettable
+      ? `<div class="card card-pad" style="border-left:4px solid var(--good);"><b>${r.ecritures} écriture(s), ${r.lignes} ligne(s) — équilibré.</b>
+         <div class="sub muted">${r.totalDebit.toLocaleString("fr-FR")} € au débit, autant au crédit.</div></div>`
+      : `<div class="card card-pad" style="border-left:4px solid var(--bad);"><b>Non remettable en l'état</b>
+         <ul style="margin:6px 0 0;padding-left:18px;">${(r.anomalies || []).map((a) => `<li>${esc(a.message)}</li>`).join("") || "<li>aucune écriture sur l'exercice</li>"}</ul></div>`;
+  });
+  $("#fec-dl").onclick = async () => {
+    const r = await api.get(`/api/compta/fec?${periodeFec()}`);
+    if (!r.remettable) { $("#fec-verif").click(); return; }
+    location.href = `/api/compta/fec?${periodeFec()}&format=fec`;
+  };
+  $("#pc-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const corps = {};
+    $$(".pc").forEach((i) => { corps[i.dataset.k] = i.value.trim(); });
+    await api.put("/api/compta/plan", corps);
+    $("#pc-msg").textContent = "Plan enregistré."; $("#pc-msg").style.color = "var(--good)";
+  });
+
+  const periodePaie = () => `campusId=${expCampus}&from=${$("#pa-from").value}&to=${$("#pa-to").value}`;
+  $("#pa-verif").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.get(`/api/paie/export?${periodePaie()}`);
+    $("#pa-res").innerHTML = `
+      <div class="kpis"><div class="k"><div class="v">${r.lignes.length}</div><div class="l">à payer</div></div>
+        <div class="k"><div class="v">${r.totalHeures}</div><div class="l">heures</div></div>
+        <div class="k"><div class="v">${r.totalBrut.toLocaleString("fr-FR")} €</div><div class="l">brut</div></div>
+        <div class="k${r.seancesNonConfirmees ? " k-bad" : ""}"><div class="v">${r.seancesNonConfirmees}</div><div class="l">séances non confirmées</div></div></div>
+      ${r.incomplets.length ? `<div class="card card-pad" style="border-left:4px solid var(--bad);"><b>Export bloqué :</b><ul style="margin:6px 0 0;padding-left:18px;">${r.incomplets.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></div>` : ""}
+      ${r.exclus.length ? `<div class="card card-pad" style="border-left:4px solid var(--warn,#C77700);margin-top:8px;"><b>Écartés de la paie</b>
+        <div class="list">${r.exclus.map((x) => `<div class="item"><div class="grow"><div class="ttl">${esc(x.intervenant)}</div><div class="sub muted">${esc(x.motif)}</div></div>
+        <span class="pill">${x.constate.heures} h à facturer</span></div>`).join("")}</div></div>` : ""}
+      <div class="card" style="margin-top:8px;overflow-x:auto;"><table class="net-table"><thead><tr>${["Nom", "Statut", "Constatées", "Règle", "À payer", "Taux", "Brut"].map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+        <tbody>${r.lignes.map((l) => `<tr><td>${esc(l.nom)}</td><td>${esc(l.statut)}</td><td>${l.heuresConstatees} h</td><td>${esc(l.regle)}</td>
+          <td><b>${l.heuresPayees} h</b></td><td>${l.tauxHoraire} €</td><td><b>${l.brut.toLocaleString("fr-FR")} €</b></td></tr>`).join("") || '<tr><td colspan="7">Aucune heure constatée sur la période.</td></tr>'}</tbody></table></div>`;
+  });
+  $("#pa-dl").onclick = () => { location.href = `/api/paie/export?${periodePaie()}&format=xlsx`; };
+}
+
+// ---------- Vue : Dépôts OPCO ----------
+let decaCampus = "";
+async function renderDeca() {
+  if (!decaCampus) decaCampus = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="dc-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${decaCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [ref, t] = await Promise.all([api.get("/api/deca/referentiels"), api.get(`/api/deca?campusId=${decaCampus}`)]);
+  const teinte = { critique: "overdue", eleve: "overdue", moyen: "warn", aucun: "done" };
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Ce n'est pas le CFA qui dépose : l'employeur transmet à son OPCO, qui contrôle puis dépose.
+      Ce que l'on peut faire, c'est ne pas laisser filer les délais — <b>${ref.delaiTransmission} jours ouvrables</b> pour transmettre,
+      <b>${ref.delaiDecision} jours</b> pour la décision. <b>Au-delà, le silence de l'OPCO vaut refus</b> (décret du 28 juin 2024).</p>
+    </div>
+    <div class="kpis">
+      <div class="k"><div class="v">${t.total}</div><div class="l">contrats suivis</div></div>
+      <div class="k${t.aTraiter ? " k-bad" : ""}"><div class="v">${t.aTraiter}</div><div class="l">à traiter</div></div>
+      <div class="k"><div class="v">${t.finances}</div><div class="l">pris en charge</div></div>
+      <div class="k${t.financementCompromis ? " k-bad" : ""}"><div class="v">${t.financementCompromis}</div><div class="l">financement compromis</div></div>
+    </div>
+    <div class="card"><div class="list">${(t.lignes || []).map((l) => `<div class="item">
+      <span class="pill ${teinte[l.risque]}">${esc(l.etatLabel)}</span>
+      <div class="grow"><div class="ttl">${esc(l.apprenant)} <span class="muted" style="font-weight:400;">${esc(l.employeur)}</span></div>
+        <div class="sub muted">début ${esc(l.dateDebut || "?")}${l.dateTransmission ? ` · transmis le ${esc(l.dateTransmission)}` : ""}${l.echeanceDecision ? ` · décision attendue avant le ${esc(l.echeanceDecision)}` : ""}
+        ${l.alertes.map((a) => `<br><b>${esc(a.message)}</b>`).join("")}</div></div>
+      <button class="btn-ghost btn-sm dc-ed" data-id="${l.contratId}">Mettre à jour</button></div>`).join("") || '<p class="muted" style="padding:10px;">Aucun contrat déposable sur ce campus.</p>'}</div></div>`;
+
+  $("#dc-campus")?.addEventListener("change", () => { decaCampus = $("#dc-campus").value; renderDeca(); });
+  $$(".dc-ed").forEach((b) => b.addEventListener("click", () => {
+    const l = t.lignes.find((x) => x.contratId === b.dataset.id);
+    openModal(`Dépôt — ${l.apprenant}`, `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div style="min-width:220px;"><label class="field-label">État</label><select class="txt" id="dp-etat">${Object.entries(ref.etats).map(([k, v]) => `<option value="${k}" ${l.etat === k ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></div>
+        <div><label class="field-label">Transmis le</label><input class="txt" id="dp-trans" type="date" value="${esc(l.dateTransmission || "")}"></div>
+        <div><label class="field-label">Décision le</label><input class="txt" id="dp-dec" type="date" value="${esc(l.dateDecision || "")}"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+        <input class="txt" id="dp-opco" placeholder="OPCO" value="${esc(l.opco || "")}" style="max-width:200px;">
+        <input class="txt grow" id="dp-motif" placeholder="Motif (refus ou correction demandée)" style="min-width:220px;">
+      </div>
+      <p class="hint muted">Un refus sans motif enregistré ne peut être ni corrigé ni contesté.</p>
+      <div class="actions"><button class="btn-primary" id="dp-save">Enregistrer</button><span class="sub" id="dp-msg" style="align-self:center;"></span></div>`);
+    $("#dp-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+      const r = await api.put(`/api/contracts/${l.contratId}/depot`, {
+        etat: $("#dp-etat").value, dateTransmission: $("#dp-trans").value || null,
+        dateDecision: $("#dp-dec").value || null, opco: $("#dp-opco").value.trim(), motif: $("#dp-motif").value.trim(),
+      });
+      const m = $("#dp-msg");
+      if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return; }
+      document.querySelector(".modal-bg")?.remove();
+      await renderDeca();
+    });
+  }));
 }
 
 // ---------- Vue : Licence & abonnement ----------

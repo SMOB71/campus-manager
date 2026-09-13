@@ -32,6 +32,9 @@ import * as apikeys from "./lib/apikeys.js";
 import * as compta from "./lib/comptabilite.js";
 import * as paie from "./lib/paie.js";
 import * as deca from "./lib/deca.js";
+import * as dureelegale from "./lib/dureelegale.js";
+import * as comm from "./lib/communication.js";
+import * as signature from "./lib/signature.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -218,6 +221,11 @@ app.use((req, res, next) => {
   // aucun cookie n'est lu. Exiger un jeton anti-CSRF d'un programme tiers
   // rendrait l'API inutilisable sans rien protéger de plus.
   if (req.path.startsWith("/v1/")) return next();
+  // La signature d'un document se fait depuis un lien reçu par courriel, hors
+  // session : son authentification EST le jeton nominatif, qu'un site tiers ne
+  // possède pas. Exiger en plus un jeton anti-CSRF rendrait la signature
+  // impossible sans rien protéger de plus.
+  if (req.path === "/api/signature/signer") return next();
   if (!csrfValid(req)) return res.status(403).json({ error: "Requête refusée (jeton de sécurité invalide). Recharge la page." });
   next();
 });
@@ -2531,8 +2539,13 @@ app.get("/api/openings/:id/export", requireAuth, requireAdmin, (req, res) => {
 app.get("/api/audit", requireAuth, requireAdmin, (req, res) => res.json(store.listAudit(Number(req.query.limit) || 300)));
 
 // ===== Sauvegardes / Restauration (admin) =====
-app.get("/api/backups", requireAuth, requireAdmin, (req, res) => res.json(store.listBackupsMeta()));
-app.post("/api/backups", requireAuth, requireAdmin, (req, res) => { const name = store.backupNow(); logAudit(req, "create", "backup", name); res.json({ ok: true, name }); });
+app.get("/api/backups", requireAuth, requireAdmin, (req, res) => res.json({ mode: store.sauvegardeFichierActive() ? "fichier" : "postgres", items: store.listBackupsMeta() }));
+app.post("/api/backups", requireAuth, requireAdmin, (req, res) => {
+  const r = store.backupNow();
+  if (r?.error) return res.status(409).json(r);
+  logAudit(req, "create", "backup", r.name);
+  res.json(r);
+});
 app.post("/api/backups/restore", requireAuth, requireAdmin, (req, res) => {
   const r = store.restoreBackup(req.body?.name || "");
   if (r.error) return res.status(400).json(r);
@@ -4800,6 +4813,162 @@ app.put("/api/contracts/:id/depot", requireAuth, (req, res) => {
   const maj = store.updateContract(c.id, { depot: { ...(c.depot || {}), ...req.body } });
   logAudit(req, "update", "deca", `dépôt contrat ${c.id} : ${deca.ETATS[req.body?.etat]?.label || "mise à jour"}`);
   res.json({ ...maj, warnings: v.warnings });
+});
+
+// ===== Lot 4 : communication de masse et signature électronique =====
+
+app.get("/api/comm/referentiels", requireAuth, (req, res) =>
+  res.json({ canaux: comm.CANAUX, natures: comm.NATURES, audiences: comm.AUDIENCES }));
+
+// Résolution nominative d'une audience : un envoi part vers une liste
+// vérifiable, jamais vers « tous les contacts ».
+function resoudreAudience({ type, campusId, classId, schoolYear }) {
+  const apprenants = store.listLearners({ campusId });
+  const inscriptions = store.listEnrollments({ campusId });
+  const actifs = (e) => store.ENROLLMENT_ACTIFS.includes(e.statut);
+  const ids = new Set(inscriptions.filter((e) => actifs(e)
+    && (!classId || e.classId === classId) && (!schoolYear || e.schoolYear === schoolYear)).map((e) => e.learnerId));
+
+  if (type === "classe" || type === "promotion") {
+    return apprenants.filter((l) => ids.has(l.id)).map((l) => ({
+      id: l.id, nom: `${l.prenom} ${l.nom}`, email: l.email, telephone: l.telephone,
+      consentement: !!l.consentements?.prospection, optOut: !!l.consentements?.optOut,
+      variables: { prenom: l.prenom, nom: l.nom },
+    }));
+  }
+  if (type === "representants") {
+    // Uniquement les mineurs : écrire au représentant d'un majeur n'a pas d'objet.
+    return apprenants.filter((l) => ids.has(l.id) && l.repLegalEmail
+      && (dureelegale.ageA(l.dateNaissance, aujourdhui()) ?? 99) < 18)
+      .map((l) => ({ id: l.id, nom: l.repLegalNom || `Représentant de ${l.prenom} ${l.nom}`,
+        email: l.repLegalEmail, telephone: l.repLegalTel,
+        variables: { prenom: l.prenom, nom: l.nom } }));
+  }
+  if (type === "tuteurs") {
+    const contrats = store.listContracts({ campusId }).filter((c) => ids.has(c.learnerId) && c.status === "valide");
+    return contrats.filter((c) => c.tuteurEmail).map((c) => {
+      const l = apprenants.find((x) => x.id === c.learnerId);
+      return { id: c.id, nom: c.tuteurNom || "Maître d'apprentissage", email: c.tuteurEmail, telephone: c.tuteurTel,
+        variables: { prenom: l?.prenom || "", nom: l?.nom || "" } };
+    });
+  }
+  if (type === "intervenants") {
+    return store.listTeachers({ campusId }).filter((t) => t.active !== false)
+      .map((t) => ({ id: t.id, nom: t.name, email: t.email, telephone: t.phone, variables: { prenom: t.name } }));
+  }
+  return [];
+}
+
+app.post("/api/comm/preparer", requireAuth, (req, res) => {
+  const { campusId, audience, classId, schoolYear, canal, nature, sujet, corps, lienRetrait } = req.body || {};
+  if (!requireCampus(req, res, campusId)) return;
+  const destinataires = resoudreAudience({ type: audience, campusId, classId, schoolYear });
+  const r = comm.preparer({ canal, nature, sujet, corps, destinataires, lienRetrait });
+  // On ne renvoie jamais la liste complète des adresses : un aperçu suffit à
+  // vérifier, et le reste resterait dans l'historique du navigateur.
+  res.json({ ...r, retenus: r.retenus.slice(0, 10).map((x) => ({ nom: x.nom, apercu: x.texte.slice(0, 160) })),
+    ecartes: r.ecartes.slice(0, 50).map((x) => ({ nom: x.nom, motif: x.motif })) });
+});
+
+app.post("/api/comm/envoyer", requireAuth, requireAdmin, async (req, res) => {
+  const { campusId, audience, classId, schoolYear, canal, nature, sujet, corps, lienRetrait } = req.body || {};
+  if (!requireCampus(req, res, campusId)) return;
+  // Inutile de valider des destinataires pour un canal sur lequel on ne peut
+  // rien envoyer : on le dit tout de suite, et on ne fait jamais semblant
+  // d'avoir envoyé.
+  if (canal === "sms") return res.status(501).json({ error: "aucun fournisseur SMS configuré — le message n'a pas été envoyé" });
+  const destinataires = resoudreAudience({ type: audience, campusId, classId, schoolYear });
+  const prep = comm.preparer({ canal, nature, sujet, corps, destinataires, lienRetrait });
+  if (!prep.envoyable) return res.status(400).json({ error: prep.errors.join(" ; "), ecartes: prep.ecartes.slice(0, 50) });
+
+  const campagne = store.addCampagne({ campusId, canal, nature, sujet, audience, total: prep.total, creePar: req.user.name || req.user.email });
+  const traces = [];
+  for (const d of prep.retenus) {
+    try {
+      // sendMail attend du HTML : on échappe le texte plutôt que de l'injecter
+      // brut, un nom contenant « < » casserait le message.
+      const html = `<div style="font-family:Arial,sans-serif;color:#0D1B2A;white-space:pre-wrap;">${String(d.texte).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</div>`;
+      await sendMail({ to: d.adresse, subject: sujet, html });
+      traces.push(comm.tracer({ campagneId: campagne.id, canal, nature, sujet, destinataire: d, adresse: d.adresse }));
+    } catch (e) {
+      traces.push(comm.tracer({ campagneId: campagne.id, canal, nature, sujet, destinataire: d, adresse: d.adresse, statut: "echec", erreur: e.message }));
+    }
+  }
+  store.addEnvois(traces);
+  const b = comm.bilan(traces);
+  store.updateCampagne(campagne.id, { envoyes: b.envoyes, echecs: b.echecs, termineeLe: new Date().toISOString() });
+  logAudit(req, "create", "campagne", `${comm.CANAUX[canal]?.label} « ${sujet} » — ${b.envoyes} envoyé(s), ${b.echecs} échec(s)`);
+  res.json({ campagneId: campagne.id, ...b });
+});
+
+app.get("/api/comm/campagnes", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  res.json(store.listCampagnes({ campusId }));
+});
+app.get("/api/comm/campagnes/:id/envois", requireAuth, (req, res) => {
+  const c = store.getCampagne(req.params.id);
+  if (!c) return res.status(404).json({ error: "campagne introuvable" });
+  if (!assertCampus(req, res, c.campusId)) return;
+  res.json({ campagne: c, ...comm.bilan(store.listEnvois({ campagneId: c.id })) });
+});
+
+// --- Signature électronique ---
+app.get("/api/signature/referentiels", requireAuth, (req, res) =>
+  res.json({ roles: signature.ROLES, etats: signature.ETATS, niveau: signature.NIVEAU, niveauLabel: signature.NIVEAU_LABEL }));
+
+app.post("/api/signature/demandes", requireAuth, (req, res) => {
+  const { campusId, titre, type, document, parties, expireLe } = req.body || {};
+  if (!requireCampus(req, res, campusId)) return;
+  const empreinte = signature.empreinteDocument(document || {});
+  // Le jeton de chaque partie est produit ici et renvoyé UNE fois : il ne sera
+  // plus jamais relisible, comme les accès portail.
+  const avecJetons = (parties || []).map((p) => {
+    const j = signature.genererJeton();
+    return { partie: { ...p, id: p.id || crypto.randomUUID().slice(0, 8), jetonHash: j.hash }, jeton: j.jeton };
+  });
+  const demande = { campusId, titre, type, empreinte, expireLe: expireLe || null,
+    envoyeLe: aujourdhui(), parties: avecJetons.map((x) => x.partie) };
+  const v = signature.validateDemande(demande);
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.addSignature(demande);
+  logAudit(req, "create", "signature", `${titre} — ${demande.parties.length} partie(s)`);
+  res.json({ ...saved, warnings: v.warnings,
+    liens: avecJetons.map((x) => ({ partieId: x.partie.id, nom: x.partie.nom, jeton: x.jeton })),
+    avertissement: "Ces liens ne seront plus affichés : les transmettre maintenant." });
+});
+
+app.get("/api/signature/demandes", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  res.json(store.listSignatures({ campusId }).map((d) => ({
+    id: d.id, titre: d.titre, type: d.type, expireLe: d.expireLe, envoyeLe: d.envoyeLe,
+    ...signature.etatDemande(d),
+    parties: (d.parties || []).map(({ jetonHash, preuve, ...p }) => ({ ...p, aSigne: !!p.signeLe })),
+  })));
+});
+
+app.get("/api/signature/demandes/:id/verification", requireAuth, (req, res) => {
+  const d = store.getSignature(req.params.id);
+  if (!d) return res.status(404).json({ error: "demande introuvable" });
+  if (!assertCampus(req, res, d.campusId)) return;
+  res.json(signature.verifier({ demande: d, empreinteActuelle: req.query.empreinte || null }));
+});
+
+// Signature par le destinataire : hors session, authentifiée par le jeton
+// nominatif — comme les portails, et pour la même raison.
+app.post("/api/signature/signer", (req, res) => {
+  const { demandeId, partieId, jeton } = req.body || {};
+  const d = store.getSignature(demandeId);
+  if (!d) return res.status(404).json({ error: "demande introuvable" });
+  const prev = (d.parties || []).filter((p) => p.preuve).sort((a, b) => String(a.signeLe).localeCompare(String(b.signeLe))).at(-1)?.preuve?.hash || null;
+  const r = signature.signer({ demande: d, partieId, jeton,
+    ip: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || null,
+    userAgent: req.get("user-agent"), prevHash: prev });
+  if (r.error) return res.status(403).json({ error: r.error });
+  const parties = d.parties.map((p) => (p.id === partieId ? { ...p, signeLe: r.preuve.signeLe, preuve: r.preuve } : p));
+  store.updateSignature(d.id, { parties });
+  res.json({ ok: true, ...signature.etatDemande({ ...d, parties }) });
 });
 
 // ===== Licence de l'instance =====
