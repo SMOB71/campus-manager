@@ -3360,7 +3360,21 @@ function conflictCtx(s) {
     classSize: k ? store.classSize(k) : null,
     periods: store.listPeriods({ campusId: s.campusId }),
     amplitude: s.campusId ? store.campusAmplitude(s.campusId) : undefined,
+    // Sans les dates de naissance, le planning ne peut pas voir qu'il place un
+    // mineur au-delà de 8 h : il était structurellement incapable de signaler
+    // l'infraction qu'il était en train de créer.
+    naissances: s.classId ? naissancesDeLaClasse(s.classId, s.campusId) : [],
+    naissanceIntervenant: s.teacherId ? (store.getTeacher(s.teacherId)?.dateNaissance || null) : null,
+    derogation: s.classId ? (store.getClass(s.classId)?.derogationDuree || null) : null,
   };
+}
+
+// Dates de naissance des inscrits ACTIFS d'une classe. La règle applicable est
+// celle du plus jeune : un seul mineur plafonne la journée de tout le groupe.
+function naissancesDeLaClasse(classId, campusId) {
+  const ids = new Set(store.listEnrollments({ classId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId));
+  if (!ids.size) return [];
+  return store.listLearners({ campusId }).filter((l) => ids.has(l.id)).map((l) => l.dateNaissance || null);
 }
 // Un directeur ne voit et ne touche que ses campus.
 function scopeSessions(req, list) {

@@ -1190,6 +1190,84 @@ test("API publique : documentation et spécification servies sans clé", async (
   assert.match(html, /Stabilité/);
 });
 
+test("durées légales : le planning REFUSE de placer un mineur au-delà de 8 h", async () => {
+  // C'est le point où l'application pouvait mettre son utilisateur en
+  // infraction : le temps en centre est du temps de travail effectif, et la
+  // grille horaire du CFA est ce qui crée le dépassement.
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Durées" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: { name: "C", modules: [{ code: "U1", label: "M", coefficient: 1 }] } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "D1", curriculumId: cur.id } })).json();
+
+  // Un majeur et un mineur dans la même classe.
+  const majeur = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Majeur", prenom: "A", dateNaissance: "1998-01-01" } })).json();
+  await req(`/api/learners/${majeur.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  // Sans mineur : 9 h passent (limite majeur = 10 h).
+  const neufHeures = { campusId: campus.id, classId: classe.id, date: "2027-01-11", start: "08:00", end: "12:30" };
+  const p1 = await req("/api/sessions", { method: "POST", ...opts, json: neufHeures });
+  assert.equal(p1.status, 200);
+  const p2 = await req("/api/sessions", { method: "POST", ...opts, json: { ...neufHeures, start: "13:00", end: "17:30" } });
+  assert.equal(p2.status, 200, "9 h pour des majeurs : rien à redire");
+
+  // On inscrit un mineur de 16 ans dans la MÊME classe.
+  const mineur = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Mineur", prenom: "B", dateNaissance: "2010-06-01" } })).json();
+  await req(`/api/learners/${mineur.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+
+  // La même journée devient illégale : la règle est celle du PLUS JEUNE inscrit.
+  const troisieme = await req("/api/sessions", { method: "POST", ...opts, json: { ...neufHeures, date: "2027-01-11", start: "18:00", end: "19:00" } });
+  assert.equal(troisieme.status, 409, "10 h pour un mineur doivent être refusées");
+  const corps = await troisieme.json();
+  const codes = (corps.conflicts || []).map((c) => c.code);
+  assert.ok(codes.some((c) => c.startsWith("duree-")), `aucun contrôle de durée déclenché : ${codes.join(", ")}`);
+  // Et le refus n'est PAS forçable : sur une limite d'ordre public, un forçage
+  // serait une invitation à l'infraction.
+  assert.equal(corps.forcable, undefined, "un dépassement légal ne doit pas être proposé au forçage");
+  const force = await req("/api/sessions", { method: "POST", ...opts, json: { ...neufHeures, date: "2027-01-11", start: "18:00", end: "19:00", force: true } });
+  assert.equal(force.status, 409, "même forcée, la séance illégale est refusée");
+
+  // Le message cite l'article : un refus qu'on ne peut pas justifier ne sert à rien.
+  const message = (corps.conflicts || []).find((c) => c.code.startsWith("duree-"))?.message || "";
+  assert.match(message, /art\. L\. /);
+});
+
+test("durées légales : travail de nuit interdit à un mineur, autorisé à un majeur", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Nuit" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: { name: "C", modules: [{ code: "U1", label: "M", coefficient: 1 }] } })).json();
+  const cMajeurs = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "Majeurs", curriculumId: cur.id } })).json();
+  const cMineurs = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "Mineurs", curriculumId: cur.id } })).json();
+
+  const inscrire = async (classId, dateNaissance, nom) => {
+    const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom, prenom: "X", dateNaissance } })).json();
+    await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId } });
+  };
+  await inscrire(cMajeurs.id, "1998-01-01", "Adulte");
+  // Moins de 16 ans : la nuit commence à 20 h et non à 22 h. On éprouve ce
+  // seuil-là, qui tient dans l'amplitude d'ouverture du campus — sinon on
+  // mesurerait le contrôle d'amplitude, pas le contrôle légal.
+  await inscrire(cMineurs.id, "2012-06-01", "Jeune");
+
+  // Le campus doit ouvrir assez tard pour que le contrôle mesuré soit bien celui
+  // du travail de nuit, et non celui de l'amplitude d'ouverture (08 h–18 h par
+  // défaut) : sinon le test passerait au vert sans rien éprouver.
+  const jours = ["lun", "mar", "mer", "jeu", "ven"];
+  await req(`/api/campuses/${campus.id}/hours`, { method: "PUT", ...opts,
+    json: { hours: Object.fromEntries(jours.map((j) => [j, [["08:00", "22:00"]]])) } });
+
+  const soir = { campusId: campus.id, date: "2027-01-12", start: "17:00", end: "21:00" };
+  const rMaj = await req("/api/sessions", { method: "POST", ...opts, json: { ...soir, classId: cMajeurs.id } });
+  const corpsMaj = rMaj.status === 200 ? null : await rMaj.json();
+  assert.equal(rMaj.status, 200, "17 h–21 h pour des majeurs : " + JSON.stringify(corpsMaj));
+
+  const refus = await req("/api/sessions", { method: "POST", ...opts, json: { ...soir, classId: cMineurs.id } });
+  assert.equal(refus.status, 409);
+  const c = (await refus.json()).conflicts || [];
+  assert.ok(c.some((x) => x.code === "duree-nuit"), `le travail de nuit doit être refusé : ${c.map((x) => x.code).join(", ")}`);
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");
