@@ -4323,7 +4323,10 @@ async function openSessionSheet(oid, cid, sid) {
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
       <div><label class="field-label">Date</label><input class="txt sef" data-f="date" type="date" value="${esc(e.date || "")}"></div>
       <div><label class="field-label">Statut</label><select class="txt sef" data-f="status">${Object.entries(SES_STATUS).map(([k, l]) => `<option value="${k}" ${e.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Heure</label><input class="txt sef" data-f="time" value="${esc(e.time || "")}" placeholder="14h00"></div>
+      <div><label class="field-label">Lieu</label><input class="txt sef" data-f="place" value="${esc(e.place || "")}" placeholder="Campus, salle A"></div>
     </div>
+    <div style="margin-top:10px;"><label class="field-label">Lien de visioconférence</label><input class="txt sef" data-f="link" value="${esc(e.link || "")}" placeholder="https://…"></div>
     ${(c.members || []).length ? `<p class="field-label" style="margin-top:12px;">Présents</p><div class="chips">${(c.members || []).map((m) => `<label class="jal-chk"><input type="checkbox" class="se-pres" value="${m.id}" ${present.has(m.id) ? "checked" : ""}> ${esc(m.name)}</label>`).join("")}</div>` : ""}
     <p class="field-label" style="margin-top:12px;">Ordre du jour <span class="muted">(un point par ligne)</span></p>
     <textarea class="txt" id="se-agenda" rows="5">${esc((e.agendaItems || []).map((a) => a.text).join("\n"))}</textarea>
@@ -4336,7 +4339,37 @@ async function openSessionSheet(oid, cid, sid) {
     <button class="btn-ghost btn-sm" id="cpr-add" style="margin-top:6px;">+ Décision</button>
     ${s ? `<p class="field-label" style="margin-top:14px;">Créer une action depuis cette séance</p>
       <div class="row" style="gap:8px;"><input class="txt" id="se-nt" placeholder="Intitulé de l'action" style="flex:1;"><input class="txt" id="se-nd" type="date" style="max-width:170px;"><button class="btn-ghost btn-sm" id="se-addtask">Créer</button></div>` : ""}
+    ${s ? `<div class="ouv-lot" style="margin-top:16px;"><div class="ouv-lot-head"><span class="ttl">Diffusion</span><span class="muted">${(c.members || []).filter((m) => m.email).length}/${(c.members || []).length} membre(s) joignable(s)</span></div>
+      <p class="hint muted" style="margin:6px 0 10px;">Convocation automatique à J‑7, rappel à J‑1, relance du compte rendu 2 jours après la séance. Chaque envoi n'a lieu qu'une fois ; ces boutons permettent de l'anticiper ou de le renvoyer après correction.</p>
+      <div class="actions"><button class="btn-ghost btn-sm" id="se-prev-conv">Aperçu convocation</button><button class="btn-ghost btn-sm" id="se-prev-cr">Aperçu compte rendu</button><span id="se-mail-msg" class="status"></span></div>
+      <div id="se-mail-out"></div>
+      ${Object.keys(e.sent || {}).length ? `<p class="hint muted" style="margin-top:8px;">Déjà envoyé : ${Object.entries(e.sent).map(([k, d]) => `${k} le ${d}`).join(" · ")}</p>` : ""}</div>` : ""}
     <div class="actions" style="margin-top:14px;">${s ? `<button class="btn-ghost btn-sm btn-danger" id="se-del">Supprimer</button>` : ""}<button class="btn-primary" id="se-save">Enregistrer</button></div>`);
+
+  if (s) {
+    // L'aperçu d'abord, l'envoi ensuite : on ne convoque pas huit personnes à l'aveugle.
+    const apercu = async (kind) => {
+      $("#se-mail-msg").textContent = "chargement…";
+      const p = await api.get(`/api/committees/${cid}/sessions/${sid}/preview?kind=${kind}`);
+      $("#se-mail-msg").textContent = "";
+      if (p?.error) { $("#se-mail-msg").textContent = p.error; return; }
+      const deja = !!(e.sent || {})[kind];
+      $("#se-mail-out").innerHTML = `
+        <p class="hint muted" style="margin:10px 0 6px;">Destinataires : ${p.to.length ? p.to.map(esc).join(", ") : "<strong>aucun</strong>"}${p.sansEmail.length ? ` · <span class="cell-warn">sans adresse : ${p.sansEmail.map(esc).join(", ")}</span>` : ""}</p>
+        <iframe id="se-mail-frame" style="width:100%;height:340px;border:1px solid #EDE7DA;border-radius:8px;background:#fff;"></iframe>
+        <div class="actions" style="margin-top:10px;"><button class="btn-primary btn-sm" id="se-send" ${p.to.length ? "" : "disabled"}>${deja ? "Renvoyer" : "Envoyer"} ${kind === "compte-rendu" ? "le compte rendu" : "la convocation"}</button></div>`;
+      // srcdoc plutôt qu'une injection dans le DOM : le mail porte ses propres styles, on
+      // ne veut ni qu'il hérite de ceux de l'app, ni qu'il les écrase.
+      $("#se-mail-frame").srcdoc = p.html;
+      $("#se-send").onclick = async () => {
+        if (!confirm(`Envoyer à ${p.to.length} destinataire(s) ?`)) return;
+        const r = await api.post(`/api/committees/${cid}/sessions/${sid}/send`, { kind, force: true });
+        $("#se-mail-msg").textContent = r?.error ? r.error : `Envoyé ✓ ${r.recipients} destinataire(s)`;
+      };
+    };
+    $("#se-prev-conv").onclick = () => apercu("convocation");
+    $("#se-prev-cr").onclick = () => apercu("compte-rendu");
+  }
 
   $("#cpr-add").onclick = () => $("#cpr-body").insertAdjacentHTML("beforeend", resRow());
   $("#cpr-body").addEventListener("click", (ev) => { if (ev.target.closest(".cpr-del")) ev.target.closest("tr").remove(); });

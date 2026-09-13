@@ -44,6 +44,7 @@ import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/schedulev
 import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
 import { analyseChain, planRebase, applyRebase } from "./lib/chain.js";
+import { sendSessionMail, convocationHtml, compteRenduHtml, destinataires, runSessionReminders } from "./lib/copil.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
 import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
@@ -2364,6 +2365,30 @@ app.post("/api/committees/:id/sessions/:sid/tasks", requireAuth, requireAdmin, (
 
 // Ordre du jour assisté : nourri des retards, des livrables non produits et des décisions
 // non soldées de la séance précédente. Même motif que /api/codir/agenda-draft.
+// Aperçu du mail avant envoi : on ne convoque pas huit personnes à l'aveugle.
+app.get("/api/committees/:id/sessions/:sid/preview", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCommittee(req.params.id);
+  const s = c && (c.sessions || []).find((x) => x.id === req.params.sid);
+  if (!s) return res.status(404).json({ error: "introuvable" });
+  const kind = req.query.kind === "compte-rendu" ? "compte-rendu" : "convocation";
+  const d = destinataires(c);
+  res.json({
+    kind, html: kind === "compte-rendu" ? compteRenduHtml(c, s) : convocationHtml(c, s, { rappel: req.query.kind === "rappel" }),
+    to: d.to, sansEmail: d.sansEmail, sent: s.sent || {},
+  });
+});
+app.post("/api/committees/:id/sessions/:sid/send", requireAuth, requireAdmin, async (req, res) => {
+  const kind = ["convocation", "rappel", "compte-rendu"].includes(req.body?.kind) ? req.body.kind : "convocation";
+  try {
+    // `force` = renvoi explicite demandé par un humain. Le garde d'unicité ne protège que
+    // des doublons AUTOMATIQUES ; il ne doit pas empêcher de renvoyer une convocation
+    // après avoir corrigé l'ordre du jour.
+    const r = await sendSessionMail(req.params.id, req.params.sid, kind, { to: req.body?.to, force: req.body?.force === true });
+    if (r.error) return res.status(400).json(r);
+    if (r.sent) logAudit(req, "send", "committee", `${kind} — ${r.recipients} destinataire(s)`);
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: e?.message || "envoi impossible" }); }
+});
 app.post("/api/committees/:id/sessions/:sid/agenda-draft", requireAuth, requireAdmin, requireIA, async (req, res) => {
   const c = store.getCommittee(req.params.id);
   if (!c) return res.status(404).json({ error: "comité introuvable" });
@@ -3323,6 +3348,23 @@ if (alertCfg.to && mailConfigured && process.env.WEEKLY_DIGEST !== "off" && cron
       .catch((e) => console.error("[weekly] echec :", e?.message || e));
   }, { timezone: "Europe/Paris" });
   console.log(`[weekly] digest reseau planifie (${weeklyCron}, Europe/Paris) -> ${alertCfg.to}`);
+}
+
+// Rappels de comité (tous les jours 7h30) : convocation à J-7, rappel à J-1, relance du
+// compte rendu 2 jours après la séance. Chaque envoi n'a lieu qu'une fois — le marquage
+// est posé avant l'expédition, donc deux exécutions concurrentes ne doublonnent pas.
+const copilCron = process.env.COPIL_REMINDER_CRON || "30 7 * * *";
+if (mailConfigured && process.env.COPIL_REMINDERS !== "off" && cron.validate(copilCron)) {
+  cron.schedule(copilCron, () => {
+    runSessionReminders()
+      .then((r) => {
+        const n = r.convocation + r.rappel + r.relances;
+        console.log(n ? `[copil] ${r.convocation} convocation(s), ${r.rappel} rappel(s), ${r.relances} relance(s) compte rendu` : "[copil] rien a envoyer");
+        if (r.erreurs.length) console.error("[copil] echecs :", r.erreurs.join(" | "));
+      })
+      .catch((e) => console.error("[copil] echec :", e?.message || e));
+  }, { timezone: "Europe/Paris" });
+  console.log(`[copil] rappels de comite planifies (${copilCron}, Europe/Paris)`);
 }
 
 // Board pack mensuel (1er du mois 7h) — si activé dans les paramètres.
