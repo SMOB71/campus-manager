@@ -35,6 +35,9 @@ import * as deca from "./lib/deca.js";
 import * as dureelegale from "./lib/dureelegale.js";
 import * as comm from "./lib/communication.js";
 import * as signature from "./lib/signature.js";
+import * as taxe from "./lib/taxe.js";
+import * as indicateurs from "./lib/indicateurs.js";
+import * as mobilite from "./lib/mobilite.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -50,6 +53,7 @@ import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/schedulev
 import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
 import { analyseChain, planRebase, applyRebase } from "./lib/chain.js";
+import * as backup from "./lib/backup.js";
 import { sendSessionMail, convocationHtml, compteRenduHtml, destinataires, runSessionReminders } from "./lib/copil.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
 import { validateBody } from "./lib/validators.js";
@@ -144,6 +148,10 @@ function makeUpload(extSet) {
   });
 }
 const uploadImport = makeUpload(IMPORT_EXT);
+// Les archives ne passent pas par le filtre d'import metier : autre extension, et une
+// archive peut peser bien plus qu'un tableur.
+const uploadArchive = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 },
+  fileFilter: (req, f, cb) => cb(f.originalname.endsWith(".cmbak") ? null : new Error("archive .cmbak attendue"), f.originalname.endsWith(".cmbak")) });
 const uploadDocMw = makeUpload(DOC_EXT);
 // Wrapper : transforme l'erreur de filtre/limite en 400 JSON propre (au lieu d'une 500 HTML).
 function uploadWrap(mw, label) {
@@ -2539,7 +2547,60 @@ app.get("/api/openings/:id/export", requireAuth, requireAdmin, (req, res) => {
 app.get("/api/audit", requireAuth, requireAdmin, (req, res) => res.json(store.listAudit(Number(req.query.limit) || 300)));
 
 // ===== Sauvegardes / Restauration (admin) =====
-app.get("/api/backups", requireAuth, requireAdmin, (req, res) => res.json({ mode: store.sauvegardeFichierActive() ? "fichier" : "postgres", items: store.listBackupsMeta() }));
+app.get("/api/backups", requireAuth, requireAdmin, (req, res) => res.json({
+  mode: store.sauvegardeFichierActive() ? "fichier" : "postgres",
+  items: store.listBackupsMeta(),
+  config: backup.config(),
+  archives: backup.listerArchives(),
+}));
+app.put("/api/backups/config", requireAuth, requireAdmin, (req, res) => {
+  const c = backup.setConfig(req.body || {});
+  planifierSauvegardes();
+  logAudit(req, "update", "backup", `${c.actif ? "actif" : "inactif"} ${c.heure}, rétention ${c.retention}j${c.distant.actif ? `, externe ${c.distant.hote}` : ""}`);
+  res.json(c);
+});
+// Test de la destination externe AVANT de compter dessus : on crée le dossier distant et
+// on lit l'espace libre. Une destination qu'on n'a jamais jointe n'est pas une destination.
+app.post("/api/backups/verifier-distant", requireAuth, requireAdmin, async (req, res) => {
+  res.json(await backup.verifierDistant(req.body?.distant ? { ...backup.config(), distant: { ...backup.config().distant, ...req.body.distant } } : undefined));
+});
+app.post("/api/backups/run", requireAuth, requireAdmin, async (req, res) => {
+  const r = await backup.executerSauvegarde({ envoyer: sendMail });
+  logAudit(req, "create", "backup", r.ok ? `${r.nom} — ${r.total} lignes${r.distant?.envoye ? ", copiée hors site" : ""}` : `échec : ${r.error}`);
+  res.status(r.ok ? 200 : 500).json(r);
+});
+// Téléchargement direct : la sauvegarde LOCALE, sur le poste de l'utilisateur. Rien n'est
+// conservé côté serveur — c'est la copie qu'on emporte.
+app.get("/api/backups/telecharger", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const a = req.query.nom
+      ? { nom: String(req.query.nom), octets: fs.readFileSync(path.join(backup.config().dossier, path.basename(String(req.query.nom)))) }
+      : await backup.creerArchive();
+    logAudit(req, "export", "backup", a.nom);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${a.nom}"`);
+    res.send(a.octets);
+  } catch (e) { res.status(404).json({ error: e?.message || "archive introuvable" }); }
+});
+app.post("/api/backups/restaurer", requireAuth, requireAdmin, async (req, res) => {
+  const nom = path.basename(String(req.body?.nom || ""));
+  if (!nom.endsWith(".cmbak")) return res.status(400).json({ error: "nom d'archive invalide" });
+  let octets;
+  try { octets = fs.readFileSync(path.join(backup.config().dossier, nom)); }
+  catch { return res.status(404).json({ error: "archive introuvable" }); }
+  const r = await backup.restaurer(octets, { dryRun: req.body?.confirmer !== true });
+  if (r.error) return res.status(400).json(r);
+  if (!r.dryRun) logAudit(req, "restore", "backup", `${nom} — ${r.perdus} ligne(s) supprimée(s), filet ${r.filet}`);
+  res.json(r);
+});
+// Restauration depuis un fichier TÉLÉVERSÉ : c'est ce qui rend la copie locale utile.
+app.post("/api/backups/televerser", requireAuth, requireAdmin, uploadArchive.single("fichier"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "fichier manquant" });
+  const r = await backup.restaurer(req.file.buffer, { dryRun: req.body?.confirmer !== "true" });
+  if (r.error) return res.status(400).json(r);
+  if (!r.dryRun) logAudit(req, "restore", "backup", `téléversement — ${r.perdus} ligne(s) supprimée(s)`);
+  res.json(r);
+});
 app.post("/api/backups", requireAuth, requireAdmin, (req, res) => {
   const r = store.backupNow();
   if (r?.error) return res.status(409).json(r);
@@ -3382,6 +3443,28 @@ if (mailConfigured && process.env.COPIL_REMINDERS !== "off" && cron.validate(cop
   }, { timezone: "Europe/Paris" });
   console.log(`[copil] rappels de comite planifies (${copilCron}, Europe/Paris)`);
 }
+
+// Sauvegarde applicative paramétrable. Reprogrammable À CHAUD : l'heure est un réglage
+// d'interface, la faire prendre effet au prochain redémarrage serait un piège — on croit
+// avoir changé la planification, et rien ne bouge pendant des semaines.
+let tacheSauvegarde = null;
+function planifierSauvegardes() {
+  if (tacheSauvegarde) { try { tacheSauvegarde.stop(); } catch { /* ignore */ } tacheSauvegarde = null; }
+  const c = backup.config();
+  if (!c.actif) { console.log("[archive] sauvegarde applicative desactivee"); return; }
+  const [h, m] = c.heure.split(":");
+  const expr = `${Number(m)} ${Number(h)} * * *`;
+  if (!cron.validate(expr)) { console.error("[archive] heure invalide :", c.heure); return; }
+  tacheSauvegarde = cron.schedule(expr, () => {
+    backup.executerSauvegarde({ envoyer: mailConfigured ? sendMail : null })
+      .then((r) => console.log(r.ok
+        ? `[archive] ${r.nom} — ${r.total} lignes, ${Math.round(r.octets / 1024)} Ko${r.distant?.envoye ? `, copiee vers ${r.distant.cible}` : r.distant?.error ? ` — COPIE EXTERNE EN ECHEC : ${r.distant.error}` : ""}`
+        : `[archive] ECHEC : ${r.error}`))
+      .catch((e) => console.error("[archive] echec :", e?.message || e));
+  }, { timezone: "Europe/Paris" });
+  console.log(`[archive] sauvegarde planifiee (${expr}, Europe/Paris) -> ${c.dossier}${c.distant.actif ? ` + ${c.distant.hote}:${c.distant.chemin}` : ""}`);
+}
+planifierSauvegardes();
 
 // Board pack mensuel (1er du mois 7h) — si activé dans les paramètres.
 const boardCron = process.env.BOARD_PACK_CRON || "0 7 1 * *";
@@ -4445,7 +4528,14 @@ app.get("/api/risque/decrochage", requireAuth, (req, res) => {
     if (!feuillesParClasse.has(enr.classId)) {
       feuillesParClasse.set(enr.classId, attendancestore.listSheets({ campusId, classId: enr.classId, status: "locked" }));
     }
-    const sheets = feuillesParClasse.get(enr.classId);
+    // Une mobilité internationale n'est PAS une absence : le contrat est mis en
+    // veille et l'apprenti est ailleurs, ce qui était prévu. Sans neutraliser
+    // ces périodes, six semaines à l'étranger déclenchaient une alerte de
+    // décrochage sur un apprenti exemplaire.
+    const sheets = mobilite.filtrerSeances(
+      feuillesParClasse.get(enr.classId),
+      store.listMobilites({ learnerId: l.id }),
+    ).retenues;
     let prevues = 0, manquees = 0, injustifiees = 0;
     for (const s of sheets) {
       const st = sheetStats(s);
@@ -4969,6 +5059,117 @@ app.post("/api/signature/signer", (req, res) => {
   const parties = d.parties.map((p) => (p.id === partieId ? { ...p, signeLe: r.preuve.signeLe, preuve: r.preuve } : p));
   store.updateSignature(d.id, { parties });
   res.json({ ok: true, ...signature.etatDemande({ ...d, parties }) });
+});
+
+// ===== Lot 5 : taxe d'apprentissage, indicateurs publiés, mobilité =====
+
+app.get("/api/taxe/referentiels", requireAuth, (req, res) =>
+  res.json({ etats: taxe.ETATS_HABILITATION, calendrier: taxe.CALENDRIER_2026,
+    tauxSolde: taxe.TAUX_SOLDE_MASSE_SALARIALE, partSolde: taxe.PART_SOLDE }));
+
+app.get("/api/taxe", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const annee = Number(req.query.annee) || taxe.CALENDRIER_2026.annee;
+  const toutes = store.listTaxeCampagnes({ campusId });
+  const c = toutes.find((x) => x.annee === annee) || {};
+  const precedente = toutes.find((x) => x.annee === annee - 1);
+  const etat = taxe.etatCampagne({
+    habilitation: c.habilitation || {}, versements: c.versements || [],
+    calendrier: { ...taxe.CALENDRIER_2026, annee }, aujourdhui: aujourdhui(),
+  });
+  res.json({ ...etat, id: c.id || null,
+    evolution: precedente ? taxe.evolution(etat, taxe.etatCampagne({ habilitation: precedente.habilitation || {}, versements: precedente.versements || [], aujourdhui: aujourdhui() })) : null });
+});
+
+app.put("/api/taxe/:annee", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const annee = Number(req.params.annee);
+  const v = taxe.validateHabilitation(req.body?.habilitation || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const existante = store.listTaxeCampagnes({ campusId }).find((x) => x.annee === annee);
+  const donnees = { campusId, annee, habilitation: req.body.habilitation || {}, versements: req.body.versements || [] };
+  const saved = existante ? store.updateTaxeCampagne(existante.id, donnees) : store.addTaxeCampagne(donnees);
+  logAudit(req, "update", "taxe", `campagne ${annee} — ${taxe.ETATS_HABILITATION[donnees.habilitation.etat] || "mise à jour"}`);
+  res.json({ ...saved, warnings: v.warnings });
+});
+
+app.post("/api/taxe/simulation", requireAuth, (req, res) =>
+  res.json(taxe.soldeEstime(req.body?.masseSalariale) || { error: "masse salariale requise" }));
+
+// Indicateurs de résultats — article L. 6111-8.
+app.get("/api/indicateurs/referentiels", requireAuth, (req, res) =>
+  res.json({ indicateurs: indicateurs.INDICATEURS, sources: indicateurs.SOURCES, seuil: indicateurs.SEUIL_EFFECTIF }));
+
+app.get("/api/indicateurs", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const annee = req.query.annee || String(new Date().getFullYear() - 1);
+  const classId = req.query.classId || null;
+  const inscriptionsToutes = store.listEnrollments({ campusId }).filter((e) => !classId || e.classId === classId);
+  const inscriptions = annee ? inscriptionsToutes.filter((e) => String(e.schoolYear || "").startsWith(String(annee))) : inscriptionsToutes;
+  const ids = new Set(inscriptions.map((e) => e.learnerId));
+  // La certification vient des décisions de jury : c'est le jury qui délivre,
+  // pas la moyenne.
+  const certifications = [];
+  for (const s of store.listJurySessions({ campusId })) {
+    for (const [learnerId, pv] of Object.entries(s.proces || {})) {
+      if (!ids.has(learnerId)) continue;
+      certifications.push({ presente: true, obtenu: pv.decisionGlobale === "admis" });
+    }
+  }
+  const contrats = store.listContracts({ campusId }).filter((c) => ids.has(c.learnerId));
+  const calcul = indicateurs.calculer({ inscriptions, certifications, contrats });
+  const declare = store.listIndicateursDeclares({ campusId }).find((d) => String(d.annee) === String(annee)) || {};
+  res.json(indicateurs.publier({ calcul, declares: declare, formation: classId ? (store.getClass(classId)?.name || "") : "tous parcours", annee }));
+});
+
+app.put("/api/indicateurs/:annee", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const v = indicateurs.validateDeclaration(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const annee = req.params.annee;
+  const existant = store.listIndicateursDeclares({ campusId }).find((d) => String(d.annee) === String(annee));
+  const donnees = { campusId, annee, ...req.body };
+  const saved = existant ? store.updateIndicateurDeclare(existant.id, donnees) : store.addIndicateurDeclare(donnees);
+  logAudit(req, "update", "indicateurs", `indicateurs publiés ${annee}`);
+  res.json({ ...saved, warnings: v.warnings });
+});
+
+// Mobilité internationale.
+app.get("/api/mobilite/referentiels", requireAuth, (req, res) =>
+  res.json({ regimes: mobilite.REGIMES, etats: mobilite.ETATS, seuilVeille: mobilite.SEUIL_MISE_EN_VEILLE_JOURS }));
+
+app.get("/api/mobilite", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const noms = new Map(store.listLearners({ campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`]));
+  const items = store.listMobilites({}).filter((m) => noms.has(m.learnerId))
+    .map((m) => ({ ...m, apprenant: noms.get(m.learnerId) }));
+  res.json(mobilite.tableauDeBord(items, { aujourdhui: aujourdhui() }));
+});
+
+app.post("/api/learners/:id/mobilites", requireAuth, (req, res) => {
+  const l = learnerGuard(req, res);
+  if (!l) return;
+  const contrat = store.listContracts({ learnerId: l.id })[0] || null;
+  const v = mobilite.validateMobilite(req.body || {}, contrat);
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const saved = store.addMobilite({ ...req.body, learnerId: l.id });
+  logAudit(req, "create", "mobilite", `${l.prenom} ${l.nom} — ${req.body.pays} (${v.duree} j)`);
+  res.json({ ...saved, warnings: v.warnings, duree: v.duree, veilleAttendue: v.veilleAttendue });
+});
+
+app.delete("/api/mobilites/:rid", requireAuth, (req, res) => {
+  const m = store.listMobilites({}).find((x) => x.id === req.params.rid);
+  if (!m) return res.status(404).json({ error: "mobilité introuvable" });
+  const l = store.getLearner(m.learnerId);
+  if (!l || !assertCampus(req, res, l.campusId)) return;
+  store.deleteMobilite(req.params.rid);
+  logAudit(req, "delete", "mobilite", `${l.prenom} ${l.nom}`);
+  res.json({ ok: true });
 });
 
 // ===== Licence de l'instance =====

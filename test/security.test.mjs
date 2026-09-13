@@ -1442,6 +1442,94 @@ test("signature : niveau annoncé, jeton nominatif, document figé par son empre
   assert.ok(altere.problemes.some((p) => /modifié depuis la demande/.test(p.message)));
 });
 
+test("taxe d'apprentissage : le guichet manqué est une alerte critique", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Taxe" } })).json();
+
+  // Rien de déclaré : l'état dépend de la date du jour, mais la structure doit
+  // être là et l'habilitation absente.
+  const vierge = await (await req(`/api/taxe?campusId=${campus.id}&annee=2026`, { cookie: a.cookie })).json();
+  assert.equal(vierge.etat, "non_demandee");
+  assert.equal(vierge.total, 0);
+  assert.ok(vierge.alertes.length >= 1, "une campagne sans habilitation doit dire quelque chose");
+
+  // Habilité, un seul versement : le total n'est pas définitif.
+  await req("/api/taxe/2026", { method: "PUT", ...opts, json: {
+    campusId: campus.id,
+    habilitation: { etat: "habilite", dateDepot: "2025-12-01", numeroUai: "0751234X" },
+    versements: [{ periode: 1, date: "2026-09-05", montant: 4200 }],
+  } });
+  const partiel = await (await req(`/api/taxe?campusId=${campus.id}&annee=2026`, { cookie: a.cookie })).json();
+  assert.equal(partiel.etat, "habilite");
+  assert.equal(partiel.total, 4200);
+  assert.equal(partiel.totalDefinitif, false, "un second versement est attendu en novembre");
+
+  // Une habilitation « déposée » sans date de dépôt est refusée.
+  assert.equal((await req("/api/taxe/2026", { method: "PUT", ...opts, json: { campusId: campus.id, habilitation: { etat: "deposee" } } })).status, 400);
+
+  const sim = await (await req("/api/taxe/simulation", { method: "POST", ...opts, json: { masseSalariale: 1000000 } })).json();
+  assert.equal(sim.solde, 900);
+});
+
+test("indicateurs publiés : un effectif insuffisant n'est pas publié", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Indic" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Un", prenom: "Seul" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027" } });
+
+  const p = await (await req(`/api/indicateurs?campusId=${campus.id}&annee=2026`, { cookie: a.cookie })).json();
+  const interruption = p.lignes.find((x) => x.cle === "interruption");
+  assert.equal(interruption.publiable, false, "un taux sur un apprenant le désigne");
+  assert.match(interruption.motif, /effectif insuffisant/);
+
+  // Insertion et valeur ajoutée ne se calculent pas : elles se déclarent.
+  const insertion = p.lignes.find((x) => x.cle === "insertion");
+  assert.equal(insertion.valeur, null);
+  assert.match(insertion.motif, /InserJeunes/);
+  assert.equal(p.complet, false);
+  assert.match(p.reserve, /MODALITÉS de diffusion/);
+
+  // Un taux déclaré sans millésime est refusé.
+  assert.equal((await req("/api/indicateurs/2026", { method: "PUT", ...opts, json: { campusId: campus.id, insertion: 72 } })).status, 400);
+  assert.equal((await req("/api/indicateurs/2026", { method: "PUT", ...opts, json: { campusId: campus.id, insertion: 72, millesime: "2025" } })).status, 200);
+});
+
+test("MOBILITÉ : six semaines à l'étranger ne sont pas six semaines d'absence", async () => {
+  // C'est la connexion qui compte : sans neutralisation, l'alerte de décrochage
+  // se déclencherait sur un apprenti exemplaire.
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Mobilite" } })).json();
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Parti", prenom: "Loin" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", dateDebut: "2026-09-01" } });
+
+  // Une mobilité conventionnée sans convention est refusée.
+  const sansConv = await req(`/api/learners/${l.id}/mobilites`, { method: "POST", ...opts, json: {
+    regime: "ue", pays: "Espagne", structureAccueil: "Óptica", dateDebut: "2027-03-01", dateFin: "2027-04-11", etat: "conventionnee" } });
+  assert.equal(sansConv.status, 400);
+  assert.match((await sansConv.json()).error, /convention/);
+
+  const m = await (await req(`/api/learners/${l.id}/mobilites`, { method: "POST", ...opts, json: {
+    regime: "hors_ue", pays: "Canada", structureAccueil: "Optique Québec", dateDebut: "2027-03-01", dateFin: "2027-04-11",
+    etat: "conventionnee", convention: "CONV-1", referentCfa: "Mme Martin" } })).json();
+  assert.equal(m.duree, 42);
+  assert.equal(m.veilleAttendue, true, "hors Union, la mise en veille du contrat est la règle");
+  assert.ok(m.warnings.some((w) => /couverture sociale/.test(w)), "hors Union, la couverture ne découle pas du contrat français");
+
+  const t = await (await req(`/api/mobilite?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.equal(t.total, 1);
+  assert.equal(t.sansConvention, 0);
+  assert.equal(t.lignes[0].apprenant, "Loin Parti");
+
+  // Le calcul de décrochage tourne toujours, mobilité comprise.
+  const r = await (await req(`/api/risque/decrochage?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  const sien = r.items.find((x) => x.learnerId === l.id);
+  assert.ok(sien, "l'apprenant en mobilité reste suivi");
+  assert.equal(sien.risque.aTraiter, false, "partir à l'étranger n'est pas décrocher");
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");
