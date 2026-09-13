@@ -21,6 +21,10 @@ import { decrypt } from "../lib/crypto-store.js";
 import * as pg from "../lib/db.js";
 
 const APPLY = process.argv.includes("--apply");
+// Reprise CIBLEE : une instance deja basculee peut avoir a reprendre une seule
+// collection — le planning, arrive apres coup. Sans cette option il faudrait
+// vider la base, ce qui est exactement ce qu'on ne veut pas faire.
+const SEUL = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 // Le planning vit dans son propre fichier : il doit être repris avec le reste,
@@ -54,9 +58,13 @@ console.log(`${c.b}Reprise ${DB_FILE} → PostgreSQL${c.n}`);
 if (!APPLY) console.log(`${c.j}Simulation. Ajouter --apply pour écrire.${c.n}`);
 console.log();
 
+const aReprendre = SEUL.length ? SEUL : pg.COLLECTION_NAMES;
+for (const nom of SEUL) if (!pg.COLLECTION_NAMES.includes(nom)) mourir(`collection inconnue : ${nom}`);
+if (SEUL.length) console.log(`${c.j}Reprise ciblée : ${SEUL.join(", ")}${c.n}\n`);
+
 const attendus = {};
 let total = 0;
-for (const nom of pg.COLLECTION_NAMES) {
+for (const nom of aReprendre) {
   const lignes = Array.isArray(source[nom]) ? source[nom] : [];
   // Une ligne sans identifiant ne peut pas être reprise : on la signale plutôt
   // que de l'inventer un identifiant qui casserait les références croisées.
@@ -74,24 +82,26 @@ await pg.ensureSchema();
 // Sur une base déjà peuplée, on refuse : reprendre deux fois écraserait des
 // écritures faites depuis la première reprise.
 const avant = await pg.counts();
-const dejaLa = Object.entries(avant).filter(([, n]) => n > 0);
+// En reprise ciblée, seules les collections VISEES doivent être vides : le
+// reste de la base est déjà en service et ne doit surtout pas être touché.
+const dejaLa = Object.entries(avant).filter(([k, n]) => n > 0 && aReprendre.includes(k));
 if (dejaLa.length) {
   mourir(`la base contient déjà des données (${dejaLa.map(([k, n]) => `${k}: ${n}`).join(", ")}). ` +
     "Reprendre par-dessus écraserait ce qui a été écrit depuis. Vider la base d'abord si c'est bien l'intention.");
 }
 
-for (const nom of pg.COLLECTION_NAMES) {
+for (const nom of aReprendre) {
   const lignes = (Array.isArray(source[nom]) ? source[nom] : []).filter((l) => l?.id);
   if (lignes.length) await pg.putMany(nom, lignes);
 }
-for (const s of pg.SINGLETONS) {
-  if (source[s] !== undefined) await pg.putSingleton(s, source[s]);
+if (!SEUL.length) {
+  for (const s of pg.SINGLETONS) if (source[s] !== undefined) await pg.putSingleton(s, source[s]);
 }
 
 // Contrôle : on ne déclare le succès que si les comptes concordent, collection
 // par collection.
 const apres = await pg.counts();
-const ecarts = pg.COLLECTION_NAMES.filter((nom) => apres[nom] !== attendus[nom]);
+const ecarts = aReprendre.filter((nom) => apres[nom] !== attendus[nom]);
 if (ecarts.length) {
   for (const nom of ecarts) console.error(`${c.r}✗${c.n} ${nom} : attendu ${attendus[nom]}, trouvé ${apres[nom]}`);
   await pg.close();
