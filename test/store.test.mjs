@@ -199,3 +199,80 @@ test("paramètres d'ouverture réseau : normalisation, zéro préservé, lignes 
   assert.equal(s2.thresholds.length, 0);
   assert.equal(store.getOpeningSettings().leadTimes.length, 1);
 });
+
+test("COUVERTURE STATIQUE de touch() : aucun mutateur sur place ne doit l'oublier", async () => {
+  // Le test de round-trip qui protège la classification exige une base PostgreSQL, donc
+  // il est SAUTÉ en local et en CI sans base : cinq mutateurs sont passés au travers
+  // (updateOpeningTask, updateTaskOutput, updateTaskStep, updateSession, linkSessionTask).
+  // Conséquence : assigner un responsable, cocher une sous-étape, valider un livrable ou
+  // saisir un compte rendu de COPIL était conservé en mémoire mais JAMAIS écrit en base —
+  // perdu au premier redémarrage, sans le moindre message.
+  //
+  // Celui-ci lit le source et ne dépend de rien. Une fonction qui modifie un objet
+  // IMBRIQUÉ dans une ligne de collection doit marquer la LIGNE avec touch(), sinon le
+  // persister — qui compare des références — ne voit rien changer.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../lib/store.js", import.meta.url), "utf8");
+  // Helpers de persistance : ils valent touch(), donc ils DOIVENT le faire. On le vérifie
+  // avant de s'en servir comme dispense, sinon la dispense serait un trou.
+  const HELPERS = ["ecrireOuverture"];
+  for (const h of HELPERS) {
+    const corps = src.split(`function ${h}(`)[1]?.split("\n}")[0] || "";
+    assert.ok(corps.includes("touch("), `le helper ${h}() doit marquer la ligne avec touch()`);
+  }
+  const manquants = [];
+  for (const bloc of src.split(/\nexport (?:async )?function /).slice(1)) {
+    const nom = bloc.split("(")[0];
+    const corps = bloc.split("\nexport ")[0];
+    // Les écritures passent soit par write(db), soit par un helper de persistance qui
+    // marque lui-même la ligne. Ignorer le helper sortirait toute une famille du garde :
+    // c'est exactement ce qui est arrivé en introduisant ecrireOuverture().
+    const ecrit = corps.includes("write(db)") || HELPERS.some((h) => corps.includes(h + "("));
+    const marque = corps.includes("touch(") || HELPERS.some((h) => corps.includes(h + "("));
+    if (!ecrit || marque) continue;
+    const vars = new Set([
+      ...[...corps.matchAll(/(?:const|let)\s+(\w+)\s*=[^\n;]*\.find\(/g)].map((m) => m[1]),
+      ...[...corps.matchAll(/(?:const|let)\s+(\w+)\s*=\s*\(?db\.\w+/g)].map((m) => m[1]),
+      // Destructuration : `const [, t] = findTask(...)` jetait l'ouverture ET échappait à
+      // la détection. Les huit fonctions de la famille « tâche » sont passées par là.
+      ...[...corps.matchAll(/(?:const|let)\s*\[[^\]]*\]\s*=\s*\w+\(/g)]
+        .flatMap((m) => m[0].replace(/^.*\[|\].*$/g, "").split(",").map((x) => x.trim()).filter(Boolean)),
+    ]);
+    for (const v of vars) {
+      // Affectation d'un champ, d'un index, Object.assign — ou mutation d'un tableau
+      // imbriqué (`t.outputs.push(...)`), qui ne change pas davantage la référence.
+      const surPlace = new RegExp(
+        `\\b${v}(?:\\.\\w+)+\\s*=[^=]` +
+        `|\\b${v}\\[[^\\]]+\\]\\s*=[^=]` +
+        `|Object\\.assign\\(\\s*${v}\\b` +
+        `|\\b${v}(?:\\.\\w+)+\\.(?:push|pop|shift|unshift|splice|sort|reverse)\\(`);
+      if (surPlace.test(corps)) { manquants.push(nom); break; }
+    }
+  }
+  assert.deepEqual(manquants, [], `modification sur place non marquée par touch() : ${manquants.join(", ")}`);
+});
+
+test("les mutations imbriquées marquent bien leur ligne de collection", () => {
+  const o = store.addOpening({ name: "Marquage", targetDate: "2028-09-04" });
+  const t = store.addOpeningTask(o.id, { title: "Tâche", lot: "gouv" });
+  const st = store.addTaskStep(o.id, t.id, { text: "Étape" });
+  const ou = store.addTaskOutput(o.id, t.id, { label: "Livrable" });
+  // Les quatre chemins qui perdaient leur écriture. On vérifie ici qu'ils produisent bien
+  // le résultat attendu ; la garantie de persistance est portée par le test statique
+  // ci-dessus et par le round-trip PostgreSQL.
+  store.updateOpeningTask(o.id, t.id, { owner: "Claire", status: "doing" });
+  store.updateTaskStep(o.id, t.id, st.id, { done: true });
+  store.updateTaskOutput(o.id, t.id, ou.id, { status: "validated" });
+  const relu = store.getOpening(o.id).tasks.find((x) => x.id === t.id);
+  assert.equal(relu.owner, "Claire");
+  assert.equal(relu.status, "doing");
+  assert.equal(relu.steps[0].done, true);
+  assert.equal(relu.outputs[0].status, "validated");
+
+  const c = store.addCommittee({ name: "COPIL", scope: "opening", scopeId: o.id });
+  const se = store.addSession(c.id, { date: "2027-01-15" });
+  store.updateSession(c.id, se.id, { minutes: "Compte rendu", status: "held" });
+  const sr = store.getCommittee(c.id).sessions[0];
+  assert.equal(sr.minutes, "Compte rendu");
+  assert.equal(sr.status, "held");
+});
