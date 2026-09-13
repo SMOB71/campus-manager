@@ -64,9 +64,10 @@ test("scenarios : create + list + delete", () => {
 test("backup + restore : rollback d'un état", () => {
   const c = store.addCampus({ name: "AvantBackup" });
   const snap = store.backupNow();
+  assert.ok(snap.ok && snap.name, "backupNow renvoie désormais un résultat, pas un nom brut");
   store.deleteCampus(c.id);
   assert.ok(!store.listCampuses().some((x) => x.id === c.id)); // supprimé
-  const r = store.restoreBackup(snap);
+  const r = store.restoreBackup(snap.name);
   assert.equal(r.ok, true);
   assert.ok(store.listCampuses().some((x) => x.id === c.id)); // revenu
   assert.deepEqual(store.restoreBackup("../../etc/passwd"), { error: "nom de sauvegarde invalide" });
@@ -275,4 +276,27 @@ test("les mutations imbriquées marquent bien leur ligne de collection", () => {
   const sr = store.getCommittee(c.id).sessions[0];
   assert.equal(sr.minutes, "Compte rendu");
   assert.equal(sr.status, "held");
+});
+
+test("sauvegarde fichier : refusée en base, jamais silencieuse", async () => {
+  // En mode fichier (ce test), elle fonctionne. En PostgreSQL elle doit REFUSER : db.json
+  // est figé depuis la bascule, donc une « sauvegarde » y serait un instantané périmé
+  // horodaté du jour, et la restaurer écraserait toute la base de production.
+  assert.equal(store.sauvegardeFichierActive(), true, "sans DATABASE_URL, le mode fichier reste actif");
+  const r = store.backupNow();
+  assert.ok(r.ok && r.name);
+
+  // On recharge le store avec DATABASE_URL pour vérifier le refus, sans toucher à la base.
+  // usePg() est évalué à CHAQUE appel : la variable doit rester posée pendant les
+  // vérifications, pas seulement pendant l'import.
+  process.env.DATABASE_URL = "postgres://personne@127.0.0.1:1/neant";
+  try {
+    const enBase = await import("../lib/store.js?pg=" + Math.random());
+    assert.equal(enBase.sauvegardeFichierActive(), false);
+    assert.match(enBase.backupNow().error, /PostgreSQL/);
+    assert.match(enBase.restoreBackup(r.name).error, /PostgreSQL/);
+    assert.deepEqual(enBase.listBackupsMeta(), [], "ne présente pas des copies périmées comme l'état sauvegardé");
+  } finally {
+    delete process.env.DATABASE_URL;
+  }
 });
