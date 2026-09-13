@@ -1315,8 +1315,10 @@ test("paie : un indépendant n'entre pas dans l'export, et on sait pourquoi", as
   const a = await login("admin@test.co", "pw12345678");
   const opts = { cookie: a.cookie, csrf: a.csrf };
   const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Paie" } })).json();
-  const salarie = await (await req("/api/teachers", { method: "POST", ...opts, json: { campusId: campus.id, name: "Salarié Un", status: "vacataire", tauxHoraire: 40, matricule: "M1" } })).json();
-  const indep = await (await req("/api/teachers", { method: "POST", ...opts, json: { campusId: campus.id, name: "Indépendant Deux", status: "prestataire", tauxHoraire: 60 } })).json();
+  // Un intervenant est rattaché par campusIds (il peut intervenir sur plusieurs
+  // campus) : passer campusId le laisserait sans rattachement.
+  const salarie = await (await req("/api/teachers", { method: "POST", ...opts, json: { campusIds: [campus.id], name: "Salarié Un", status: "vacataire", tauxHoraire: 40, matricule: "M1" } })).json();
+  const indep = await (await req("/api/teachers", { method: "POST", ...opts, json: { campusIds: [campus.id], name: "Prestataire Deux", status: "prestataire", tauxHoraire: 60 } })).json();
 
   for (const t of [salarie, indep]) {
     await req("/api/sessions", { method: "POST", ...opts, json: {
