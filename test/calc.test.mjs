@@ -110,6 +110,13 @@ test("seuil budgétaire : insère la validation AVANT la commande, au palier le 
   assert.ok(dg.critical);
   const cmd = ts.find((t) => t.title.startsWith("COMMANDE postes de réfraction"));
   assert.ok(dg.dueDate < cmd.dueDate, "la validation précède la commande");
+  // Être datée avant ne suffit pas : sans dépendance, la validation flottait à côté de la
+  // commande, invisible pour le calcul de chaîne, et un retard dessus ne poussait rien.
+  assert.ok(cmd.dependsOn.includes(dg.id), "la commande est bloquée par sa validation");
+  // Identifiants stables d'une génération à l'autre, sinon réappliquer les paramètres
+  // recrée des doublons au lieu de retrouver la tâche existante.
+  assert.equal(dg.tplKey, "val-refraction");
+  assert.deepEqual(buildOpeningTasks("2027-09-06", cfg).map((t) => t.id), ts.map((t) => t.id));
   assert.equal(dg.offset - cmd.offset, Math.round((20 / 4.345 + 1.5 + 45 / 30.4) * 30.4) - cmd.offset);
   // Sans montant, pas de validation : on ne fabrique pas un jalon sur une hypothèse.
   assert.equal(buildOpeningTasks("2027-09-06", { thresholds: cfg.thresholds, leadTimes: [{ family: "refraction", leadWeeks: 20 }] })
