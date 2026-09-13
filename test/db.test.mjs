@@ -92,17 +92,30 @@ siBase("entrées invalides refusées avant d'atteindre la base", async () => {
 siBase("l'écriture d'une ligne ne dépend PAS du volume — c'est tout l'objet du chantier", async () => {
   // Le magasin fichier réécrivait la base entière : 159 ms à 120 000 notes.
   // Ici le coût doit rester stable quand le volume est multiplié par dix.
-  const mesure = async () => {
+  // MÉTHODE DE MESURE. L'écriture coûte ~1,5 ms : à cette échelle, une pause du
+  // ramasse-miettes ou une autre suite de tests qui frappe la même base suffit à tripler
+  // une mesure isolée. Comparer deux mesures uniques par un ratio produisait un échec
+  // intermittent (« 1,40 ms → 5,26 ms ») sans aucune régression derrière — le pire genre
+  // de test, celui qu'on finit par ignorer. On prend donc la MÉDIANE de cinq séries, qui
+  // absorbe les valeurs aberrantes, et on ajoute une tolérance absolue en plus du ratio.
+  // Ce que le test doit prouver reste intact : si le coût était linéaire, dix fois plus de
+  // données donneraient dix fois le temps, très au-delà de la marge.
+  const serie = async () => {
     const t0 = process.hrtime.bigint();
     for (let i = 0; i < 20; i++) await db.put("grades", { id: "perf", learnerId: "l0", score: i });
     return Number(process.hrtime.bigint() - t0) / 1e6 / 20;
+  };
+  const mesure = async () => {
+    const v = [];
+    for (let i = 0; i < 5; i++) v.push(await serie());
+    return v.sort((a, b) => a - b)[2];
   };
   await db.replaceCollection("grades", Array.from({ length: 1000 }, (_, i) => ({ id: `p${i}`, learnerId: "lx", score: 10 })));
   const petit = await mesure();
   await db.putMany("grades", Array.from({ length: 9000 }, (_, i) => ({ id: `q${i}`, learnerId: "ly", score: 10 })));
   const grand = await mesure();
-  // Dix fois plus de données ne doivent pas doubler le coût d'une écriture.
-  assert.ok(grand < petit * 2 + 1, `écriture non constante : ${petit.toFixed(2)} ms → ${grand.toFixed(2)} ms`);
+  const plafond = Math.max(petit * 3, petit + 5);
+  assert.ok(grand < plafond, `écriture non constante : ${petit.toFixed(2)} ms → ${grand.toFixed(2)} ms (plafond ${plafond.toFixed(2)} ms)`);
 });
 
 siBase("RIEN N'EST PERDU : après écriture, la base relue doit égaler la mémoire", async () => {
@@ -134,6 +147,43 @@ siBase("RIEN N'EST PERDU : après écriture, la base relue doit égaler la mémo
   store.deleteLearner(l.id);
   await store.flush();
   assert.equal((await db.loadAll()).learners.find((x) => x.id === l.id), undefined);
+
+  // Mutation d'un objet IMBRIQUÉ dans une ligne — une tâche dans une ouverture, une étape
+  // dans une tâche, une séance dans un comité. C'est l'angle mort qui a coûté neuf
+  // fonctions : ni le round-trip ni le test structurel ne descendaient sous la ligne.
+  //
+  // LE FLUSH ENTRE LES PHASES EST INDISPENSABLE, et c'est ce qui rendait le bug invisible.
+  // touch() mémorise la RÉFÉRENCE de la ligne ; pg.put la sérialise plus tard, dans la
+  // chaîne asynchrone. Une mutation non marquée effectuée AVANT que l'écriture en attente
+  // ne parte « monte donc dans le train » et se retrouve en base par accident. La perte
+  // n'est pas systématique : elle dépend de ce qui se passe ensuite sur la même ligne.
+  // Sans flush ici, ce test passait alors que la régression était bien présente.
+  const ouv = store.addOpening({ name: "Ouverture round-trip", targetDate: "2028-09-04" });
+  const tache = store.addOpeningTask(ouv.id, { title: "Tâche imbriquée", lot: "gouv" });
+  const com = store.addCommittee({ name: "COPIL round-trip", scope: "opening", scopeId: ouv.id });
+  const seance = store.addSession(com.id, { date: "2027-05-12" });
+  await store.flush();   // ← vide la file : plus aucune écriture en attente sur ces lignes
+
+  // Toutes les mutations imbriquées APRÈS le flush, donc sans écriture marquée derrière
+  // laquelle se glisser. C'est la seule façon de les observer vraiment.
+  store.updateOpeningTask(ouv.id, tache.id, { owner: "Claire", status: "doing" });
+  const etape = store.addTaskStep(ouv.id, tache.id, { text: "Sous-étape" });
+  store.updateTaskStep(ouv.id, tache.id, etape.id, { done: true });
+  const livrable = store.addTaskOutput(ouv.id, tache.id, { label: "Livrable" });
+  store.updateTaskOutput(ouv.id, tache.id, livrable.id, { status: "validated" });
+  store.updateSession(com.id, seance.id, { minutes: "Compte rendu", status: "held" });
+  await store.flush();
+
+  const relu = await db.loadAll();
+  const tBase = relu.openings.find((x) => x.id === ouv.id).tasks.find((x) => x.id === tache.id);
+  assert.equal(tBase.owner, "Claire", "responsable de tâche perdu");
+  assert.equal(tBase.steps?.length, 1, "sous-étape perdue — mutation imbriquée non marquée par touch()");
+  assert.equal(tBase.steps[0].done, true, "coche de sous-étape perdue");
+  assert.equal(tBase.outputs?.length, 1, "livrable perdu");
+  assert.equal(tBase.outputs[0].status, "validated", "validation de livrable perdue");
+  const sBase = relu.committees.find((x) => x.id === com.id).sessions[0];
+  assert.equal(sBase.minutes, "Compte rendu", "compte rendu de COPIL perdu");
+  assert.equal(sBase.status, "held");
 });
 
 siBase("COUVERTURE DE touch() : aucune modification sur place ne doit échapper", async () => {
