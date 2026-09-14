@@ -182,3 +182,48 @@ test("un rythme invalide est refusé avant toute écriture", async () => {
   });
   assert.equal(sansClasse.status, 404);
 });
+
+// --- Bascule Qualiopi 32 → 33 indicateurs (décret 2026-728) ---
+// Le même serveur sert : ce qui compte ici est le trajet complet, store compris.
+test("un campus existant est lu sur le référentiel 2019 par défaut", async () => {
+  const q = await (await get(`/api/campuses/${campusId}/qualiopi`)).json();
+  assert.equal(q.version, "v2019");
+  // L'échéance est portée par la réponse, pas à aller chercher ailleurs.
+  assert.ok(q.etatVersion);
+  assert.equal(q.etatVersion.applicable, new Date().toISOString().slice(0, 10) >= "2026-11-01" ? "v2026" : "v2019");
+});
+
+test("la bascule replace les preuves malgré la renumérotation, et ne conclut à aucune conformité", async () => {
+  // On enregistre deux constats sous l'ancienne numérotation.
+  await req(`/api/campuses/${campusId}/qualiopi`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { indicators: { 23: { status: "conforme", note: "convention Agefiph" }, 24: { status: "conforme", note: "veille juridique" } } },
+  });
+
+  const prep = await (await get(`/api/campuses/${campusId}/qualiopi/bascule`)).json();
+  assert.equal(prep.lignes.length, 33);
+  assert.deepEqual(prep.nouveaux, [16, 29, 33]);
+
+  const r = await (await post(`/api/campuses/${campusId}/qualiopi/bascule`, {})).json();
+  assert.equal(r.version, "v2026");
+  // Aucune conformité reportée : 0 %, et c'est voulu.
+  assert.equal(r.conformity, 0);
+  assert.ok(Object.values(r.indicators).every((i) => i.status === "a_verifier"));
+  // Mais les preuves ont suivi le BON indicateur : le handicap sur le 26.
+  assert.match(r.indicators[26].note, /Agefiph/);
+  assert.match(r.indicators[23].note, /veille juridique/);
+  assert.doesNotMatch(r.indicators[23].note, /Agefiph/);
+  // L'ancien tableau reste consultable.
+  assert.equal(r.archiveV2019[23].status, "conforme");
+
+  // Relecture : la version est persistée, plus d'alerte, et le référentiel
+  // servi à l'interface est bien celui à 33 indicateurs.
+  const apres = await (await get(`/api/campuses/${campusId}/qualiopi`)).json();
+  assert.equal(apres.version, "v2026");
+  assert.equal(apres.etatVersion.alerte, null);
+  const ref = await (await get("/api/qualiopi/reference?version=v2026")).json();
+  assert.equal(ref.reference.flatMap((c) => c.indicators).length, 33);
+
+  // Rebasculer n'a pas de sens et doit être refusé, pas répété en silence.
+  assert.equal((await post(`/api/campuses/${campusId}/qualiopi/bascule`, {})).status, 409);
+});

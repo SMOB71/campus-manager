@@ -1737,12 +1737,75 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// Périmètre d'un indicateur 2026. On n'affiche rien quand il concerne tout le
+// monde : un badge présent partout ne distingue plus rien.
+const Q_PERIMETRE = { af: "formation", app: "apprentissage", bc: "bilan de compétences", vae: "VAE" };
+function qPerimetreTag(p) {
+  if (!Array.isArray(p) || p.length === 0 || p.length === 4) return "";
+  return ` <span class="q-tag">${p.map((x) => esc(Q_PERIMETRE[x] || x)).join(" · ")}</span>`;
+}
+
+// L'échéance du 1er novembre 2026. Tant qu'un campus n'a pas basculé, c'est
+// l'information la plus importante de l'écran — devant le taux de conformité,
+// qui porte sur un référentiel en train d'être remplacé.
+function qVersionBanner(q, ref) {
+  const e = q.etatVersion;
+  if (!e?.alerte) return "";
+  const v2026 = ref.versions.find((v) => v.cle === "v2026");
+  const couleur = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" }[e.alerte.gravite] || "var(--border)";
+  return `<div class="card card-pad" style="margin-bottom:14px;border-left:4px solid ${couleur};">
+    <b>${esc(e.alerte.message)}</b>
+    <p class="muted" style="margin:8px 0 0;font-size:13px;">Les 32 indicateurs actuels sont conservés, mais <b>renumérotés</b> : l'indicateur 23 (handicap) devient le 26, la veille légale passe de 24 à 23. Trois exigences sont sans équivalent, dont l'évaluation des enseignements par les apprenants.
+    ${v2026?.source ? `<br><a href="${esc(v2026.source)}" target="_blank" rel="noopener">Texte officiel — ${esc(v2026.texte)}</a>` : ""}</p>
+    <div class="actions" style="margin-top:10px;"><button class="btn-primary btn-sm" id="q-bascule">Préparer la bascule vers les 33 indicateurs</button></div>
+  </div>`;
+}
+
+// Écran de bascule : ce qui se reporte, ce qui est à reprendre, ce qui est neuf.
+async function openBasculeQualiopi(campusId) {
+  const prep = await api.get(`/api/campuses/${campusId}/qualiopi/bascule`);
+  if (prep?.error) { alert(prep.error); return; }
+  const CONF = {
+    directe: ["Renumérotation simple", "var(--good-bg)"],
+    partielle: ["Exigence modifiée", "#F5E9D0"],
+    nouveau: ["Sans équivalent", "#F3D9D9"],
+  };
+  openModal("Bascule vers le référentiel 2026", `
+    <p class="muted" style="font-size:13.5px;"><b>Aucune conformité n'est reportée.</b> L'audit portera sur le nouveau référentiel, et la conformité à l'ancien ne s'y transporte pas : chaque indicateur repart à « à vérifier ». Ce qui est repris, ce sont vos <b>notes de preuve</b>, replacées sur le bon indicateur malgré la renumérotation.</p>
+    <div class="kpis" style="margin-top:10px;">${fkpi(prep.lignes.length, "indicateurs")}${fkpi(prep.aRefaire, "à reprendre", "bad")}${fkpi(prep.nouveaux.length, "sans équivalent", "bad")}</div>
+    <div class="card" style="overflow-x:auto;margin-top:12px;max-height:46vh;overflow-y:auto;"><table class="net-table">
+      <thead><tr><th>N°</th><th>Crit.</th><th>Indicateur 2026</th><th>Reprise</th><th>Venait de</th></tr></thead><tbody>
+      ${prep.lignes.map((l) => {
+        const [lab, bg] = CONF[l.confiance] || CONF.nouveau;
+        return `<tr><td><b>${l.n}</b></td><td>${l.critere}</td>
+          <td>${esc(l.libelle)}${l.note ? `<br><span class="muted" style="font-size:12px;">${esc(l.note)}</span>` : ""}</td>
+          <td><span class="pill" style="background:${bg};">${esc(lab)}</span></td>
+          <td>${l.anciens.length ? l.anciens.map((a) => `n° ${a.n}${a.statut === "conforme" ? " ✔" : ""}`).join(", ") : '<span class="muted">—</span>'}</td></tr>`;
+      }).join("")}
+      </tbody></table></div>
+    <p class="hint muted" style="margin-top:8px;">${esc(prep.reserve)}</p>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="q-bascule-go">Basculer ce campus sur les 33 indicateurs</button></div>`);
+
+  $("#q-bascule-go").onclick = async () => {
+    const r = await api.post(`/api/campuses/${campusId}/qualiopi/bascule`, {});
+    if (r?.error) { alert(r.error); return; }
+    alert(`Campus basculé sur le référentiel 2026. ${r.aRefaire} indicateur(s) à reprendre, dont ${r.nouveaux.length} sans équivalent (n° ${r.nouveaux.join(", ")}).`);
+    qualiopiRef = null;   // le référentiel affiché change de version
+    closeModals(); renderQualiopi();
+  };
+}
+
 async function renderQualiopi() {
   const view = $("#view");
   if (!state.campuses.length) { view.innerHTML = `<p class="empty">Ajoute un campus d'abord (onglet Campus).</p>`; return; }
   if (!qCampus || !state.campuses.find((c) => c.id === qCampus)) qCampus = state.campuses[0].id;
-  if (!qualiopiRef) qualiopiRef = await api.get("/api/qualiopi/reference");
+  // Le référentiel est chargé POUR LA VERSION du campus : un cache unique
+  // afficherait les 32 anciens libellés au-dessus de statuts enregistrés sur la
+  // numérotation 2026, ou l'inverse.
   const q = await api.get(`/api/campuses/${qCampus}/qualiopi`);
+  qualiopiRef = qualiopiRef || {};
+  if (!qualiopiRef[q.version]) qualiopiRef[q.version] = await api.get(`/api/qualiopi/reference?version=${q.version}`);
+  const ref = qualiopiRef[q.version];
   const ind = q.indicators || {};
   const qdocs = await api.get(`/api/documents?campusId=${qCampus}`) || [];
   const docCount = {}; qdocs.forEach((d) => { if (d.indicator) docCount[d.indicator] = (docCount[d.indicator] || 0) + 1; });
@@ -1775,7 +1838,10 @@ async function renderQualiopi() {
     <div class="row" style="margin-bottom:14px;align-items:center;">
       <div><label class="field-label">Campus</label><select id="q-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === qCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
       <div style="flex:none;"><label class="field-label">Conformité</label><div class="q-gauge ${q.conformity != null && q.conformity < 80 ? "low" : ""}">${q.conformity == null ? "—" : q.conformity + " %"}</div></div>
+      <span style="flex:1"></span>
+      <div style="flex:none;"><label class="field-label">Référentiel</label><div class="muted" style="font-size:13px;">${esc(ref.versions.find((v) => v.cle === q.version)?.label || q.version)}</div></div>
     </div>
+    ${qVersionBanner(q, ref)}
     <div class="card card-pad" style="margin-bottom:14px;">
       <div class="section-title" style="margin-top:0;">Certification & audits</div>
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
@@ -1787,27 +1853,28 @@ async function renderQualiopi() {
       </div>
     </div>
     ${controlCard}
-    ${qualiopiRef.reference.map((crit) => `<div class="card card-pad" style="margin-bottom:12px;">
+    ${ref.reference.map((crit) => `<div class="card card-pad" style="margin-bottom:12px;">
       <h3 style="color:var(--marine);">Critère ${crit.c} — ${esc(crit.titre)}</h3>
       <div style="margin-top:10px;display:flex;flex-direction:column;gap:6px;">${crit.indicators.map((i) => {
         const cur = ind[i.n] || {};
         return `<div class="q-ind">
           <div class="q-num">${i.n}</div>
-          <div class="grow"><div>${esc(i.l)}${i.tag ? ` <span class="q-tag">${i.tag}</span>` : ""}</div>
+          <div class="grow"><div>${esc(i.l)}${i.tag ? ` <span class="q-tag">${i.tag}</span>` : ""}${qPerimetreTag(i.p)}${i.nouveau ? ' <span class="q-tag" style="background:var(--good-bg);">nouveau</span>' : ""}</div>
             <input class="txt q-note" data-n="${i.n}" placeholder="Note / preuve…" value="${esc(cur.note || "")}"></div>
           <button type="button" class="btn-ghost btn-sm q-proof" data-n="${i.n}" title="Pièces justificatives">${I.clip}${docCount[i.n] ? `<span class="q-proof-n">${docCount[i.n]}</span>` : ""}</button>
           <select class="q-stat s-${cur.status || "a_verifier"}" data-n="${i.n}">${STAT.map((s) => `<option value="${s.k}" ${(cur.status || "a_verifier") === s.k ? "selected" : ""}>${s.l}</option>`).join("")}</select>
         </div>`;
       }).join("")}</div>
     </div>`).join("")}
-    ${(qualiopiRef.glossary && qualiopiRef.glossary.length) ? `<details class="card card-pad" style="margin-bottom:12px;">
+    ${(ref.glossary && ref.glossary.length) ? `<details class="card card-pad" style="margin-bottom:12px;">
       <summary style="cursor:pointer;font-weight:600;color:var(--marine);">📘 Glossaire — éléments clés de Qualiopi</summary>
-      <dl style="margin:12px 0 0;display:flex;flex-direction:column;gap:10px;">${qualiopiRef.glossary.map((g) => `
+      <dl style="margin:12px 0 0;display:flex;flex-direction:column;gap:10px;">${ref.glossary.map((g) => `
         ${g.sec ? `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;color:var(--marine);opacity:.7;margin-top:6px;border-top:1px solid var(--border);padding-top:10px;">${esc(g.sec)}</div>` : ""}
         <div><dt style="font-weight:600;color:var(--marine);">${esc(g.t)}</dt><dd style="margin:2px 0 0;color:var(--muted);line-height:1.5;">${esc(g.d)}</dd></div>`).join("")}</dl>
     </details>` : ""}
     <div class="actions" style="position:sticky;bottom:0;background:var(--bg);padding:10px 0;"><button id="q-save" class="btn-primary">Enregistrer Qualiopi</button> <span id="q-msg" class="status"></span></div>`;
   $("#q-campus").addEventListener("change", (e) => { qCampus = e.target.value; renderQualiopi(); });
+  if ($("#q-bascule")) $("#q-bascule").onclick = () => openBasculeQualiopi(qCampus);
   $$(".q-proof").forEach((b) => b.addEventListener("click", () => openIndicatorProof(qCampus, b.dataset.n, qdocs.filter((d) => String(d.indicator) === String(b.dataset.n)))));
   $$(".q-stat").forEach((s) => s.addEventListener("change", () => { s.className = "q-stat s-" + s.value; }));
   $("#q-save").addEventListener("click", async () => {

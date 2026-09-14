@@ -53,7 +53,8 @@ import { RYTHMES, validateRythme, genererRythme, versPeriodes, verifierVolume, r
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
 import * as store from "./lib/store.js";
-import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, conformityRate, computeControlDates } from "./lib/qualiopi.js";
+import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, QUALIOPI_VERSIONS, BASCULE_V2026,
+  conformityRate, computeControlDates, versionApplicable, referenceDe, etatVersion, preparerBascule, basculer } from "./lib/qualiopi.js";
 import { analyseChain, planRebase, applyRebase } from "./lib/chain.js";
 import * as backup from "./lib/backup.js";
 import { sendSessionMail, convocationHtml, compteRenduHtml, destinataires, runSessionReminders } from "./lib/copil.js";
@@ -822,11 +823,48 @@ app.delete("/api/actions/:id", requireAuth, (req, res) => {
 });
 
 // --- Qualiopi ---
-app.get("/api/qualiopi/reference", requireAuth, (req, res) => res.json({ reference: QUALIOPI_REFERENCE, statuses: QUALIOPI_STATUSES, glossary: QUALIOPI_GLOSSARY }));
+// La référence renvoyée dépend de la VERSION demandée : servir un référentiel
+// unique obligerait l'interface à deviner laquelle des deux numérotations elle
+// est en train d'afficher.
+app.get("/api/qualiopi/reference", requireAuth, (req, res) => {
+  const cle = QUALIOPI_VERSIONS[req.query.version] ? req.query.version : "v2019";
+  res.json({
+    version: cle, versions: Object.values(QUALIOPI_VERSIONS).map(({ reference, ...v }) => v),
+    bascule: BASCULE_V2026, applicableAujourdhui: versionApplicable(new Date().toISOString().slice(0, 10)),
+    reference: referenceDe(cle), statuses: QUALIOPI_STATUSES, glossary: QUALIOPI_GLOSSARY,
+  });
+});
 app.get("/api/campuses/:id/qualiopi", campusGuard, (req, res) => {
   const q = store.getQualiopi(req.params.id);
   if (!q) return res.status(404).json({ error: "campus introuvable" });
-  res.json({ ...q, conformity: conformityRate(q.indicators || {}), control: computeControlDates(q.lastAudit) });
+  res.json({
+    ...q,
+    conformity: conformityRate(q.indicators || {}, q.version, q.categories),
+    control: computeControlDates(q.lastAudit),
+    // L'échéance du 1er novembre 2026 est la seule information qui compte
+    // aujourd'hui sur cet écran : elle voyage avec l'état du campus.
+    etatVersion: etatVersion(q),
+  });
+});
+// Prévisualisation de la bascule : ce qui se reporte, ce qui est à refaire.
+app.get("/api/campuses/:id/qualiopi/bascule", campusGuard, (req, res) => {
+  const q = store.getQualiopi(req.params.id);
+  if (!q) return res.status(404).json({ error: "campus introuvable" });
+  if (q.version === "v2026") return res.status(409).json({ error: "ce campus suit déjà le référentiel 2026" });
+  res.json({ ...preparerBascule(q.indicators || {}), version: q.version });
+});
+app.post("/api/campuses/:id/qualiopi/bascule", campusGuard, requireAdmin, (req, res) => {
+  const q = store.getQualiopi(req.params.id);
+  if (!q) return res.status(404).json({ error: "campus introuvable" });
+  if (q.version === "v2026") return res.status(409).json({ error: "ce campus suit déjà le référentiel 2026" });
+  const out = store.setQualiopi(req.params.id, basculer(q));
+  const prep = preparerBascule(q.indicators || {});
+  logAudit(req, "update", "qualiopi",
+    `bascule vers le référentiel 2026 (33 indicateurs) — ${store.listCampuses().find((c) => c.id === req.params.id)?.name || req.params.id}`);
+  res.json({
+    ...out, conformity: conformityRate(out.indicators, "v2026", out.categories),
+    aRefaire: prep.aRefaire, nouveaux: prep.nouveaux, reserve: prep.reserve,
+  });
 });
 app.post("/api/campuses/:id/qualiopi/schedule", campusGuard, (req, res) => {
   const campus = store.listCampuses().find((c) => c.id === req.params.id);
@@ -847,7 +885,7 @@ app.patch("/api/campuses/:id/qualiopi", campusGuard, (req, res) => {
   const q = store.updateQualiopi(req.params.id, req.body || {});
   if (!q) return res.status(404).json({ error: "campus introuvable" });
   logAudit(req, "update", "qualiopi", store.listCampuses().find((c) => c.id === req.params.id)?.name || req.params.id);
-  res.json({ ...q, conformity: conformityRate(q.indicators || {}) });
+  res.json({ ...q, conformity: conformityRate(q.indicators || {}, q.version, q.categories), etatVersion: etatVersion(q) });
 });
 
 // --- Visites (cadence) ---
@@ -894,7 +932,7 @@ function buildNetworkRows(req) {
   const today = new Date().toISOString().slice(0, 10);
   const monthsSince = (d) => (d ? Math.round((Date.now() - new Date(d).getTime()) / (30 * 864e5)) : null);
   return campuses.map((c) => {
-    const q = c.qualiopi ? conformityRate(c.qualiopi.indicators || {}) : null;
+    const q = c.qualiopi ? conformityRate(c.qualiopi.indicators || {}, c.qualiopi.version, c.qualiopi.categories) : null;
     const openActions = actions.filter((a) => a.campusId === c.id && a.status !== "done").length;
     const overdue = actions.filter((a) => a.campusId === c.id && a.status !== "done" && a.dueDate && a.dueDate < today).length;
     const openIncidents = incidents.filter((i) => i.campusId === c.id).length;
@@ -1005,7 +1043,7 @@ app.get("/api/campus360/:id", campusGuard, (req, res) => {
   res.json({
     campus,
     row: buildNetworkRows(req).find((r) => r.id === campus.id),
-    qualiopi: campus.qualiopi ? { conformity: conformityRate(campus.qualiopi.indicators || {}), lastAudit: campus.qualiopi.lastAudit || "", nextSurveillance: campus.qualiopi.nextSurveillance || "", renewalDate: campus.qualiopi.renewalDate || "" } : null,
+    qualiopi: campus.qualiopi ? { conformity: conformityRate(campus.qualiopi.indicators || {}, campus.qualiopi.version, campus.qualiopi.categories), lastAudit: campus.qualiopi.lastAudit || "", nextSurveillance: campus.qualiopi.nextSurveillance || "", renewalDate: campus.qualiopi.renewalDate || "" } : null,
     actions: { open: actions.filter((a) => a.status !== "done"), overdue: actions.filter((a) => a.status !== "done" && a.dueDate && a.dueDate < today) },
     deliverables: store.listDeliverables({ campusId: campus.id }).slice(0, 6),
     kpi: store.listKpi(campus.id),
