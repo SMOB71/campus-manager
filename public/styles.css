@@ -126,6 +126,10 @@ button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid 
 .nav-chev { flex: none; opacity: .6; transition: transform .18s ease; }
 .nav-group:not(.open) .nav-chev { transform: rotate(-90deg); }
 .nav-group-items { display: flex; flex-direction: column; gap: 2px; }
+/* Rubrique isolée : un accès direct, détaché des groupes qui l'entourent. Le filet à
+   gauche et les respirations la sortent de la liste sans crier. */
+.nav-solo { margin: 10px 0; padding-left: 8px; border-left: 2px solid var(--marine); }
+.nav-solo > .nav-group-items > button { font-weight: 600; }
 .nav-group:not(.open) .nav-group-items { display: none; }
 .nav button { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 10px; background: transparent; color: var(--muted); border: none; text-align: left; font-weight: 600; }
 .nav button:hover { background: var(--bg); color: var(--ink); }

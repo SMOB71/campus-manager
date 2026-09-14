@@ -340,7 +340,11 @@ async function registerPasskey(deviceName) {
 }
 
 // ---------- Navigation ----------
-const NAV_GROUPS = ["Pilotage", "Décisions", "Réseau", "Enseignement", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
+const NAV_GROUPS = ["Pilotage", "Ouverture de campus", "Décisions", "Réseau", "Enseignement", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
+// Rubriques rendues À PLAT, sans repli ni intitulé de groupe. Une ouverture de campus
+// n'est pas une entrée parmi dix : c'est un projet de quinze mois consulté tous les jours,
+// et le ranger dans « Réseau » entre Tournée et SI campus le rendait introuvable.
+const NAV_SOLO = new Set(["Ouverture de campus"]);
 const NAV = [
   { id: "accueil", label: "Accueil", icon: I.home, group: "Pilotage" },
   { id: "demarrage", label: "Prêt à exploiter ?", icon: I.shield, admin: true, group: "Pilotage" },
@@ -358,7 +362,7 @@ const NAV = [
   { id: "apprenants", label: "Apprenants", icon: I.grad, group: "Réseau" },
   { id: "directeurs", label: "Directeurs", icon: I.users, admin: true, group: "Réseau" },
   { id: "tournee", label: "Tournée", icon: I.route, group: "Réseau" },
-  { id: "ouvertures", label: "Ouvertures", icon: I.rocket, admin: true, group: "Réseau" },
+  { id: "ouvertures", label: "Ouverture de campus", icon: I.rocket, admin: true, group: "Ouverture de campus" },
   { id: "si", label: "SI campus (ERP)", icon: I.plug, group: "Réseau" },
   { id: "documents", label: "Documents", icon: I.folder, group: "Réseau" },
   { id: "admissions", label: "Admissions", icon: I.funnel, group: "Recrutement" },
@@ -444,6 +448,10 @@ function renderNav() {
   $("#nav").innerHTML = NAV_GROUPS.map((g) => {
     const gi = items.filter((n) => n.group === g);
     if (!gi.length) return "";
+    // Une rubrique isolée se rend comme un accès direct : ni chevron, ni repli — un menu
+    // déroulant qui ne contient qu'une ligne est une friction sans contrepartie.
+    if (NAV_SOLO.has(g)) return `<div class="nav-group open nav-solo"><div class="nav-group-items">${
+      gi.map((n) => `<button data-view="${n.id}"${n.id === state.view ? ' class="active"' : ""}>${n.icon}<span>${n.label}</span></button>`).join("")}</div></div>`;
     const isOpen = open[g] !== false;
     return `<div class="nav-group${isOpen ? " open" : ""}">
       <button class="nav-group-label" data-group="${g}"><span>${g}</span>${NAV_CHEV}</button>
