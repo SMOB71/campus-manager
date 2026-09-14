@@ -366,6 +366,9 @@ const NAV = [
   { id: "facturation", label: "Facturation", icon: I.euro, group: "Performance" },
   { id: "exports", label: "Comptabilité & paie", icon: I.euro, admin: true, group: "Performance" },
   { id: "deca", label: "Dépôts OPCO", icon: I.brief, group: "Réseau" },
+  { id: "taxe", label: "Taxe d'apprentissage", icon: I.euro, admin: true, group: "Performance" },
+  { id: "indicateurs-publies", label: "Indicateurs publiés (L. 6111-8)", icon: I.chart, group: "Conformité" },
+  { id: "mobilite", label: "Mobilité internationale", icon: I.route, group: "Enseignement" },
   { id: "objectifs", label: "Objectifs réseau", icon: I.target, group: "Performance" },
   { id: "prevision", label: "Prévision consolidée", icon: I.chart, admin: true, group: "Performance" },
   { id: "indicateurs", label: "Indicateurs", icon: I.chart, group: "Performance" },
@@ -463,7 +466,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -5859,6 +5862,215 @@ async function renderDeca() {
       await renderDeca();
     });
   }));
+}
+
+// ---------- Vue : Taxe d'apprentissage ----------
+let taxeCampus = "", taxeAnnee = 0;
+async function renderTaxe() {
+  if (!taxeCampus) taxeCampus = state.campuses[0]?.id || "";
+  const ref = await api.get("/api/taxe/referentiels");
+  if (!taxeAnnee) taxeAnnee = ref.calendrier.annee;
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="tx-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${taxeCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const d = await api.get(`/api/taxe?campusId=${taxeCampus}&annee=${taxeAnnee}`);
+  const c = d.calendrier;
+  const teinte = { critique: "overdue", eleve: "overdue", moyen: "warn", aucun: "done" };
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Le <b>solde</b> de la taxe — 13 % du total, soit 0,09 % de la masse salariale — est réparti par les <b>entreprises elles-mêmes</b> sur la plateforme SOLTéA.
+      C'est la seule recette qui dépende directement de votre notoriété auprès d'elles.
+      <b>Le guichet d'habilitation ferme quatre mois avant l'ouverture de la campagne</b>, et il n'y a pas de rattrapage.</p>
+    </div>
+    ${d.alertes.map((a) => `<div class="card card-pad" style="border-left:4px solid ${d.risque === "critique" || d.risque === "eleve" ? "var(--bad)" : "var(--warn,#C77700)"};margin-bottom:8px;"><b>${esc(a.message)}</b></div>`).join("")}
+    <div class="kpis">
+      <div class="k"><div class="v">${d.total.toLocaleString("fr-FR")} €</div><div class="l">reçu${d.totalDefinitif ? "" : " (partiel)"}</div></div>
+      <div class="k"><span class="pill ${teinte[d.risque]}">${esc(d.etatLabel)}</span><div class="l" style="margin-top:6px;">habilitation ${taxeAnnee}</div></div>
+      ${d.evolution?.pourcent != null ? `<div class="k"><div class="v">${d.evolution.pourcent > 0 ? "+" : ""}${d.evolution.pourcent} %</div><div class="l">vs ${taxeAnnee - 1}</div></div>` : ""}
+    </div>
+
+    <div class="section-title">Calendrier ${taxeAnnee}</div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table"><tbody>
+      <tr><td>Dépôt des demandes d'habilitation</td><td><b>${esc(c.habilitationDebut)} → ${esc(c.habilitationFin)}</b></td></tr>
+      <tr><td>Période de répartition 1</td><td>${esc(c.periode1Debut)} → ${esc(c.periode1Fin)}</td></tr>
+      <tr><td>Premier versement</td><td>à partir du ${esc(c.versement1)}</td></tr>
+      <tr><td>Période de répartition 2</td><td>${esc(c.periode2Debut)} → ${esc(c.periode2Fin)}</td></tr>
+      <tr><td>Second versement</td><td>à partir du ${esc(c.versement2)}</td></tr>
+    </tbody></table></div>
+
+    ${isAdmin() ? `<div class="section-title">Habilitation et versements</div>
+    <div class="card card-pad">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div style="min-width:190px;"><label class="field-label">État</label><select class="txt" id="tx-etat">${Object.entries(ref.etats).map(([k, v]) => `<option value="${k}" ${d.etat === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+        <div><label class="field-label">Déposée le</label><input class="txt" id="tx-depot" type="date"></div>
+        <input class="txt" id="tx-uai" placeholder="Code UAI" value="${esc(d.numeroUai || "")}" style="max-width:160px;">
+      </div>
+      <p class="hint muted">Sans code UAI, une entreprise ne vous trouvera pas sur la plateforme.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-top:8px;">
+        <div><label class="field-label">Versement 1 (€)</label><input class="txt" id="tx-v1" type="number" step="0.01" value="${d.versements.find((v) => v.periode === 1)?.montant ?? ""}"></div>
+        <div><label class="field-label">Versement 2 (€)</label><input class="txt" id="tx-v2" type="number" step="0.01" value="${d.versements.find((v) => v.periode === 2)?.montant ?? ""}"></div>
+        <button class="btn-primary btn-sm" id="tx-save">Enregistrer</button><span class="sub" id="tx-msg"></span>
+      </div>
+    </div>` : ""}
+
+    <div class="section-title">Estimer le solde d'une entreprise</div>
+    <div class="card card-pad">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div><label class="field-label">Masse salariale annuelle (€)</label><input class="txt" id="tx-ms" type="number" step="1000" placeholder="1000000"></div>
+        <button class="btn-ghost btn-sm" id="tx-sim">Calculer</button><span class="sub" id="tx-sim-res"></span>
+      </div>
+      <p class="hint muted">Argument de rendez-vous : un chiffre sans sa formule ne se discute pas.</p>
+    </div>`;
+
+  $("#tx-campus")?.addEventListener("change", () => { taxeCampus = $("#tx-campus").value; renderTaxe(); });
+  $("#tx-save")?.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    const versements = [];
+    if ($("#tx-v1").value) versements.push({ periode: 1, montant: Number($("#tx-v1").value) });
+    if ($("#tx-v2").value) versements.push({ periode: 2, montant: Number($("#tx-v2").value) });
+    const r = await api.put(`/api/taxe/${taxeAnnee}`, { campusId: taxeCampus,
+      habilitation: { etat: $("#tx-etat").value, dateDepot: $("#tx-depot").value || null, numeroUai: $("#tx-uai").value.trim() }, versements });
+    const m = $("#tx-msg");
+    if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return; }
+    await renderTaxe();
+  }));
+  $("#tx-sim").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post("/api/taxe/simulation", { masseSalariale: Number($("#tx-ms").value) });
+    $("#tx-sim-res").innerHTML = r.solde != null
+      ? `Solde à répartir : <b>${r.solde.toLocaleString("fr-FR")} €</b> <span class="muted">(${esc(r.formule)})</span>`
+      : "Masse salariale requise.";
+  });
+}
+
+// ---------- Vue : Indicateurs publiés ----------
+let indCampus = "", indAnnee = "";
+async function renderIndicateursPublies() {
+  if (!indCampus) indCampus = state.campuses[0]?.id || "";
+  if (!indAnnee) indAnnee = String(new Date().getFullYear() - 1);
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="in-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${indCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [ref, p] = await Promise.all([api.get("/api/indicateurs/referentiels"), api.get(`/api/indicateurs?campusId=${indCampus}&annee=${indAnnee}`)]);
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Article L. 6111-8 : ces indicateurs sont rendus publics chaque année <b>lorsque les effectifs sont suffisants</b>.
+      Sous ${ref.seuil} personnes, aucun taux n'est calculé — pas même pour information : un taux sur trois apprentis n'informe personne et <b>désigne</b> celui qui a échoué.</p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:end;margin-bottom:12px;">
+      <div><label class="field-label">Année</label><input class="txt" id="in-annee" type="number" min="2018" max="2100" value="${esc(indAnnee)}" style="width:120px;"></div>
+    </div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Indicateur</th><th style="text-align:center;">Valeur</th><th style="text-align:center;">Effectif</th><th>Source</th></tr></thead>
+      <tbody>${p.lignes.map((l) => `<tr>
+        <td>${esc(l.label)}</td>
+        <td style="text-align:center;font-weight:700;">${l.publiable ? `${l.valeur} %` : "<span class=\"muted\">—</span>"}</td>
+        <td style="text-align:center;color:var(--muted,#5B6B72);">${l.effectif ?? (l.millesime ? "millésime " + esc(l.millesime) : "—")}</td>
+        <td class="sub muted">${esc(l.sourceLabel)}${l.motif ? `<br><b>${esc(l.motif)}</b>` : ""}</td></tr>`).join("")}</tbody></table></div>
+    ${p.manquants.length ? `<div class="card card-pad" style="border-left:4px solid var(--warn,#C77700);margin-top:10px;">
+      <b>Non publiable en l'état :</b><ul style="margin:6px 0 0;padding-left:18px;">${p.manquants.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>` : ""}
+
+    ${isAdmin() ? `<div class="section-title">Indicateurs déclarés</div>
+    <p class="muted" style="margin-top:0;">L'insertion professionnelle et la valeur ajoutée viennent du dispositif national <b>InserJeunes</b> : elles ne se calculent pas ici et les estimer produirait un chiffre faux publié sous obligation légale.</p>
+    <div class="card card-pad">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div><label class="field-label">Insertion (%)</label><input class="txt" id="in-ins" type="number" min="0" max="100" step="0.1" style="width:120px;"></div>
+        <div><label class="field-label">Valeur ajoutée</label><input class="txt" id="in-va" type="number" step="0.1" style="width:120px;"></div>
+        <div><label class="field-label">Poursuite d'études (%)</label><input class="txt" id="in-po" type="number" min="0" max="100" step="0.1" style="width:140px;"></div>
+        <div><label class="field-label">Millésime</label><input class="txt" id="in-mil" placeholder="2025" style="width:110px;"></div>
+        <input class="txt" id="in-src" placeholder="Source de la poursuite d'études" style="max-width:220px;">
+        <button class="btn-primary btn-sm" id="in-save">Enregistrer</button><span class="sub" id="in-msg"></span>
+      </div>
+      <p class="hint muted">Un taux sans millésime ne veut rien dire : le lecteur ne peut ni le dater ni le vérifier.</p>
+    </div>` : ""}
+    <p class="sub muted" style="margin-top:12px;">${esc(p.reserve)}</p>`;
+
+  $("#in-campus")?.addEventListener("change", () => { indCampus = $("#in-campus").value; renderIndicateursPublies(); });
+  $("#in-annee").addEventListener("change", () => { indAnnee = $("#in-annee").value; renderIndicateursPublies(); });
+  $("#in-save")?.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.put(`/api/indicateurs/${indAnnee}`, { campusId: indCampus,
+      insertion: $("#in-ins").value || null, valeurAjoutee: $("#in-va").value || null,
+      poursuite: $("#in-po").value || null, millesime: $("#in-mil").value.trim(), sourcePoursuite: $("#in-src").value.trim() });
+    const m = $("#in-msg");
+    if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return; }
+    await renderIndicateursPublies();
+  }));
+}
+
+// ---------- Vue : Mobilité internationale ----------
+let mobCampus = "";
+async function renderMobilite() {
+  if (!mobCampus) mobCampus = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="mb-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${mobCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Chargement…</p>`;
+  const [ref, t, apprenants] = await Promise.all([
+    api.get("/api/mobilite/referentiels"),
+    api.get(`/api/mobilite?campusId=${mobCampus}`),
+    api.get(`/api/learners?campusId=${mobCampus}`),
+  ]);
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;">
+      <p class="muted" style="margin:0;">Pendant une mobilité, le contrat d'apprentissage est <b>mis en veille</b> (art. L. 6222-42) : suspendu, avec les obligations de l'employeur.
+      Ces périodes sont <b>neutralisées dans le calcul d'assiduité</b> — sans quoi six semaines à l'étranger passeraient pour six semaines d'absence.</p>
+    </div>
+    <div class="kpis">
+      <div class="k"><div class="v">${t.total}</div><div class="l">mobilités</div></div>
+      <div class="k"><div class="v">${t.enCours}</div><div class="l">en cours</div></div>
+      <div class="k"><div class="v">${t.joursCumules}</div><div class="l">jours cumulés</div></div>
+      <div class="k${t.sansConvention ? " k-bad" : ""}"><div class="v">${t.sansConvention}</div><div class="l">sans convention</div></div>
+    </div>
+    <div class="card"><div class="list">${(t.lignes || []).map((m) => `<div class="item">
+      <span class="pill ${m.enCours ? "doing" : m.etat === "terminee" ? "done" : ""}">${esc(m.etatLabel)}</span>
+      <div class="grow"><div class="ttl">${esc(m.apprenant || "")} <span class="muted" style="font-weight:400;">${esc(m.pays || "")} · ${esc(m.regimeLabel)}</span></div>
+        <div class="sub muted">${esc(m.dateDebut || "")} → ${esc(m.dateFin || "")} (${m.duree} j) · ${esc(m.structureAccueil || "")}
+        ${(m.alertes || []).map((a) => `<br><b style="color:${a.gravite === "bloquant" ? "var(--bad)" : "var(--warn,#C77700)"};">${esc(a.message)}</b>`).join("")}</div></div>
+      <button class="btn-ghost btn-sm btn-danger mb-del" data-id="${m.id}">✕</button></div>`).join("") || '<p class="muted" style="padding:10px;">Aucune mobilité enregistrée.</p>'}</div></div>
+
+    <div class="section-title">Déclarer une mobilité</div>
+    <div class="card card-pad">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div style="min-width:220px;"><label class="field-label">Apprenant</label><select class="txt" id="mb-app">${(apprenants || []).map((l) => `<option value="${l.id}">${esc(l.prenom)} ${esc(l.nom)}</option>`).join("")}</select></div>
+        <div style="min-width:170px;"><label class="field-label">Régime</label><select class="txt" id="mb-regime">${Object.entries(ref.regimes).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div>
+        <div><label class="field-label">Du</label><input class="txt" id="mb-du" type="date"></div>
+        <div><label class="field-label">Au</label><input class="txt" id="mb-au" type="date"></div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+        <input class="txt" id="mb-pays" placeholder="Pays d'accueil" style="max-width:180px;">
+        <input class="txt grow" id="mb-struct" placeholder="Structure d'accueil" style="min-width:200px;">
+        <input class="txt" id="mb-conv" placeholder="Référence de convention" style="max-width:200px;">
+        <input class="txt" id="mb-ref" placeholder="Référent au CFA" style="max-width:180px;">
+        <input class="txt" id="mb-couv" placeholder="Couverture sociale (hors UE)" style="max-width:220px;">
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+        <div style="min-width:170px;"><label class="field-label">État</label><select class="txt" id="mb-etat">${Object.entries(ref.etats).map(([k, v]) => `<option value="${k}" ${k === "conventionnee" ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+        <label class="sub"><input type="checkbox" id="mb-veille" checked> contrat mis en veille</label>
+        <button class="btn-primary btn-sm" id="mb-add">Enregistrer</button><span class="sub" id="mb-msg"></span>
+      </div>
+      <p class="hint muted">Hors Union européenne, la mise en veille est la règle et la <b>couverture sociale ne découle pas du contrat français</b> : elle se vérifie séparément.</p>
+    </div>`;
+
+  $("#mb-campus")?.addEventListener("change", () => { mobCampus = $("#mb-campus").value; renderMobilite(); });
+  $("#mb-add").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post(`/api/learners/${$("#mb-app").value}/mobilites`, {
+      regime: $("#mb-regime").value, pays: $("#mb-pays").value.trim(), structureAccueil: $("#mb-struct").value.trim(),
+      dateDebut: $("#mb-du").value, dateFin: $("#mb-au").value, etat: $("#mb-etat").value,
+      convention: $("#mb-conv").value.trim(), referentCfa: $("#mb-ref").value.trim(),
+      couvertureSociale: $("#mb-couv").value.trim(), miseEnVeille: $("#mb-veille").checked,
+    });
+    const m = $("#mb-msg");
+    if (r?.error) { m.textContent = r.error; m.style.color = "var(--bad)"; return; }
+    if (r.warnings?.length) { m.textContent = r.warnings.join(" · "); m.style.color = "var(--warn,#C77700)"; }
+    await renderMobilite();
+  });
+  $$(".mb-del").forEach((b) => b.addEventListener("click", (ev) => guard(ev.currentTarget, async () => {
+    if (!confirm("Supprimer cette mobilité ? Les périodes cesseront d'être neutralisées dans l'assiduité.")) return;
+    await api.del(`/api/mobilites/${b.dataset.id}`); await renderMobilite();
+  })));
 }
 
 // ---------- Vue : Licence & abonnement ----------
