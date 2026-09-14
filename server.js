@@ -38,6 +38,7 @@ import * as signature from "./lib/signature.js";
 import * as taxe from "./lib/taxe.js";
 import * as indicateurs from "./lib/indicateurs.js";
 import * as mobilite from "./lib/mobilite.js";
+import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -5211,6 +5212,41 @@ app.delete("/api/mobilites/:rid", requireAuth, (req, res) => {
   store.deleteMobilite(req.params.rid);
   logAudit(req, "delete", "mobilite", `${l.prenom} ${l.nom}`);
   res.json({ ok: true });
+});
+
+// ===== Contrôle de mise en service =====
+// Chaque manque est relié à CE QU'IL EMPÊCHE : « numéro de déclaration absent »
+// n'appelle aucune action, « sans lui le BPF n'est pas délivrable » en appelle
+// une. Le contrôle ne dit jamais « conforme » — il dit ce qui est prêt.
+app.get("/api/demarrage", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const campus = store.listCampuses().find((c) => c.id === campusId) || {};
+  const settings = store.getSettings();
+  const jour = aujourdhui();
+  const campagneTaxe = store.listTaxeCampagnes({ campusId }).find((x) => x.annee === taxe.CALENDRIER_2026.annee);
+  const etatTaxe = taxe.etatCampagne({
+    habilitation: campagneTaxe?.habilitation || {}, versements: campagneTaxe?.versements || [], aujourdhui: jour,
+  });
+  // La date de dernière sauvegarde : sans elle on ne peut pas dire si le
+  // dispositif tourne encore, et c'est la panne dont on ne revient pas.
+  const sauvegardes = store.listBackups ? store.listBackups() : [];
+  const derniere = sauvegardes[0]?.date || sauvegardes[0]?.name || null;
+
+  res.json(demarrage.controler({
+    campus,
+    settings: { ...settings, hours: store.getCampusHours ? store.getCampusHours(campusId) : null },
+    curricula: store.listCurricula(),
+    classes: store.listClasses({ campusId }),
+    teachers: store.listTeachers({ campusId }),
+    users: userstore.listUsers(),
+    licence: licenceState(licenceEffective()),
+    taxe: etatTaxe,
+    qualiopi: campus.qualiopi || null,
+    reclamationsOuvertes: store.listReclamations({ campusId }).length,
+    sauvegardeLe: derniere,
+    aujourdhui: jour,
+  }));
 });
 
 // ===== Licence de l'instance =====

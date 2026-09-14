@@ -1530,6 +1530,48 @@ test("MOBILITÉ : six semaines à l'étranger ne sont pas six semaines d'absence
   assert.equal(sien.risque.aTraiter, false, "partir à l'étranger n'est pas décrocher");
 });
 
+test("contrôle de mise en service : les manques sont nommés avec ce qu'ils empêchent", async () => {
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  // Un campus tout neuf : rien n'est renseigné, tout doit remonter.
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Neuf" } })).json();
+
+  const r = await (await req(`/api/demarrage?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  assert.equal(r.exploitable, false, "un campus sans rien n'est pas exploitable");
+  assert.ok(r.bloquants >= 3);
+
+  const cles = r.points.map((p) => p.cle);
+  for (const attendu of ["siret", "nda", "dirigeant"]) {
+    assert.ok(cles.includes(attendu), `${attendu} non détecté`);
+  }
+  // Chaque point dit ce qu'il empêche ET où corriger : un diagnostic sans
+  // chemin d'action se transforme en liste ignorée.
+  for (const p of r.points) {
+    assert.ok(p.quoi && p.quoi.length > 5, `« quoi » vide sur ${p.cle}`);
+    assert.ok(p.empeche && p.empeche.length > 10, `« empêche » vide sur ${p.cle}`);
+    assert.ok(p.ou, `« où corriger » absent sur ${p.cle}`);
+  }
+  const nda = r.points.find((p) => p.cle === "nda");
+  assert.match(nda.empeche, /BPF/);
+  assert.match(nda.empeche, /certificat de réalisation/);
+
+  // Les bloquants passent devant.
+  assert.equal(r.points[0].niveau, "bloquant");
+  // On ne dit jamais « conforme ».
+  assert.match(r.reserve, /ne vaut pas audit/);
+
+  // Renseigner l'identité fait disparaître les points correspondants.
+  await req(`/api/campuses/${campus.id}`, { method: "PATCH", ...opts, json: {
+    siret: "73282932000074", numeroDeclaration: "11 75 12345 75", dirigeant: "Mme Martin", address: "1 rue X" } });
+  const apres = await (await req(`/api/demarrage?campusId=${campus.id}`, { cookie: a.cookie })).json();
+  const clesApres = apres.points.map((p) => p.cle);
+  for (const parti of ["siret", "nda", "dirigeant"]) {
+    assert.equal(clesApres.includes(parti), false, `${parti} aurait dû disparaître`);
+  }
+  // Sans campusId : 400, jamais de requête pendante.
+  assert.equal((await req("/api/demarrage", { cookie: a.cookie })).status, 400);
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");

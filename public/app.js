@@ -343,6 +343,7 @@ async function registerPasskey(deviceName) {
 const NAV_GROUPS = ["Pilotage", "Décisions", "Réseau", "Enseignement", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
 const NAV = [
   { id: "accueil", label: "Accueil", icon: I.home, group: "Pilotage" },
+  { id: "demarrage", label: "Prêt à exploiter ?", icon: I.shield, admin: true, group: "Pilotage" },
   { id: "heatmap", label: "Heatmap réseau", icon: I.net, admin: true, group: "Pilotage" },
   // Nav #3 : « Notifications » fusionné dans « Priorités & alertes » (une seule file
   // d'action au lieu de 3 vues redondantes Accueil/Notifications/Priorités).
@@ -466,7 +467,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -6071,6 +6072,48 @@ async function renderMobilite() {
     if (!confirm("Supprimer cette mobilité ? Les périodes cesseront d'être neutralisées dans l'assiduité.")) return;
     await api.del(`/api/mobilites/${b.dataset.id}`); await renderMobilite();
   })));
+}
+
+// ---------- Vue : Prêt à exploiter ? ----------
+let demCampus = "";
+async function renderDemarrage() {
+  if (!demCampus) demCampus = state.campuses[0]?.id || "";
+  $("#topbar-actions").innerHTML = isAdmin() && state.campuses.length > 1
+    ? `<select class="txt" id="dm-campus" style="max-width:220px;">${state.campuses.map((c) => `<option value="${c.id}" ${demCampus === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : "";
+  const view = $("#view");
+  view.innerHTML = `<p class="muted">Contrôle en cours…</p>`;
+  const r = await api.get(`/api/demarrage?campusId=${demCampus}`);
+  const teinte = { bloquant: "var(--bad)", important: "var(--warn,#C77700)", conseille: "var(--line,#e3ded3)" };
+  const pastille = { bloquant: "overdue", important: "warn", conseille: "" };
+
+  // Regroupement par écran : c'est ainsi qu'on corrige, pas point par point.
+  const groupes = new Map();
+  for (const p of r.points) {
+    if (!groupes.has(p.ou)) groupes.set(p.ou, []);
+    groupes.get(p.ou).push(p);
+  }
+
+  view.innerHTML = `
+    <div class="card card-pad" style="margin-top:0;border-left:4px solid ${r.exploitable ? "var(--good)" : "var(--bad)"};">
+      <div class="ttl" style="font-size:15px;">${r.exploitable
+        ? "Aucun obstacle technique connu ne s'oppose à l'exploitation."
+        : `${r.bloquants} point(s) bloquant(s) avant de pouvoir exploiter.`}</div>
+      <p class="muted" style="margin:6px 0 0;">${esc(r.reserve)}</p>
+    </div>
+    <div class="kpis">
+      <div class="k${r.bloquants ? " k-bad" : ""}"><div class="v">${r.bloquants}</div><div class="l">bloquants</div></div>
+      <div class="k"><div class="v">${r.importants}</div><div class="l">importants</div></div>
+      <div class="k"><div class="v">${r.conseilles}</div><div class="l">conseillés</div></div>
+    </div>
+    ${[...groupes].map(([ecran, points]) => `
+      <div class="section-title">${esc(ecran)}</div>
+      <div class="card"><div class="list">${points.map((p) => `<div class="item" style="border-left:3px solid ${teinte[p.niveau]};">
+        <span class="pill ${pastille[p.niveau]}">${p.niveau}</span>
+        <div class="grow"><div class="ttl">${esc(p.quoi)}</div>
+          <div class="sub muted">Sans cela : <b>${esc(p.empeche)}</b></div></div></div>`).join("")}</div></div>`).join("")
+      || '<div class="card card-pad"><p class="muted" style="margin:0;">Rien à signaler sur ce campus.</p></div>'}`;
+
+  $("#dm-campus")?.addEventListener("change", () => { demCampus = $("#dm-campus").value; renderDemarrage(); });
 }
 
 // ---------- Vue : Licence & abonnement ----------
