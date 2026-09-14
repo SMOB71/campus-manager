@@ -223,3 +223,34 @@ test("récurrence : saute vacances, fériés et stage de la classe", () => {
   assert.ok(dates.includes("2026-11-09"), "le stage vise la classe c2, pas c1");
   assert.ok(out.every((s) => s.start === "09:00"), "les autres champs sont conservés");
 });
+
+// --- Mobilité internationale et planning ---
+// Les mobilités étaient neutralisées en assiduité mais invisibles au planning :
+// on pouvait poser un cours devant une classe partie à l'étranger.
+test("mobilité : un partant isolé avertit, la moitié du groupe bloque", () => {
+  const s = { id: "s1", date: "2027-03-10", start: "09:00", end: "11:00", classId: "k1", kind: "cours" };
+  const mob = [{ from: "2027-03-01", to: "2027-03-31", learnerId: "l1", pays: "Espagne", motif: "mobilité — Espagne" }];
+
+  // 1 sur 20 : on le signale sans bloquer, et on rappelle la mise en veille.
+  const un = conflictsFor(s, [], { mobilites: mob, effectifClasse: 20 });
+  const w = un.find((c) => c.code === "mobilite");
+  assert.ok(w, "la mobilité doit être signalée");
+  assert.equal(w.level, "warn");
+  assert.match(w.message, /L\. 6222-42/);
+  assert.match(w.message, /Espagne/);
+
+  // 2 sur 4 : la classe n'est plus là, le cours n'a pas de sens.
+  const moitie = conflictsFor(s, [], {
+    mobilites: [...mob, { from: "2027-03-01", to: "2027-03-31", learnerId: "l2", pays: "Espagne", motif: "mobilité — Espagne" }],
+    effectifClasse: 4,
+  });
+  const b = moitie.find((c) => c.code === "mobilite");
+  assert.equal(b.level, "block-forcable");
+  assert.match(b.message, /2 inscrit\(s\) sur 4/);
+
+  // Hors période, rien.
+  const hors = conflictsFor({ ...s, date: "2027-05-10" }, [], { mobilites: mob, effectifClasse: 20 });
+  assert.equal(hors.some((c) => c.code === "mobilite"), false);
+  // Et sans contexte de mobilité, le comportement est inchangé.
+  assert.equal(conflictsFor(s, [], {}).some((c) => c.code === "mobilite"), false);
+});

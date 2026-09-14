@@ -49,6 +49,7 @@ import { generateToken, hashToken, tokenMatches, expiryFor, accessState, makeRat
 import { ageAt as ageAtDate } from "./lib/contracts.js";
 import { RETENTION_POLICY, RETENTION_KEYS, policyView, cutoffDate, retentionMonths } from "./lib/retention.js";
 import { conflictsFor, hasHardBlock, coverage, serviceOf, equity, expandWeekly, hoursOf, SERVICE_LIMITS } from "./lib/schedule.js";
+import { RYTHMES, validateRythme, genererRythme, versPeriodes, verifierVolume, resume as resumeRythme } from "./lib/alternance.js";
 import { generateWeek, DEFAULT_OPTIONS as GEN_DEFAULTS } from "./lib/generator.js";
 import { buildScheduleHtml, buildIcs, buildScheduleEmail } from "./lib/scheduleview.js";
 import * as store from "./lib/store.js";
@@ -3568,7 +3569,27 @@ function conflictCtx(s) {
     naissances: s.classId ? naissancesDeLaClasse(s.classId, s.campusId) : [],
     naissanceIntervenant: s.teacherId ? (store.getTeacher(s.teacherId)?.dateNaissance || null) : null,
     derogation: s.classId ? (store.getClass(s.classId)?.derogationDuree || null) : null,
+    // Mobilités des inscrits de la classe, pour que le planning cesse de poser
+    // des cours devant un groupe parti à l'étranger.
+    ...(s.classId ? mobilitesDeLaClasse(s.classId) : { mobilites: [], effectifClasse: 0 }),
   };
+}
+
+// Périodes de mobilité des inscrits ACTIFS d'une classe, avec l'effectif : sans
+// lui on ne peut pas distinguer « un apprenti sur vingt » de « toute la classe ».
+function mobilitesDeLaClasse(classId) {
+  const ids = new Set(store.listEnrollments({ classId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId));
+  if (!ids.size) return { mobilites: [], effectifClasse: 0 };
+  // Une seule lecture, filtrée ensuite : interroger le store apprenant par
+  // apprenant relirait toute la collection autant de fois qu'il y a d'inscrits,
+  // et conflictCtx est appelé POUR CHAQUE SÉANCE d'un planning appliqué.
+  const miennes = store.listMobilites().filter((m) => ids.has(m.learnerId));
+  // periodesNeutralisees FILTRE (une mobilité au stade « projet » n'en produit
+  // aucune) : zipper sa sortie sur la liste d'entrée par l'indice attribuerait
+  // les périodes au mauvais apprenant. On passe donc mobilité par mobilité.
+  const mobilites = miennes.flatMap((m) =>
+    mobilite.periodesNeutralisees([m]).map((p) => ({ ...p, learnerId: m.learnerId, pays: m.pays || null })));
+  return { mobilites, effectifClasse: ids.size };
 }
 
 // Dates de naissance des inscrits ACTIFS d'une classe. La règle applicable est
@@ -6204,6 +6225,112 @@ app.post("/api/schedule/apply", requireAuth, requireAdmin, (req, res) => {
   const made = sessionstore.addSessions(acceptees);
   logAudit(req, "create", "session", `planning appliqué : ${made.length} séances${refusees.length ? `, ${refusees.length} refusée(s)` : ""}`);
   res.json({ created: made.length, refusees: refusees.slice(0, 50), refuseesTotal: refusees.length });
+});
+
+// --- Rythme d'alternance ---
+// Le calendrier savait déjà porter des semaines en entreprise, par classe, et la
+// série hebdomadaire les sautait. Ce qui manquait : les POSER sans les saisir une
+// par une, et surtout VÉRIFIER que le rythme choisi délivre le volume du
+// référentiel. Un rythme trop léger ne se découvre autrement qu'en juin, quand il
+// n'y a plus de semaines pour rattraper.
+function rythmeContexte(req, k) {
+  const cur = store.getCurriculum(k.curriculumId);
+  const periods = store.listPeriods({ campusId: k.campusId });
+  return {
+    cur,
+    // Les FERMETURES du centre ne sont pas des semaines en entreprise décidées :
+    // ce sont des semaines où le centre ne peut pas accueillir. Une semaine de
+    // centre qui y tombe est reportée, pas perdue.
+    fermetures: periods.filter((p) => ["vacances", "ferie"].includes(p.kind) && !p.classId),
+  };
+}
+function rythmeCalcul(k, body, { cur, fermetures }) {
+  const semaines = genererRythme({
+    debut: body.debut, fin: body.fin,
+    centre: Number(body.centre), entreprise: Number(body.entreprise),
+    classId: k.id, commencePar: body.commencePar === "entreprise" ? "entreprise" : "centre",
+    fermetures,
+  });
+  // Le volume requis vient du référentiel, pas d'une saisie : c'est lui qui fait
+  // foi, et le comparer à un chiffre tapé à la main n'aurait aucune valeur.
+  const heuresParSemaine = body.heuresParSemaine != null && body.heuresParSemaine !== ""
+    ? Number(body.heuresParSemaine)
+    : (cur ? store.curriculumWeekly(cur, k.year) : 0);
+  const volumeRequis = body.volumeRequis != null && body.volumeRequis !== ""
+    ? Number(body.volumeRequis)
+    : (cur ? store.curriculumHours(cur, 36) : null);
+  return {
+    semaines,
+    periodes: versPeriodes(semaines, { label: body.label || `Alternance — ${k.name}` }),
+    volume: verifierVolume({ semaines, heuresParSemaine, volumeRequis }),
+    resume: resumeRythme(semaines),
+    heuresParSemaine, volumeRequis,
+  };
+}
+
+app.get("/api/schedule/rythme/modeles", requireAuth, (_req, res) => {
+  res.json(Object.entries(RYTHMES).map(([cle, r]) => ({ cle, ...r })));
+});
+
+app.post("/api/schedule/rythme/preview", requireAuth, requireAdmin, (req, res) => {
+  const k = store.getClass(req.body?.classId);
+  if (!k) return res.status(404).json({ error: "classe introuvable" });
+  if (!requireCampus(req, res, k.campusId)) return;
+  const v = validateRythme({ ...req.body, classId: k.id });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const calc = rythmeCalcul(k, req.body || {}, rythmeContexte(req, k));
+  res.json({ classId: k.id, className: k.name, ...calc });
+});
+
+app.post("/api/schedule/rythme/apply", requireAuth, requireAdmin, (req, res) => {
+  const k = store.getClass(req.body?.classId);
+  if (!k) return res.status(404).json({ error: "classe introuvable" });
+  if (!requireCampus(req, res, k.campusId)) return;
+  const v = validateRythme({ ...req.body, classId: k.id });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const calc = rythmeCalcul(k, req.body || {}, rythmeContexte(req, k));
+
+  // Des cours déjà posés pendant ce qui devient une semaine en entreprise : on ne
+  // les supprime pas — détruire un planning sur un changement de paramètre serait
+  // pire que le problème — mais on refuse d'écrire un calendrier qui les
+  // contredit sans que personne ne l'ait vu.
+  const heurtees = sessionstore.listSessions({ classId: k.id })
+    .filter((s) => s.status !== "cancelled"
+      && calc.periodes.some((p) => s.date >= p.from && s.date <= p.to));
+  if (heurtees.length && !req.body.confirmer) {
+    return res.status(409).json({
+      error: `${heurtees.length} séance(s) déjà planifiée(s) tombent dans les semaines en entreprise de ce rythme.`,
+      conflits: heurtees.slice(0, 50).map((s) => ({ id: s.id, date: s.date, start: s.start, end: s.end })),
+      conflitsTotal: heurtees.length,
+      indice: "Les déplacer ou les annuler, puis réappliquer ; ou confirmer pour poser le rythme malgré tout — les séances resteront signalées en conflit de calendrier.",
+    });
+  }
+
+  // Remplacement des seules périodes que ce rythme avait posées.
+  const anciennes = store.listPeriods({ campusId: k.campusId })
+    .filter((p) => p.source === "rythme" && p.classId === k.id);
+  for (const p of anciennes) store.deletePeriod(p.id);
+  const creees = calc.periodes.map((p) => store.addPeriod({ ...p, campusId: k.campusId, source: "rythme" }));
+
+  // LE BRANCHEMENT QUI REND LE RESTE JUSTE. `weeksAtSchool` est ce que lisent le
+  // générateur et le contrôle de couverture pour convertir une maquette
+  // hebdomadaire en volume annuel. Tant qu'il valait une estimation (18 semaines
+  // pour toute alternance), la couverture et le générateur travaillaient sur un
+  // chiffre inventé. Ils travaillent maintenant sur le rythme réellement posé.
+  store.updateClass(k.id, {
+    modalite: k.modalite === "initial" ? "alternance" : k.modalite,
+    rythme: `${req.body.centre} sem. centre / ${req.body.entreprise} sem. entreprise`,
+    weeksAtSchool: calc.volume.semainesCentre,
+  });
+
+  logAudit(req, "create", "period",
+    `rythme d'alternance ${k.name} : ${creees.length} période(s), ${calc.volume.semainesCentre} semaines en centre`);
+  res.json({
+    classId: k.id, remplacees: anciennes.length, creees: creees.length,
+    weeksAtSchool: calc.volume.semainesCentre,
+    volume: calc.volume, resume: calc.resume,
+    seancesEnConflit: heurtees.length,
+  });
 });
 
 // --- Pilotage : couverture, service, coût ---

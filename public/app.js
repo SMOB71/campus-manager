@@ -6645,7 +6645,7 @@ async function renderPlanning() {
   if (planState.teacherId) q.set("teacherId", planState.teacherId);
   const sessions = await api.get(`/api/sessions?${q}`);
 
-  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="pl-gen">✨ Générer</button><button class="btn-primary btn-sm" id="pl-add">+ Séance</button>`;
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="pl-rythme">Rythme d'alternance</button><button class="btn-ghost btn-sm" id="pl-gen">✨ Générer</button><button class="btn-primary btn-sm" id="pl-add">+ Séance</button>`;
   const mine = classes.filter((k) => !planState.campusId || k.campusId === planState.campusId);
 
   $("#view").innerHTML = `
@@ -6679,6 +6679,7 @@ async function renderPlanning() {
   }
   $("#pl-add").onclick = () => openSessionForm();
   $("#pl-gen").onclick = () => openGenerator();
+  $("#pl-rythme").onclick = () => openRythme();
   $("#pl-print").onclick = () => window.open(`/api/schedule/print?${filterQS()}`, "_blank");
   $("#pl-ics").onclick = () => { location.href = `/api/schedule/ics?${filterQS()}`; };
   $("#pl-send").onclick = () => openSendForm(teachers, mine);
@@ -6774,6 +6775,81 @@ async function openSessionForm(s) {
 }
 
 // ---------- Générateur ----------
+// --- Rythme d'alternance ---
+// Poser un rythme à la main, c'est saisir une trentaine de périodes par classe.
+// L'écran les génère, et surtout DIT AVANT DE PLANIFIER si le rythme permet
+// d'atteindre le volume du référentiel — le découvrir en juin ne sert à rien.
+async function openRythme() {
+  const [classes, modeles] = await Promise.all([
+    api.get("/api/classes"), api.get("/api/schedule/rythme/modeles"),
+  ]);
+  const mine = classes.filter((k) => !planState.campusId || k.campusId === planState.campusId);
+  if (!mine.length) { alert("Aucune classe sur ce campus."); return; }
+
+  openModal("Rythme d'alternance", `
+    <p class="muted" style="font-size:13.5px;">Les semaines en entreprise deviennent des périodes du calendrier : la génération d'emploi du temps les saute automatiquement. <b>Un apprenti n'a pas de vacances scolaires</b> — il est salarié, et pendant les fermetures du centre il est en entreprise. Une semaine de cours qui tombe sur une fermeture est <b>reportée</b>, pas perdue.</p>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Classe</label>
+        <select class="txt" id="ry-class">${mine.map((k) => `<option value="${k.id}" ${planState.classId === k.id ? "selected" : ""}>${esc(k.name)}${k.rythme ? ` — ${esc(k.rythme)}` : ""}</option>`).join("")}</select></div>
+      <div><label class="field-label">Début de l'année</label><input class="txt" id="ry-debut" type="date" value="${planState.week}"></div>
+      <div><label class="field-label">Fin de l'année</label><input class="txt" id="ry-fin" type="date"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Rythme</label>
+        <select class="txt" id="ry-modele">${modeles.map((m) => `<option value="${m.cle}" ${m.cle === "1-3" ? "selected" : ""}>${esc(m.label)}</option>`).join("")}<option value="">Personnalisé…</option></select></div>
+      <div><label class="field-label">Semaines en centre</label><input class="txt" id="ry-centre" type="number" value="1" min="1" max="11"></div>
+      <div><label class="field-label">Semaines en entreprise</label><input class="txt" id="ry-entreprise" type="number" value="3" min="0" max="11"></div>
+      <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="ry-ent-first"> L'année commence par une période en entreprise</label></div>
+    </div>
+    <div id="ry-out" style="margin-top:12px;"></div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-ghost" id="ry-prev">Prévisualiser</button></div>`);
+
+  const lire = () => ({
+    classId: $("#ry-class").value,
+    debut: $("#ry-debut").value, fin: $("#ry-fin").value,
+    centre: +$("#ry-centre").value, entreprise: +$("#ry-entreprise").value,
+    commencePar: $("#ry-ent-first").checked ? "entreprise" : "centre",
+  });
+  $("#ry-modele").onchange = (e) => {
+    const m = modeles.find((x) => x.cle === e.target.value);
+    if (!m) return;
+    $("#ry-centre").value = m.centre; $("#ry-entreprise").value = m.entreprise;
+  };
+
+  const poser = async (confirmer) => {
+    const r = await api.post("/api/schedule/rythme/apply", { ...lire(), confirmer });
+    if (r?.error) {
+      // Des cours déjà posés dans ce qui devient une semaine en entreprise : on
+      // les montre au lieu d'écraser silencieusement un planning existant.
+      $("#ry-out").insertAdjacentHTML("beforeend", `<div class="item" style="border-left:3px solid #8A4B4B;margin-top:10px;"><div class="grow">
+        <b class="neg">${esc(r.error)}</b>${r.indice ? `<br><span class="muted">${esc(r.indice)}</span>` : ""}
+        ${(r.conflits || []).slice(0, 10).map((c) => `<br><span class="muted" style="font-size:12px;">${esc(frDate(c.date))} ${esc(c.start)}–${esc(c.end)}</span>`).join("")}
+        ${r.conflitsTotal > 10 ? `<br><span class="muted" style="font-size:12px;">… et ${r.conflitsTotal - 10} autre(s)</span>` : ""}
+        ${r.conflits ? '<div class="actions" style="margin-top:8px;"><button class="btn-ghost btn-sm" id="ry-force">Poser le rythme malgré tout</button></div>' : ""}
+      </div></div>`);
+      if ($("#ry-force")) $("#ry-force").onclick = () => poser(true);
+      return;
+    }
+    alert(`Rythme posé : ${r.creees} période(s) en entreprise, ${r.weeksAtSchool} semaines de cours dans l'année.`
+      + (r.remplacees ? ` ${r.remplacees} période(s) du rythme précédent remplacée(s).` : ""));
+    closeModals(); renderPlanning();
+  };
+
+  $("#ry-prev").onclick = async () => {
+    $("#ry-out").innerHTML = '<p class="muted">Calcul…</p>';
+    const r = await api.post("/api/schedule/rythme/preview", lire());
+    if (r?.error) { $("#ry-out").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    const v = r.volume;
+    $("#ry-out").innerHTML = `
+      <div class="kpis">${fkpi(v.semainesCentre, "semaines en centre")}${fkpi(v.semainesEntreprise, "semaines en entreprise")}
+        ${fkpi(v.heuresDisponibles + " h", "volume délivrable", v.suffisant === false ? "bad" : v.suffisant ? "good" : "")}
+        ${v.volumeRequis ? fkpi(v.volumeRequis + " h", "référentiel") : ""}</div>
+      <div class="item" style="border-left:3px solid ${v.suffisant === false ? "#8A4B4B" : v.suffisant ? "#4B7A5A" : "#8A7A4B"};margin-top:10px;">
+        <div class="grow">${esc(v.message)}${v.semainesReportees ? `<br><span class="muted" style="font-size:12px;">${v.semainesReportees} semaine(s) de cours reportée(s) pour cause de fermeture du centre.</span>` : ""}</div></div>
+      <p class="hint muted" style="margin-top:8px;">${esc(r.resume.note)}</p>
+      <div class="actions" style="margin-top:10px;"><button class="btn-primary" id="ry-apply">Poser ${r.periodes.length} période(s) sur le calendrier</button></div>`;
+    $("#ry-apply").onclick = () => poser(false);
+  };
+}
+
 async function openGenerator() {
   const classes = (await api.get("/api/classes")).filter((k) => !planState.campusId || k.campusId === planState.campusId);
   openModal("Générer l'emploi du temps", `
@@ -6815,7 +6891,16 @@ async function openGenerator() {
       const until = $("#gn-until").value;
       if (!until) { alert("Indique jusqu'à quelle date dérouler la semaine type."); return; }
       const a = await api.post("/api/schedule/apply", { week: r.week, weekOf: r.weekOf, until, campusId: planState.campusId });
-      alert(`${a.created} séances créées.`);
+      // La garde des durées légales répond 409 sans rien créer : l'afficher comme
+      // « undefined séances créées » laisserait croire à un simple bogue et le
+      // refus passerait inaperçu.
+      if (a?.error) {
+        $("#gn-out").insertAdjacentHTML("beforeend",
+          `<div class="item" style="border-left:3px solid #8A4B4B;margin-top:10px;"><div class="grow"><b class="neg">${esc(a.error)}</b>
+          ${(a.illegales || a.refusees || []).slice(0, 10).map((x) => `<br><span class="muted" style="font-size:12px;">${esc(frDate(x.date))} ${esc(x.start)}–${esc(x.end)} — ${esc((x.motifs || []).join(" ; "))}</span>`).join("")}</div></div>`);
+        return;
+      }
+      alert(`${a.created} séances créées.${a.refuseesTotal ? ` ${a.refuseesTotal} refusée(s) pour conflit.` : ""}`);
       closeModals(); renderPlanning();
     };
   };
