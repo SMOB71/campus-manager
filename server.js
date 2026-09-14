@@ -3482,7 +3482,10 @@ function planifierSauvegardes() {
   }, { timezone: "Europe/Paris" });
   console.log(`[archive] sauvegarde planifiee (${expr}, Europe/Paris) -> ${c.dossier}${c.distant.actif ? ` + ${c.distant.hote}:${c.distant.chemin}` : ""}`);
 }
-planifierSauvegardes();
+// NE PAS planifier ici : les réglages vivent dans le magasin, qui n'est chargé qu'à la
+// fin du fichier (store.init). Programmer maintenant, c'est lire les VALEURS PAR DÉFAUT —
+// donc ignorer l'heure choisie, et planifier une sauvegarde que l'utilisateur avait
+// désactivée. La planification se fait après l'initialisation, plus bas.
 
 // SURVEILLANCE DE L'ABSENCE. Si la sauvegarde ne part plus — réglage désactivé par
 // mégarde, conteneur recréé, processus mort —, aucune alerte d'échec n'arrive justement
@@ -6396,6 +6399,8 @@ try {
   const mode = await store.init();
   const modeP = await sessionstore.init();
   console.log("persistance :", mode.mode === "postgres" ? `PostgreSQL (${mode.collections} collections + planning)` : "fichier JSON");
+  // Réglages disponibles seulement maintenant : c'est ici, et pas avant, qu'on planifie.
+  planifierSauvegardes();
   if (mode.mode !== modeP.mode) console.warn("ATTENTION : magasin principal et planning sur des persistances différentes");
 } catch (e) {
   console.error("PERSISTANCE INDISPONIBLE :", e.message);
