@@ -1572,6 +1572,62 @@ test("contrôle de mise en service : les manques sont nommés avec ce qu'ils emp
   assert.equal((await req("/api/demarrage", { cookie: a.cookie })).status, 400);
 });
 
+test("PLANNING GÉNÉRÉ : le contrôle légal ne peut plus être contourné en masse", async () => {
+  // La route d'application écrivait directement en base, sans aucun contrôle :
+  // toutes les vérifications posées sur la création unitaire — dont les durées
+  // légales — étaient contournées. Un planning appliqué pouvait écrire des
+  // centaines de séances que la création une par une aurait refusées.
+  const a = await login("admin@test.co", "pw12345678");
+  const opts = { cookie: a.cookie, csrf: a.csrf };
+  const campus = await (await req("/api/campuses", { method: "POST", ...opts, json: { name: "Campus Genere" } })).json();
+  const cur = await (await req("/api/curricula", { method: "POST", ...opts, json: { name: "C", modules: [{ code: "U1", label: "M", coefficient: 1 }] } })).json();
+  const classe = await (await req("/api/classes", { method: "POST", ...opts, json: { campusId: campus.id, name: "G1", curriculumId: cur.id } })).json();
+  // Un mineur dans la classe : la journée est plafonnée à 8 h.
+  const l = await (await req("/api/learners", { method: "POST", ...opts, json: { campusId: campus.id, nom: "Jeune", prenom: "Mineur", dateNaissance: "2010-06-01" } })).json();
+  await req(`/api/learners/${l.id}/enrollments`, { method: "POST", ...opts, json: { schoolYear: "2026-2027", classId: classe.id } });
+  const jours = ["lun", "mar", "mer", "jeu", "ven"];
+  await req(`/api/campuses/${campus.id}/hours`, { method: "PUT", ...opts,
+    json: { hours: Object.fromEntries(jours.map((j) => [j, [["07:00", "22:00"]]])) } });
+
+  // Une semaine type de 10 h le lundi : illégale pour un mineur.
+  const semaine = [
+    { day: "lun", classId: classe.id, moduleId: cur.modules[0].id, start: "08:00", end: "13:00" },
+    { day: "lun", classId: classe.id, moduleId: cur.modules[0].id, start: "13:30", end: "18:30" },
+  ];
+  const r = await req("/api/schedule/apply", { method: "POST", ...opts, json: {
+    campusId: campus.id, week: semaine, weekOf: "2027-01-11", until: "2027-01-17" } });
+  assert.equal(r.status, 409, "un planning illégal ne doit pas s'appliquer");
+  const corps = await r.json();
+  assert.match(corps.error, /durée légale du travail/);
+  assert.ok(corps.illegales.length >= 1);
+  assert.ok(corps.illegales[0].motifs.some((m) => /art\. L\. /.test(m)), "le motif cite l'article");
+
+  // Et RIEN n'a été écrit : le refus est global, pas partiel.
+  const apres = await (await req(`/api/sessions?campusId=${campus.id}&from=2027-01-11&to=2027-01-17`, { cookie: a.cookie })).json();
+  assert.equal(apres.length, 0, "aucune séance ne doit avoir été créée");
+
+  // La même semaine ramenée à 8 h passe.
+  const legale = [
+    { day: "lun", classId: classe.id, moduleId: cur.modules[0].id, start: "08:00", end: "12:00" },
+    { day: "lun", classId: classe.id, moduleId: cur.modules[0].id, start: "12:30", end: "16:30" },
+  ];
+  const ok = await req("/api/schedule/apply", { method: "POST", ...opts, json: {
+    campusId: campus.id, week: legale, weekOf: "2027-01-11", until: "2027-01-17" } });
+  // Le corps ne se lit QU'UNE FOIS : le passer en message d'assertion le
+  // consomme, même quand l'assertion réussit.
+  const corpsOk = await ok.json();
+  assert.equal(ok.status, 200, JSON.stringify(corpsOk));
+  assert.ok(corpsOk.created >= 2, JSON.stringify(corpsOk));
+
+  // Réappliquer la MÊME semaine doit être refusé : la salle et la classe sont
+  // déjà occupées. Sans contrôle contre l'existant, on empilait les doublons.
+  const doublon = await req("/api/schedule/apply", { method: "POST", ...opts, json: {
+    campusId: campus.id, week: legale, weekOf: "2027-01-11", until: "2027-01-17" } });
+  const cd = await doublon.json();
+  const cree = doublon.status === 200 ? cd.created : 0;
+  assert.equal(cree, 0, "aucune séance en doublon ne doit être créée");
+});
+
 test("déclarations : réservées aux administrateurs", async () => {
   const d = await login("dir@test.co", "pw12345678");
   assert.equal(d.status, 200, "le compte directeur doit être actif ici — sinon ce test ne teste rien");

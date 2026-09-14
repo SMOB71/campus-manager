@@ -6129,6 +6129,12 @@ app.post("/api/schedule/generate", requireAuth, requireAdmin, (req, res) => {
 
   const out = generateWeek({
     classes, curricula: store.listCurricula(),
+    // Le générateur recevait la liste des classes et des professeurs, mais AUCUNE
+    // séance existante : il planifiait dans le vide et pouvait reposer une salle
+    // déjà occupée. On lui donne l'âge du plus jeune inscrit par classe, qui
+    // plafonne la journée à 8 h — le contrôle légal se faisait en aval, donc
+    // trop tard pour être utile au placement.
+    naissancesParClasse: Object.fromEntries(classes.map((k) => [k.id, naissancesDeLaClasse(k.id, campusId)])),
     teachers: store.listTeachers({ campusId }).filter((t) => t.active !== false),
     rooms: store.listRooms({ campusId }), sizes, probeDates,
     openingHours: campusId ? store.getCampusHours(campusId) : null,
@@ -6162,9 +6168,42 @@ app.post("/api/schedule/apply", requireAuth, requireAdmin, (req, res) => {
       date: first, seriesId, kind: "cours",
     }, until, periods));
   }
-  const made = sessionstore.addSessions(all);
-  logAudit(req, "create", "session", `planning appliqué : ${made.length} séances`);
-  res.json({ created: made.length });
+  // LE TROU QUE CETTE GARDE FERME — cette route écrivait directement par
+  // addSessions(), sans aucun contrôle. Toutes les vérifications posées sur la
+  // création unitaire (double réservation, disponibilité, calendrier, et surtout
+  // DURÉES LÉGALES : 8 h/jour pour un mineur, repos quotidien, travail de nuit)
+  // étaient donc contournées par le générateur. Un planning appliqué pouvait
+  // écrire des centaines de séances que la création une par une aurait refusées.
+  //
+  // On contrôle chaque séance contre ce qui est DÉJÀ en base et contre ce qui
+  // vient d'être accepté dans le même lot : sans ce second point, deux séances
+  // du même lot pourraient se chevaucher sans que rien ne le voie.
+  const acceptees = [];
+  const refusees = [];
+  for (const s of all) {
+    const dejaLa = sessionstore.listSessions({ from: s.date, to: s.date });
+    const conflits = conflictsFor(s, [...dejaLa, ...acceptees], conflictCtx(s));
+    const durs = conflits.filter((c) => c.level === "block");
+    if (durs.length) {
+      refusees.push({ date: s.date, start: s.start, end: s.end, classId: s.classId,
+        motifs: durs.map((c) => c.message) });
+      continue;
+    }
+    acceptees.push(s);
+  }
+  // Un dépassement légal n'est pas négociable : on n'écrit rien tant qu'il en
+  // reste. Les autres refus (salle occupée un jour férié…) se disent aussi, mais
+  // le reste du planning peut être posé.
+  const illegales = refusees.filter((r) => r.motifs.some((m) => /art\. L\. /.test(m)));
+  if (illegales.length) {
+    return res.status(409).json({
+      error: `${illegales.length} séance(s) enfreindraient la durée légale du travail : aucune n'a été créée.`,
+      illegales: illegales.slice(0, 20), refusees: refusees.slice(0, 50),
+    });
+  }
+  const made = sessionstore.addSessions(acceptees);
+  logAudit(req, "create", "session", `planning appliqué : ${made.length} séances${refusees.length ? `, ${refusees.length} refusée(s)` : ""}`);
+  res.json({ created: made.length, refusees: refusees.slice(0, 50), refuseesTotal: refusees.length });
 });
 
 // --- Pilotage : couverture, service, coût ---
