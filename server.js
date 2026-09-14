@@ -38,6 +38,7 @@ import * as signature from "./lib/signature.js";
 import * as taxe from "./lib/taxe.js";
 import * as indicateurs from "./lib/indicateurs.js";
 import * as mobilite from "./lib/mobilite.js";
+import * as enq from "./lib/enquetes.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -237,6 +238,9 @@ app.use((req, res, next) => {
   // possède pas. Exiger en plus un jeton anti-CSRF rendrait la signature
   // impossible sans rien protéger de plus.
   if (req.path === "/api/signature/signer") return next();
+  // Même raisonnement pour une réponse à une enquête : le répondant arrive par
+  // un lien nominatif, hors session, et son jeton EST son authentification.
+  if (req.path.startsWith("/api/enquete-publique/")) return next();
   if (!csrfValid(req)) return res.status(403).json({ error: "Requête refusée (jeton de sécurité invalide). Recharge la page." });
   next();
 });
@@ -887,6 +891,232 @@ app.patch("/api/campuses/:id/qualiopi", campusGuard, (req, res) => {
   logAudit(req, "update", "qualiopi", store.listCampuses().find((c) => c.id === req.params.id)?.name || req.params.id);
   res.json({ ...q, conformity: conformityRate(q.indicators || {}, q.version, q.categories), etatVersion: etatVersion(q) });
 });
+
+// --- Enquêtes : satisfaction (indicateur 30) et enseignements (indicateur 33) ---
+// Les deux dispositifs doivent rester DISTINCTS (décret n° 2026-728). Le type
+// est donc porté par l'enquête et contrôlé à chaque écriture.
+app.get("/api/enquetes/modeles", requireAuth, (_req, res) => {
+  res.json({
+    types: Object.values(enq.TYPES).map((t) => ({ ...t, modele: enq.modele(t.cle) })),
+    publics: enq.PUBLICS, questionTypes: enq.QUESTION_TYPES, etats: enq.ETATS,
+    seuilRestitution: enq.SEUIL_RESTITUTION_NOMINATIVE,
+  });
+});
+app.get("/api/enquetes", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  let items = scopeByCampus(req, store.listEnquetes({ campusId }));
+  if (req.query.type) items = items.filter((e) => e.type === req.query.type);
+  // On joint les compteurs : une liste d'enquêtes sans le nombre de réponses
+  // n'apprend rien sur ce qui se passe.
+  res.json(items.map((e) => {
+    const invites = store.listInvitations({ enqueteId: e.id });
+    return { ...e, invites: invites.length, repondus: invites.filter((i) => i.repondu).length };
+  }));
+});
+app.post("/api/enquetes", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const brouillon = { ...req.body, etat: "brouillon" };
+  const v = enq.validateEnquete({ ...brouillon, etat: "ouverte" });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const made = store.addEnquete({ ...brouillon, mesures: [] });
+  logAudit(req, "create", "enquete", `${enq.TYPES[made.type]?.label || made.type} — ${made.titre}`);
+  res.json({ ...made, warnings: v.warnings });
+});
+app.patch("/api/enquetes/:id", requireAuth, requireAdmin, (req, res) => {
+  const e = store.getEnquete(req.params.id);
+  if (!e) return res.status(404).json({ error: "enquête introuvable" });
+  if (!requireCampus(req, res, e.campusId)) return;
+  // Une enquête ouverte ne change plus de questionnaire : les réponses déjà
+  // reçues portent sur les anciennes questions, et les mélanger produirait un
+  // dépouillement faux sans que rien ne le signale.
+  if (e.etat !== "brouillon" && (req.body.questions || req.body.type)) {
+    return res.status(409).json({ error: "les questions ne peuvent plus changer une fois l'enquête ouverte : les réponses déjà reçues portent sur le questionnaire précédent" });
+  }
+  const fusion = { ...e, ...req.body };
+  const v = enq.validateEnquete({ ...fusion, etat: "ouverte" });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json(store.updateEnquete(e.id, req.body || {}));
+});
+
+// Ouverture : c'est ici que les invitations sont créées, une par destinataire.
+app.post("/api/enquetes/:id/ouvrir", requireAuth, requireAdmin, (req, res) => {
+  const e = store.getEnquete(req.params.id);
+  if (!e) return res.status(404).json({ error: "enquête introuvable" });
+  if (!requireCampus(req, res, e.campusId)) return;
+  if (e.etat !== "brouillon") return res.status(409).json({ error: "enquête déjà ouverte ou close" });
+  const v = enq.validateEnquete({ ...e, etat: "ouverte" });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+
+  const destinataires = destinatairesEnquete(e);
+  if (!destinataires.length) {
+    return res.status(400).json({ error: "aucun destinataire : une enquête ouverte sans personne à interroger ne prouve rien" });
+  }
+  // Le jeton authentifie le répondant — et ne sera jamais rapproché de sa
+  // réponse. Seule son EMPREINTE est conservée : un jeton stocké en clair
+  // signifierait qu'une copie de la base permet de répondre à la place de
+  // n'importe qui. Le jeton lui-même ne vit que le temps de fabriquer le lien.
+  const liens = [];
+  const invitations = store.addInvitations(destinataires.map((d) => {
+    const jeton = generateToken();
+    liens.push({ destinataireId: d.id, public: d.public, jeton });
+    return { enqueteId: e.id, destinataireId: d.id, public: d.public, jetonHash: hashToken(jeton) };
+  }));
+  const out = store.updateEnquete(e.id, { etat: "ouverte", dateOuverture: new Date().toISOString().slice(0, 10) });
+  logAudit(req, "update", "enquete", `ouverture — ${e.titre} (${invitations.length} invitation(s))`);
+  // Les liens ne sont renvoyés qu'ICI, une seule fois : ils ne sont plus
+  // récupérables ensuite, puisque seule l'empreinte est conservée. C'est le même
+  // compromis que pour une clé d'API — et c'est ce qui rend le vol de base sans
+  // effet sur les réponses.
+  res.json({
+    ...out, invites: invitations.length,
+    liens: liens.map((l) => ({ ...l, url: `${appUrl()}/enquete.html?j=${encodeURIComponent(l.jeton)}` })),
+  });
+});
+
+app.post("/api/enquetes/:id/clore", requireAuth, requireAdmin, (req, res) => {
+  const e = store.getEnquete(req.params.id);
+  if (!e) return res.status(404).json({ error: "enquête introuvable" });
+  if (!requireCampus(req, res, e.campusId)) return;
+  if (e.etat !== "ouverte") return res.status(409).json({ error: "enquête non ouverte" });
+  const out = store.updateEnquete(e.id, { etat: "close", dateFermeture: new Date().toISOString().slice(0, 10) });
+  logAudit(req, "update", "enquete", `clôture — ${e.titre}`);
+  res.json(out);
+});
+
+// Dépouillement. La restitution par enseignement n'est servie que pour le type
+// « enseignements » : l'exposer ailleurs n'aurait pas d'objet.
+app.get("/api/enquetes/:id/resultats", requireAuth, (req, res) => {
+  const e = store.getEnquete(req.params.id);
+  if (!e) return res.status(404).json({ error: "enquête introuvable" });
+  if (!requireCampus(req, res, e.campusId)) return;
+  const reponses = store.listReponses({ enqueteId: e.id });
+  const invitations = store.listInvitations({ enqueteId: e.id });
+  const out = enq.depouiller(e, reponses, invitations);
+  if (e.type === "enseignements") {
+    const libelles = {};
+    for (const t of store.listTeachers({ campusId: e.campusId })) libelles[t.id] = t.name;
+    for (const c of store.listCurricula()) for (const m of c.modules || []) libelles[m.id] = m.label || m.code;
+    out.parEnseignement = enq.parEnseignement(e, reponses, { libelles });
+    out.seuilRestitution = enq.SEUIL_RESTITUTION_NOMINATIVE;
+  }
+  res.json(out);
+});
+
+// Restitution aux équipes pédagogiques : exigence propre à l'indicateur 33, pas
+// une bonne pratique facultative. On l'enregistre pour pouvoir la démontrer.
+app.post("/api/enquetes/:id/restitution", requireAuth, requireAdmin, (req, res) => {
+  const e = store.getEnquete(req.params.id);
+  if (!e) return res.status(404).json({ error: "enquête introuvable" });
+  if (!requireCampus(req, res, e.campusId)) return;
+  if (e.type !== "enseignements") return res.status(400).json({ error: "la restitution aux équipes concerne l'évaluation des enseignements" });
+  const out = store.updateEnquete(e.id, {
+    restitutionLe: req.body?.date || new Date().toISOString().slice(0, 10),
+    restitutionNote: String(req.body?.note || "").trim(),
+  });
+  logAudit(req, "update", "enquete", `restitution aux équipes — ${e.titre}`);
+  res.json(out);
+});
+
+// Mesures tirées des retours. C'est ce que l'audit cherche : un recueil sans
+// suite est un recueil, pas une démarche d'amélioration.
+app.post("/api/enquetes/:id/mesures", requireAuth, requireAdmin, (req, res) => {
+  const e = store.getEnquete(req.params.id);
+  if (!e) return res.status(404).json({ error: "enquête introuvable" });
+  if (!requireCampus(req, res, e.campusId)) return;
+  const texte = String(req.body?.texte || "").trim();
+  if (!texte) return res.status(400).json({ error: "libellé de la mesure requis" });
+  const mesures = [...(e.mesures || []), {
+    texte, responsable: String(req.body?.responsable || "").trim(),
+    echeance: req.body?.echeance || null, le: new Date().toISOString().slice(0, 10),
+  }];
+  res.json(store.updateEnquete(e.id, { mesures }));
+});
+
+// État du dispositif, pour l'écran Qualiopi et le contrôle de mise en service.
+app.get("/api/enquetes/dispositif", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  res.json(enq.etatDispositif(scopeByCampus(req, store.listEnquetes({ campusId })),
+    { aujourdhui: new Date().toISOString().slice(0, 10) }));
+});
+
+// --- Répondre, hors session ---
+// Le répondant arrive par un lien nominatif. Le jeton l'authentifie ; sa
+// réponse, elle, ne portera jamais son nom.
+app.get("/api/enquete-publique/:jeton", (req, res) => {
+  const inv = trouverInvitation(req.params.jeton);
+  if (!inv) return res.status(404).json({ error: "lien invalide ou expiré" });
+  const e = store.getEnquete(inv.enqueteId);
+  if (!e || e.etat !== "ouverte") return res.status(410).json({ error: "cette enquête est fermée" });
+  if (inv.repondu) return res.status(409).json({ error: "vous avez déjà répondu à cette enquête" });
+  // On ne renvoie QUE le questionnaire : ni le nom du destinataire, ni son
+  // identifiant. La page n'a besoin de rien d'autre pour s'afficher.
+  res.json({
+    titre: e.titre, type: e.type, consigne: e.consigne || "",
+    questions: e.questions || [],
+    anonyme: "Vos réponses sont enregistrées de façon anonyme : elles ne sont rattachées ni à votre nom ni à votre dossier. L'établissement sait seulement que vous avez répondu.",
+  });
+});
+app.post("/api/enquete-publique/:jeton", (req, res) => {
+  const inv = trouverInvitation(req.params.jeton);
+  if (!inv) return res.status(404).json({ error: "lien invalide ou expiré" });
+  const e = store.getEnquete(inv.enqueteId);
+  if (!e) return res.status(404).json({ error: "enquête introuvable" });
+  const v = enq.validateReponse(e, req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; ") });
+  const propre = enq.assainirReponse(e, req.body || {});
+  const r = store.enregistrerReponse(e.id, inv.id, propre);
+  if (!r.ok) return res.status(409).json({ error: r.motif === "déjà répondu" ? "vous avez déjà répondu à cette enquête" : r.motif });
+  // Pas de logAudit nominatif ici : tracer « untel a répondu à l'enquête X »
+  // dans le journal rétablirait par la bande le lien qu'on vient de rompre.
+  res.json({ ok: true, merci: "Merci, votre réponse a bien été enregistrée." });
+});
+
+// Résolution d'un jeton d'invitation. Comparaison à temps constant pour la même
+// raison que sur le portail : sinon le jeton se devine octet par octet.
+// Base publique des liens d'enquête. Même source que les alertes : un lien
+// construit sur l'hôte de la requête suivrait un en-tête Host falsifiable.
+const appUrl = () => (process.env.APP_URL || "https://campusmanager.fr").replace(/\/+$/, "");
+
+function trouverInvitation(jeton) {
+  const j = String(jeton || "");
+  if (j.length < 20) return null;
+  // On hache UNE fois le jeton présenté, puis on compare à temps constant :
+  // hacher chaque ligne à chaque requête coûterait autant de calculs qu'il y a
+  // d'invitations, sur une route ouverte sans session.
+  const h = hashToken(j);
+  return store.listInvitations().find((i) => i.jetonHash && tokenMatches(j, i.jetonHash) && i.jetonHash === h) || null;
+}
+
+// Destinataires d'une enquête, résolus depuis les données — jamais « tout le
+// monde ». Un apprenant sorti n'est pas interrogé sur l'année en cours ; une
+// évaluation des enseignements ne va qu'aux inscrits de la classe visée.
+function destinatairesEnquete(e) {
+  const out = [];
+  const publics = e.publics || [];
+  const inscrits = (classId) => store.listEnrollments(
+    classId ? { classId, statut: store.ENROLLMENT_ACTIFS } : { campusId: e.campusId, statut: store.ENROLLMENT_ACTIFS });
+
+  if (publics.includes("apprenant")) {
+    for (const i of inscrits(e.classId)) out.push({ id: i.learnerId, public: "apprenant" });
+  }
+  if (publics.includes("entreprise")) {
+    // Le maître d'apprentissage est la personne physique qui suit l'apprenti :
+    // c'est lui qui a un avis sur la formation, pas le contact commercial.
+    for (const c of store.listContracts({ campusId: e.campusId })) {
+      if (c.status === "rompu" || !c.maitreEmail) continue;
+      out.push({ id: c.id, public: "entreprise" });
+    }
+  }
+  if (publics.includes("equipe")) {
+    for (const t of store.listTeachers({ campusId: e.campusId })) out.push({ id: t.id, public: "equipe" });
+  }
+  // Financeurs et anciens : pas de source nominative fiable dans l'application.
+  // Plutôt que d'inventer une liste, on ne crée rien et l'écran le dit.
+  return out;
+}
 
 // --- Visites (cadence) ---
 app.get("/api/visits", requireAuth, (req, res) => res.json(scopeByCampus(req, store.listVisits(req.query.campusId))));

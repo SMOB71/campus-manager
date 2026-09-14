@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Page atteinte hors session, depuis un lien reçu. Aucune ressource externe :
+     un questionnaire qui appellerait une police ou un script tiers exposerait
+     le passage du répondant à ce tiers. -->
+<meta name="robots" content="noindex,nofollow">
+<title>Questionnaire</title>
+<style>
+  :root { --marine:#12343B; --bg:#F7F5F1; --card:#fff; --border:#E2DACD; --muted:#5A6672; --accent:#0B6E5F; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--marine); font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:680px; margin:0 auto; padding:28px 18px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:18px; margin-bottom:14px; }
+  .anon { background:#EAF4F1; border-color:#BFDDD5; font-size:13.5px; }
+  .q { margin-bottom:22px; }
+  .q:last-child { margin-bottom:0; }
+  .q > label { display:block; font-weight:600; margin-bottom:10px; }
+  .echelle { display:flex; gap:6px; flex-wrap:wrap; }
+  .echelle input { position:absolute; opacity:0; width:0; height:0; }
+  .echelle span { display:inline-flex; align-items:center; justify-content:center; min-width:52px; padding:9px 12px;
+    border:1px solid var(--border); border-radius:8px; cursor:pointer; background:#fff; }
+  .echelle input:checked + span { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .echelle input:focus-visible + span { outline:2px solid var(--marine); outline-offset:2px; }
+  .ech-legende { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:6px; }
+  textarea { width:100%; min-height:90px; padding:10px; border:1px solid var(--border); border-radius:8px; font:inherit; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:12px 22px; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:default; }
+  .muted { color:var(--muted); }
+  .err { color:#8A4B4B; font-weight:600; }
+  @media (prefers-color-scheme: dark) {
+    :root { --marine:#EDE8E0; --bg:#14181B; --card:#1C2226; --border:#2E373D; --muted:#9AA6AF; --accent:#2E9C86; }
+    .anon { background:#1A2A28; border-color:#2E4A45; }
+    .echelle span { background:#1C2226; }
+    textarea { background:#151A1D; color:inherit; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><p class="muted">Chargement…</p></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const app = $("#app");
+const jeton = new URLSearchParams(location.search).get("j") || "";
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+// Les ancres de l'échelle sont nommées : « 3 » tout seul ne veut rien dire, et
+// deux répondants ne mettent pas la même chose derrière un chiffre nu.
+const ANCRES = ["Pas du tout d'accord", "Plutôt pas d'accord", "Moyennement", "Plutôt d'accord", "Tout à fait d'accord"];
+
+function champ(q) {
+  if (q.type === "echelle") {
+    return `<div class="echelle" role="radiogroup" aria-label="${esc(q.texte)}">${
+      [1,2,3,4,5].map((n) => `<label><input type="radio" name="${esc(q.id)}" value="${n}"><span title="${esc(ANCRES[n-1])}">${n}</span></label>`).join("")
+    }</div><div class="ech-legende"><span>${esc(ANCRES[0])}</span><span>${esc(ANCRES[4])}</span></div>`;
+  }
+  if (q.type === "oui_non") {
+    return `<div class="echelle" role="radiogroup" aria-label="${esc(q.texte)}">${
+      [["oui","Oui"],["non","Non"]].map(([v,l]) => `<label><input type="radio" name="${esc(q.id)}" value="${v}"><span>${l}</span></label>`).join("")
+    }</div>`;
+  }
+  return `<textarea name="${esc(q.id)}" maxlength="2000" placeholder="Votre réponse (facultative)"></textarea>`;
+}
+
+function fin(titre, texte, erreur) {
+  app.innerHTML = `<div class="card"><h1>${esc(titre)}</h1><p class="${erreur ? "err" : "muted"}" style="margin:8px 0 0;">${esc(texte)}</p></div>`;
+}
+
+(async () => {
+  if (!jeton) return fin("Lien incomplet", "Ce lien ne contient pas d'identifiant. Utilisez celui reçu par courriel.", true);
+  let e;
+  try {
+    const r = await fetch(`/api/enquete-publique/${encodeURIComponent(jeton)}`);
+    e = await r.json();
+    if (!r.ok) return fin("Questionnaire indisponible", e.error || "Lien invalide.", true);
+  } catch { return fin("Connexion impossible", "Réessayez dans un instant.", true); }
+
+  app.innerHTML = `
+    <h1>${esc(e.titre)}</h1>
+    ${e.consigne ? `<p class="muted">${esc(e.consigne)}</p>` : ""}
+    <div class="card anon">${esc(e.anonyme)}</div>
+    <form id="f"><div class="card">
+      ${e.questions.map((q) => `<div class="q"><label>${esc(q.texte)}</label>${champ(q)}</div>`).join("")}
+    </div>
+    <button type="submit" id="go">Envoyer mes réponses</button>
+    <p class="err" id="msg" style="margin-top:10px;"></p></form>`;
+
+  $("#f").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target), reponses = {};
+    for (const [k, v] of fd.entries()) if (String(v).trim() !== "") reponses[k] = v;
+    if (!Object.keys(reponses).length) { $("#msg").textContent = "Répondez à au moins une question avant d'envoyer."; return; }
+    $("#go").disabled = true; $("#msg").textContent = "";
+    try {
+      const r = await fetch(`/api/enquete-publique/${encodeURIComponent(jeton)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reponses }),
+      });
+      const out = await r.json();
+      if (!r.ok) { $("#msg").textContent = out.error || "Envoi refusé."; $("#go").disabled = false; return; }
+      fin("Merci", out.merci || "Votre réponse a bien été enregistrée.");
+    } catch {
+      // Ne pas réactiver aveuglément : si la réponse est partie et que seule la
+      // confirmation s'est perdue, un second envoi serait refusé et inquiéterait.
+      $("#msg").textContent = "L'envoi n'a pas abouti. Rechargez la page pour vérifier si votre réponse a été enregistrée.";
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -377,6 +377,7 @@ const NAV = [
   { id: "contrats", label: "Contrats d'alternance", icon: I.brief, group: "Réseau" },
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
+  { id: "enquetes", label: "Enquêtes", icon: I.shield, group: "Conformité" },
   { id: "declarations", label: "Déclarations (SIFA, BPF)", icon: I.journal, admin: true, group: "Conformité" },
   { id: "qualite", label: "Réclamations & sous-traitance", icon: I.shield, group: "Conformité" },
   { id: "decrochage", label: "Risque de décrochage", icon: I.alert, group: "Enseignement" },
@@ -467,7 +468,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1737,6 +1738,156 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Enquêtes : satisfaction (indicateur 30) et enseignements (indicateur 33) ---
+// Les deux dispositifs doivent rester distincts. L'écran les présente côte à
+// côte pour que ce soit visible, et refuse de les confondre.
+let enqCampus = "", enqModeles = null;
+
+async function renderEnquetes() {
+  if (!enqCampus) enqCampus = state.campuses[0]?.id || "";
+  if (!enqModeles) enqModeles = await api.get("/api/enquetes/modeles");
+  const [liste, dispositif] = await Promise.all([
+    api.get(`/api/enquetes?campusId=${enqCampus}`),
+    api.get(`/api/enquetes/dispositif?campusId=${enqCampus}`),
+  ]);
+  const ETAT_PILL = { brouillon: "", ouverte: "p-warn", close: "p-good" };
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="enq-new">+ Enquête</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="enq-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === enqCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-bottom:14px;">
+      ${dispositif.lignes.map((l) => `<div class="card card-pad" style="border-left:4px solid ${l.couvert ? "#4B7A5A" : "#8A7A4B"};">
+        <div class="section-title" style="margin-top:0;">${esc(l.label)}</div>
+        <p class="muted" style="margin:4px 0 8px;font-size:12.5px;">Indicateur ${l.indicateur} du référentiel national qualité</p>
+        <div class="kpis">${fkpi(l.total, "campagnes")}${fkpi(l.closes, "closes")}${fkpi(l.exploitees, "exploitées", l.exploitees ? "good" : "bad")}</div>
+        ${l.manques.length ? `<ul style="margin:10px 0 0;padding-left:18px;color:var(--muted);font-size:13px;">${l.manques.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : '<p class="muted" style="margin:10px 0 0;font-size:13px;">Rien à signaler.</p>'}
+      </div>`).join("")}
+    </div>
+    <p class="hint muted" style="margin-bottom:14px;">${esc(dispositif.reserve)}</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Enquête</th><th>Dispositif</th><th>État</th><th>Participation</th><th>Suites</th><th></th></tr></thead><tbody>
+      ${liste.length ? liste.map((e) => `<tr>
+        <td><b>${esc(e.titre)}</b><br><span class="muted" style="font-size:12px;">${esc(e.dateOuverture || "non ouverte")}</span></td>
+        <td>${esc(enqModeles.types.find((t) => t.cle === e.type)?.label || e.type)}</td>
+        <td><span class="pill ${ETAT_PILL[e.etat] || ""}">${esc(enqModeles.etats[e.etat] || e.etat)}</span></td>
+        <td>${e.invites ? `${e.repondus}/${e.invites} <span class="muted">(${Math.round((e.repondus / e.invites) * 100)} %)</span>` : '<span class="muted">—</span>'}</td>
+        <td>${(e.mesures || []).length} mesure(s)${e.restitutionLe ? `<br><span class="muted" style="font-size:12px;">restitué le ${esc(e.restitutionLe)}</span>` : ""}</td>
+        <td><button class="btn-ghost btn-sm enq-open" data-id="${e.id}">Ouvrir</button></td>
+      </tr>`).join("") : '<tr><td colspan="6" class="muted">Aucune enquête. Les deux dispositifs sont exigés par le référentiel : un questionnaire unique n\'en couvre aucun.</td></tr>'}
+      </tbody></table></div>`;
+
+  $("#enq-campus").onchange = (e) => { enqCampus = e.target.value; renderEnquetes(); };
+  $("#enq-new").onclick = () => openEnqueteForm();
+  $$(".enq-open").forEach((b) => { b.onclick = () => openEnquete(liste.find((x) => x.id === b.dataset.id)); });
+}
+
+async function openEnqueteForm() {
+  const classes = (await api.get("/api/classes")).filter((k) => k.campusId === enqCampus);
+  const t0 = enqModeles.types[0];
+  openModal("Nouvelle enquête", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Dispositif</label>
+        <select class="txt" id="eq-type">${enqModeles.types.map((t) => `<option value="${t.cle}">${esc(t.label)} — indicateur ${t.indicateur}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Titre</label><input class="txt" id="eq-titre" placeholder="Évaluation des enseignements — semestre 1"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Consigne (facultative)</label><input class="txt" id="eq-consigne" placeholder="Affichée en tête du questionnaire"></div>
+      <div><label class="field-label">Classe</label><select class="txt" id="eq-classe"><option value="">— toutes —</option>${classes.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Destinataires</label><div id="eq-publics" class="row" style="flex-wrap:wrap;gap:10px;"></div></div>
+    </div>
+    <div id="eq-apercu" style="margin-top:12px;"></div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="eq-save">Créer le brouillon</button></div>`);
+
+  // Le type pilote tout le reste : publics autorisés, questionnaire de départ,
+  // et obligation de désigner une classe.
+  const majType = () => {
+    const t = enqModeles.types.find((x) => x.cle === $("#eq-type").value) || t0;
+    $("#eq-publics").innerHTML = t.publics.map((p) => `<label class="jal-chk"><input type="checkbox" class="eq-pub" value="${p}" ${p === "apprenant" ? "checked" : ""}> ${esc(enqModeles.publics[p])}</label>`).join("");
+    $("#eq-apercu").innerHTML = `<p class="muted" style="font-size:13px;">Questionnaire de départ (${t.modele.length} questions, modifiables ensuite) :</p>
+      <ol style="margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:13px;">${t.modele.map((q) => `<li>${esc(q.texte)} <span class="pill">${esc(enqModeles.questionTypes[q.type].label)}</span></li>`).join("")}</ol>`;
+    $("#eq-classe").parentElement.style.opacity = t.cle === "enseignements" ? "1" : ".6";
+  };
+  $("#eq-type").onchange = majType;
+  majType();
+
+  $("#eq-save").onclick = async () => {
+    const t = enqModeles.types.find((x) => x.cle === $("#eq-type").value);
+    const r = await api.post("/api/enquetes", {
+      campusId: enqCampus, type: t.cle, titre: $("#eq-titre").value,
+      consigne: $("#eq-consigne").value, classId: $("#eq-classe").value || null,
+      publics: $$(".eq-pub").filter((c) => c.checked).map((c) => c.value),
+      questions: t.modele,
+    });
+    if (r?.error) { alert(r.error); return; }
+    closeModals(); renderEnquetes();
+  };
+}
+
+async function openEnquete(e) {
+  const res = e.etat === "brouillon" ? null : await api.get(`/api/enquetes/${e.id}/resultats`);
+  const estEns = e.type === "enseignements";
+  openModal(e.titre, `
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;">
+      <span class="pill">${esc(enqModeles.types.find((t) => t.cle === e.type)?.label || e.type)}</span>
+      <span class="pill">${esc(enqModeles.etats[e.etat] || e.etat)}</span>
+      <span style="flex:1"></span>
+      ${e.etat === "brouillon" ? '<button class="btn-primary btn-sm" id="eq-ouvrir">Ouvrir et générer les liens</button>' : ""}
+      ${e.etat === "ouverte" ? '<button class="btn-ghost btn-sm" id="eq-clore">Clore</button>' : ""}
+    </div>
+    <div id="eq-corps" style="margin-top:12px;">
+    ${res ? `
+      <div class="kpis">${fkpi(`${res.repondus}/${res.invites}`, "réponses")}${fkpi(res.participation + " %", "participation", res.participation >= 30 ? "good" : "bad")}
+        ${res.noteGlobale != null ? fkpi(res.noteGlobale + "/5", "note globale") : ""}</div>
+      ${res.participation != null && res.participation < 30 ? '<p class="hint muted" style="margin-top:8px;">Une participation faible est regardée en audit : un recueil auquel presque personne ne répond ne démontre pas grand-chose.</p>' : ""}
+      ${res.questions.map((q) => `<div class="card card-pad" style="margin-top:10px;">
+        <b>${esc(q.texte)}</b> <span class="muted" style="font-size:12px;">— ${q.repondu} réponse(s)</span>
+        ${q.moyenne != null ? `<div style="margin-top:6px;">Moyenne <b>${q.moyenne}/5</b> — ${q.distribution.map((d) => `${d.note}★ : ${d.n}`).join(" · ")}</div>` : ""}
+        ${q.tauxOui != null ? `<div style="margin-top:6px;"><b>${q.tauxOui} %</b> de oui (${q.oui}/${q.repondu})</div>` : ""}
+        ${q.verbatims?.length ? `<ul style="margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:13px;">${q.verbatims.map((v) => `<li>${esc(v)}</li>`).join("")}</ul>` : ""}
+      </div>`).join("")}
+      ${estEns && res.parEnseignement ? `<div class="section-title">Par enseignement</div>
+        <p class="muted" style="font-size:13px;margin:0 0 8px;">Évaluer un enseignement, c'est évaluer quelqu'un. Sous ${res.seuilRestitution} réponses, aucun résultat nominatif n'est affiché : la personne évaluée reconnaîtrait qui a répondu quoi.</p>
+        <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Enseignement</th><th>Intervenant</th><th>Réponses</th><th>Note</th></tr></thead><tbody>
+        ${res.parEnseignement.map((g) => `<tr><td>${esc(g.module || "—")}</td><td>${esc(g.intervenant || "—")}</td><td>${g.repondu}</td>
+          <td>${g.publiable ? `<b>${g.note}/5</b>` : `<span class="muted" title="${esc(g.motif)}">non restitué</span>`}</td></tr>`).join("")}
+        </tbody></table></div>` : ""}
+    ` : '<p class="muted">Enquête en brouillon : le questionnaire peut encore être modifié. Une fois ouverte, il sera figé — les réponses déjà reçues porteraient sinon sur un autre questionnaire.</p>'}
+    </div>
+    ${e.etat === "close" ? `
+      <div class="section-title">Suites données</div>
+      <p class="muted" style="font-size:13px;margin:0 0 8px;">C'est ce que l'audit cherche : un recueil sans suite est un recueil, pas une démarche qualité.</p>
+      ${(e.mesures || []).length ? `<ul style="margin:0 0 10px;padding-left:18px;">${e.mesures.map((m) => `<li>${esc(m.texte)}${m.responsable ? ` <span class="muted">— ${esc(m.responsable)}</span>` : ""}</li>`).join("")}</ul>` : '<p class="muted">Aucune mesure enregistrée.</p>'}
+      <div class="row" style="gap:8px;"><input class="txt" id="eq-mesure" placeholder="Mesure d'amélioration décidée" style="flex:1;"><button class="btn-ghost btn-sm" id="eq-add-mesure">Ajouter</button></div>
+      ${estEns ? `<div class="actions" style="margin-top:10px;">
+        ${e.restitutionLe ? `<span class="muted">Restitué aux équipes pédagogiques le ${esc(e.restitutionLe)}.</span>`
+          : '<button class="btn-primary btn-sm" id="eq-restit">Enregistrer la restitution aux équipes pédagogiques</button>'}</div>` : ""}
+    ` : ""}`);
+
+  if ($("#eq-ouvrir")) $("#eq-ouvrir").onclick = async () => {
+    const r = await api.post(`/api/enquetes/${e.id}/ouvrir`, {});
+    if (r?.error) { alert(r.error); return; }
+    // Les liens ne sont disponibles qu'ici : seule leur empreinte est conservée.
+    // Les perdre oblige à rouvrir une campagne, donc on les affiche franchement.
+    $("#eq-corps").innerHTML = `<p><b>${r.invites} lien(s) individuel(s) générés.</b> Ils ne seront <b>plus affichés après cette fenêtre</b> : seule leur empreinte est conservée, pour qu'une copie de la base ne permette pas de répondre à la place de quelqu'un.</p>
+      <textarea class="txt" rows="8" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;" readonly>${esc(r.liens.map((l) => l.url).join("\n"))}</textarea>
+      <div class="actions" style="margin-top:8px;"><button class="btn-ghost btn-sm" id="eq-copier">Copier les liens</button></div>`;
+    $("#eq-copier").onclick = () => { navigator.clipboard.writeText(r.liens.map((l) => l.url).join("\n")); $("#eq-copier").textContent = "Copié"; };
+  };
+  if ($("#eq-clore")) $("#eq-clore").onclick = async () => {
+    await api.post(`/api/enquetes/${e.id}/clore`, {}); closeModals(); renderEnquetes();
+  };
+  if ($("#eq-add-mesure")) $("#eq-add-mesure").onclick = async () => {
+    const texte = $("#eq-mesure").value.trim();
+    if (!texte) return;
+    const r = await api.post(`/api/enquetes/${e.id}/mesures`, { texte });
+    if (r?.error) { alert(r.error); return; }
+    closeModals(); renderEnquetes();
+  };
+  if ($("#eq-restit")) $("#eq-restit").onclick = async () => {
+    await api.post(`/api/enquetes/${e.id}/restitution`, {}); closeModals(); renderEnquetes();
+  };
+}
+
 // Périmètre d'un indicateur 2026. On n'affiche rien quand il concerne tout le
 // monde : un badge présent partout ne distingue plus rien.
 const Q_PERIMETRE = { af: "formation", app: "apprentissage", bc: "bilan de compétences", vae: "VAE" };
