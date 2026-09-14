@@ -1897,6 +1897,22 @@ app.get("/api/notifications", requireAuth, (req, res) => {
       if (months <= th.qualiopiMonths) notifs.push({ type: "qualiopi", severity: months < 0 ? "high" : "medium", campusId: c.id, campus: c.name, label: `Audit ${lbl} Qualiopi ${months < 0 ? "dépassé" : "dans " + months + " mois"}`, date: d });
     }
   }
+  // Les tâches d'ouverture ne remontaient nulle part dans l'app : un rétroplanning se
+  // consulte, il ne vient pas à toi. Or c'est là que le retard coûte le plus — d'où le
+  // classement par ce qu'il COÛTE (retard au-delà de la marge) et non par ancienneté.
+  if (req.user?.role === "admin") {
+    const auj = new Date().toISOString().slice(0, 10);
+    for (const o of store.listOpenings()) {
+      if (["ouvert", "abandonne"].includes(o.status) || !o.targetDate) continue;
+      const ch = analyseChain(o.tasks || [], { targetDate: o.targetDate, today: auj });
+      if (ch.slip > 0) notifs.push({ type: "ouverture", severity: "high", campusId: null, campus: o.name,
+        label: `${o.name} : les retards repoussent la rentrée de ${ch.slip} jour${ch.slip > 1 ? "s" : ""}`, date: o.targetDate });
+      for (const r of ch.ruptures.filter((x) => x.cost > 0).slice(0, 5)) {
+        notifs.push({ type: "ouverture", severity: r.cost > 14 ? "high" : "medium", campusId: null, campus: o.name,
+          label: `${r.title} — ${r.ownDelay} j de retard, repousse de ${r.cost} j${r.owner ? ` (${r.owner})` : ""}`, date: r.dueDate });
+      }
+    }
+  }
   for (const i of scopeByCampus(req, store.listIncidents({ status: "open" }))) {
     if (["eleve", "critique"].includes(i.severity)) notifs.push({ type: "incident", severity: i.severity === "critique" ? "high" : "medium", campusId: i.campusId, campus: i.campusName || "", label: `${i.kind === "reclamation" ? "Réclamation" : "Incident"} ${i.severity} : ${i.title}`, date: i.date });
   }
