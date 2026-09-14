@@ -1897,18 +1897,22 @@ app.get("/api/notifications", requireAuth, (req, res) => {
       if (months <= th.qualiopiMonths) notifs.push({ type: "qualiopi", severity: months < 0 ? "high" : "medium", campusId: c.id, campus: c.name, label: `Audit ${lbl} Qualiopi ${months < 0 ? "dépassé" : "dans " + months + " mois"}`, date: d });
     }
   }
-  // Les tâches d'ouverture ne remontaient nulle part dans l'app : un rétroplanning se
-  // consulte, il ne vient pas à toi. Or c'est là que le retard coûte le plus — d'où le
-  // classement par ce qu'il COÛTE (retard au-delà de la marge) et non par ancienneté.
+  // Rétroplanning d'ouverture (admin seulement — données réseau).
+  // On listait AUPARAVANT chaque tâche en retard : 42 notifications pour une seule
+  // ouverture, toutes au même rang. Une file d'alertes qu'on ne peut pas parcourir est
+  // une file qu'on cesse de lire. On remonte donc le glissement de la rentrée, puis les
+  // cinq ruptures classées par ce qu'elles COÛTENT — le retard au-delà de la marge — et
+  // non par ancienneté : un retard de 40 jours avec 50 jours de marge pèse moins qu'un
+  // retard de 5 jours à marge nulle dont vingt tâches dépendent.
   if (req.user?.role === "admin") {
     const auj = new Date().toISOString().slice(0, 10);
     for (const o of store.listOpenings()) {
       if (["ouvert", "abandonne"].includes(o.status) || !o.targetDate) continue;
       const ch = analyseChain(o.tasks || [], { targetDate: o.targetDate, today: auj });
-      if (ch.slip > 0) notifs.push({ type: "ouverture", severity: "high", campusId: null, campus: o.name,
+      if (ch.slip > 0) notifs.push({ type: "ouverture", severity: "high", campusId: null, openingId: o.id, campus: o.name,
         label: `${o.name} : les retards repoussent la rentrée de ${ch.slip} jour${ch.slip > 1 ? "s" : ""}`, date: o.targetDate });
       for (const r of ch.ruptures.filter((x) => x.cost > 0).slice(0, 5)) {
-        notifs.push({ type: "ouverture", severity: r.cost > 14 ? "high" : "medium", campusId: null, campus: o.name,
+        notifs.push({ type: "ouverture", severity: r.cost > 14 ? "high" : "medium", campusId: null, openingId: o.id, campus: o.name,
           label: `${r.title} — ${r.ownDelay} j de retard, repousse de ${r.cost} j${r.owner ? ` (${r.owner})` : ""}`, date: r.dueDate });
       }
     }
@@ -1961,15 +1965,6 @@ app.get("/api/notifications", requireAuth, (req, res) => {
       const r = lastReview[c.id];
       const monthsSince = r?.month ? Math.round((new Date() - new Date(r.month + "-01")) / (30 * 864e5)) : null;
       if (monthsSince == null || monthsSince >= 2) notifs.push({ type: "revue", severity: "low", campusId: c.id, campus: c.name, label: monthsSince == null ? "Revue mensuelle jamais réalisée" : `Revue mensuelle à faire (${monthsSince} mois)`, date: null });
-    }
-  }
-  // Rétroplanning d'ouverture : tâches en retard (admin uniquement — données réseau)
-  if (req.user?.role === "admin") {
-    for (const o of store.listOpenings()) {
-      if (["ouvert", "abandonne"].includes(o.status)) continue;
-      for (const t of (o.tasks || [])) {
-        if (t.status !== "done" && t.dueDate && t.dueDate < today) notifs.push({ type: "ouverture", severity: t.critical ? "high" : "medium", campusId: null, openingId: o.id, campus: o.name, label: `Ouverture ${o.name} — en retard : ${t.title}`, date: t.dueDate });
-      }
     }
   }
   const sev = { high: 0, medium: 1, low: 2 };
