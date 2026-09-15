@@ -133,7 +133,7 @@ button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid 
 /* La ligne d'action est cliquable dans son ensemble : le curseur et le survol doivent le
    dire, sinon l'affordance reste invisible. */
 #ouv-plan .ouv-task { cursor: pointer; }
-#ouv-plan .ouv-task:hover { background: var(--sable, #F4EFE6); }
+#ouv-plan .ouv-task:hover { background: #F4EFE6; }
 #ouv-plan .ouv-task .ouv-check, #ouv-plan .ouv-task .task-edit { cursor: pointer; }
 .nav-group:not(.open) .nav-group-items { display: none; }
 .nav button { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 10px; background: transparent; color: var(--muted); border: none; text-align: left; font-weight: 600; }
