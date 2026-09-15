@@ -220,7 +220,7 @@ test("répondre exige un jeton : la route publique n'accepte rien sans lui", asy
 test("le chantier liste tous les dispositifs et compte ce qui reste", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance"]);
   assert.equal(d.bascule, "2026-11-01");
   // Chaque ligne dit la CONSÉQUENCE, pas seulement un compteur : « 0/3 »
   // n'appelle aucune action.
@@ -408,9 +408,178 @@ test("une action sans résultat est acceptée mais signalée, et ne couvre rien 
   assert.equal((await post("/api/actions-insertion", { campusId, type: "forum", intitule: "x" })).status, 400);
 });
 
-test("le chantier compte maintenant cinq dispositifs", async () => {
+test("chaque dispositif du chantier dit une conséquence, pas un compteur", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
+  // Le dispositif à distance est SANS OBJET tant qu'aucune séance n'est à
+  // distance — et à ce stade du scénario il n'y en a aucune. Reprocher un
+  // référent pédagogique pour des heures qu'on ne délivre pas serait du bruit,
+  // et un « sans objet » ne compte pas comme un manque.
+  const dist = d.chantiers.find((c) => c.cle === "distance");
+  assert.equal(dist.seances, 0);
+  assert.equal(dist.sansObjet, true);
+  assert.equal(d.restants, d.chantiers.filter((c) => !c.fait && !c.sansObjet).length);
+  assert.equal(dist.composantes.length, 3);
+});
+
+// --- LMS : ressources et preuve des heures à distance (indicateur 19) ---
+test("une activité à distance sans durée moyenne est refusée par l'API", async () => {
+  const curricula = await jget("/api/curricula");
+  const mod = curricula[0].modules[0];
+  const ko = await post("/api/ressources", {
+    campusId, titre: "Exercice", type: "exercice", moduleId: mod.id,
+    url: "https://exemple.fr/ex", aDistance: true,
+  });
+  assert.equal(ko.status, 400);
+  assert.match((await ko.json()).error, /D\. 6313-3-1/);
+  // Un lien qui n'en est pas un est refusé aussi.
+  assert.equal((await post("/api/ressources", {
+    campusId, titre: "x", type: "document", moduleId: mod.id, url: "javascript:alert(1)",
+  })).status, 400);
+});
+
+let resDoc = null, resExo = null, seanceDistId = null, jetonEleve = null;
+
+test("le dispositif à distance n'est pas conforme sans référent pédagogique", async () => {
+  const d = await jget(`/api/lms/dispositif?campusId=${campusId}`);
+  assert.equal(d.conforme, false);
+  assert.match(JSON.stringify(d.manques), /indicateur 19/);
+  assert.equal(d.composantes.length, 3);
+
+  const r = await req("/api/lms/dispositif", {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { campusId, referentPedagogique: "M. Sivan", modalitesAssistance: "Courriel sous 24 h ouvrées" },
+  });
+  assert.equal(r.status, 200);
+  // Le bloc objet doit réellement avoir été enregistré, pas silencieusement jeté.
+  assert.equal((await r.json()).referentPedagogique, "M. Sivan");
+  const apres = await jget(`/api/lms/dispositif?campusId=${campusId}`);
+  assert.equal(apres.dispositif.referentPedagogique, "M. Sivan");
+});
+
+test("une séance devient distancielle, et le suivi la voit", async () => {
+  const curricula = await jget("/api/curricula");
+  const mod = curricula[0].modules[0];
+  resDoc = await (await post("/api/ressources", {
+    campusId, titre: "Support de cours", type: "document", moduleId: mod.id,
+    url: "https://exemple.fr/support.pdf", aDistance: true, dureeMoyenneMinutes: 30, classIds: [classId],
+  })).json();
+  resExo = await (await post("/api/ressources", {
+    campusId, titre: "Exercice à rendre", type: "exercice", moduleId: mod.id,
+    url: "https://exemple.fr/exo", aDistance: true, dureeMoyenneMinutes: 60, classIds: [classId],
+  })).json();
+
+  const room = (await jget("/api/rooms")).find((r) => r.campusId === campusId);
+  let pose = null;
+  for (let j = 0; j < 30 && !pose; j++) {
+    const d = new Date(Date.UTC(2027, 2, 1 + j)).toISOString().slice(0, 10);
+    const res = await post("/api/sessions", {
+      campusId, classId, roomId: room?.id, moduleId: mod.id,
+      date: d, start: "09:00", end: "11:00", kind: "cours",
+    });
+    if (res.status === 200) pose = await res.json();
+  }
+  assert.ok(pose, "une séance doit avoir pu être posée");
+  seanceDistId = pose.id;
+
+  // Elle est en présentiel par défaut : le suivi à distance ne la voit pas.
+  assert.equal(pose.modalite, "presentiel");
+  assert.equal((await jget(`/api/lms/suivi?campusId=${campusId}`)).seances.length, 0);
+
+  const maj = await req(`/api/sessions/${seanceDistId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { modalite: "distanciel" },
+  });
+  assert.equal(maj.status, 200);
+  const suivi = await jget(`/api/lms/suivi?campusId=${campusId}`);
+  assert.equal(suivi.seances.length, 1);
+  // Huit inscrits, aucune trace : rien n'est justifié.
+  assert.equal(suivi.seances[0].inscrits, 8);
+  assert.equal(suivi.justifiees, 0);
+  assert.equal(suivi.sansTrace, 8);
+  assert.match(suivi.risque, /contrôle de service fait/);
+});
+
+// LE TEST CENTRAL, VÉRIFIÉ JUSQU'AU BOUT DE LA CHAÎNE.
+test("OUVRIR UNE RESSOURCE NE JUSTIFIE AUCUNE HEURE — RENDRE UN TRAVAIL, OUI", async () => {
+  const acc = await (await post("/api/portal/access", {
+    kind: "learner", subjectId: learners[0].id, campusId, label: "Test",
+  })).json();
+  jetonEleve = acc.token || acc.jeton || acc.url?.split("#").pop();
+  assert.ok(jetonEleve, "le jeton d'accès doit être rendu à la création");
+  const porte = (p, body) => fetch(BASE + p, {
+    method: body ? "POST" : "GET",
+    headers: { Authorization: `Bearer ${jetonEleve}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  // La liste servie à l'apprenant ne porte AUCUN lien.
+  const liste = await (await porte("/api/portal/ressources")).json();
+  assert.ok(liste.length >= 2);
+  for (const r of liste) assert.equal(r.url, undefined);
+  assert.ok(liste.some((r) => r.dureeMoyenneMinutes === 60));
+
+  // Il ouvre le support : le lien est délivré ICI, et la consultation est tracée.
+  const ouvert = await (await porte(`/api/portal/ressources/${resDoc.id}/ouvrir`, { seanceId: seanceDistId })).json();
+  assert.match(ouvert.url, /^https:\/\//);
+
+  let suivi = await jget(`/api/lms/suivi?campusId=${campusId}`);
+  // Il a cliqué — et il n'est TOUJOURS PAS justifié.
+  assert.equal(suivi.justifiees, 0, "ouvrir un PDF ne justifie pas deux heures de cours");
+  assert.equal(suivi.consultationSeule, 1);
+  const moi = suivi.seances[0].lignes.find((l) => l.learnerId === learners[0].id);
+  assert.equal(moi.niveau, "consultation");
+  assert.equal(moi.justifie, false);
+
+  // Un document n'attend aucun travail : le rendre est refusé.
+  assert.equal((await porte(`/api/portal/ressources/${resDoc.id}/rendre`, { rendu: "x" })).status, 400);
+  // Un rendu vide aussi.
+  assert.equal((await porte(`/api/portal/ressources/${resExo.id}/rendre`, { rendu: "  " })).status, 400);
+
+  // Il rend l'exercice : MAINTENANT c'est justifié.
+  assert.equal((await porte(`/api/portal/ressources/${resExo.id}/rendre`, {
+    rendu: "Ma réponse à l'exercice", seanceId: seanceDistId,
+  })).status, 200);
+
+  suivi = await jget(`/api/lms/suivi?campusId=${campusId}`);
+  assert.equal(suivi.justifiees, 1);
+  assert.equal(suivi.consultationSeule, 0, "le travail rendu prime sur la simple consultation");
+  const apres = suivi.seances[0].lignes.find((l) => l.learnerId === learners[0].id);
+  assert.equal(apres.niveau, "travail");
+  assert.equal(apres.justifie, true);
+  // Et le module ne prononce jamais le mot « assidu ».
+  assert.match(suivi.seances[0].reserve, /ne remplacent pas l'émargement/);
+});
+
+test("un apprenant d'un autre campus n'atteint pas la ressource", async () => {
+  const autre = await (await post("/api/campuses", { name: "Autre CFA" })).json();
+  const l = await (await post("/api/learners", { campusId: autre.id, nom: "X", prenom: "Y" })).json();
+  const acc = await (await post("/api/portal/access", { kind: "learner", subjectId: l.id, campusId: autre.id })).json();
+  const jeton = acc.token || acc.jeton || acc.url?.split("#").pop();
+  const r = await fetch(`${BASE}/api/portal/ressources/${resDoc.id}/ouvrir`, {
+    method: "POST", headers: { Authorization: `Bearer ${jeton}`, "Content-Type": "application/json" }, body: "{}",
+  });
+  assert.equal(r.status, 404);
+});
+
+test("archiver une ressource ne détruit pas la preuve qu'elle a servi", async () => {
+  const r = await req(`/api/ressources/${resExo.id}`, { method: "DELETE", cookie: A.cookie, csrf: A.csrf });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).archivee, true);
+  // Le travail rendu reste compté : c'est lui qui justifie l'heure.
+  const suivi = await jget(`/api/lms/suivi?campusId=${campusId}`);
+  assert.equal(suivi.justifiees, 1);
+});
+
+test("une fois une séance passée à distance, le chantier cesse d'être sans objet", async () => {
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  const dist = d.chantiers.find((c) => c.cle === "distance");
+  assert.equal(dist.sansObjet, false);
+  assert.equal(dist.seances, 1);
+  // Un seul des huit inscrits a rendu un travail : la ligne reste ouverte, et
+  // elle dit le risque plutôt qu'un pourcentage sec.
+  assert.equal(dist.fait, false);
+  assert.ok(dist.tauxJustifie < 100);
+  assert.match(dist.enjeu, /contrôle de service fait|D\. 6313-3-1/);
 });

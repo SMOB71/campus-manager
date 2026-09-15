@@ -41,6 +41,7 @@ import * as mobilite from "./lib/mobilite.js";
 import * as enq from "./lib/enquetes.js";
 import * as certif from "./lib/certification.js";
 import * as ins from "./lib/insertion.js";
+import * as lms from "./lib/lms.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -1120,6 +1121,143 @@ function destinatairesEnquete(e) {
   return out;
 }
 
+// --- LMS : ressources pédagogiques et suivi à distance (indicateur 19) ---
+app.get("/api/ressources", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  let items = scopeByCampus(req, store.listRessources({ campusId }));
+  if (req.query.moduleId) items = items.filter((r) => r.moduleId === req.query.moduleId);
+  const modules = new Map();
+  for (const c of store.listCurricula()) for (const m of c.modules || []) modules.set(m.id, m.label || m.code);
+  res.json({
+    ressources: items.map((r) => ({
+      ...r, moduleLabel: modules.get(r.moduleId) || null,
+      // Combien de fois consultée, combien de travaux rendus : c'est ce qui dit
+      // si une ressource sert à quelque chose.
+      consultations: store.listLmsTraces({ ressourceId: r.id }).filter((t) => !t.probant).length,
+      rendus: store.listLmsTraces({ ressourceId: r.id }).filter((t) => t.probant).length,
+    })),
+    types: lms.RESSOURCE_TYPES, modalites: lms.MODALITES,
+  });
+});
+app.post("/api/ressources", requireAuth, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = lms.validateRessource(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const made = store.addRessource(req.body);
+  logAudit(req, "create", "ressource", made.titre || "");
+  res.json({ ...made, warnings: v.warnings });
+});
+app.patch("/api/ressources/:id", requireAuth, (req, res) => {
+  const r = store.getRessource(req.params.id);
+  if (!r) return res.status(404).json({ error: "ressource introuvable" });
+  if (!requireCampus(req, res, r.campusId)) return;
+  const v = lms.validateRessource({ ...r, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json({ ...store.updateRessource(r.id, req.body || {}), warnings: v.warnings });
+});
+app.delete("/api/ressources/:id", requireAuth, requireAdmin, (req, res) => {
+  const r = store.getRessource(req.params.id);
+  if (!r) return res.status(404).json({ error: "ressource introuvable" });
+  if (!requireCampus(req, res, r.campusId)) return;
+  // On ARCHIVE au lieu de supprimer : les traces de consultation et les travaux
+  // rendus pointent dessus, et ce sont eux qui justifient des heures. Effacer la
+  // ressource rendrait sa propre preuve illisible.
+  res.json(store.updateRessource(r.id, { archivee: true }));
+});
+
+// Dispositif à distance du campus : référent pédagogique et modalités
+// d'assistance. C'est nommément ce que l'indicateur 19 réclame.
+app.get("/api/lms/dispositif", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  if (!campus) return res.status(404).json({ error: "campus introuvable" });
+  const ressources = store.listRessources({ campusId });
+  const seances = sessionstore.listSessions({ campusId }).filter((s) => s.modalite !== "presentiel" && s.status !== "cancelled");
+  res.json({
+    dispositif: campus.foad || {},
+    ...lms.conformiteFoad({ dispositif: campus.foad || {}, ressources, seancesDistance: seances.length }),
+    composantesRef: lms.COMPOSANTES_FOAD,
+  });
+});
+app.patch("/api/lms/dispositif", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const c = store.updateCampus(campusId, { foad: {
+    referentPedagogique: String(req.body?.referentPedagogique || "").trim(),
+    modalitesAssistance: String(req.body?.modalitesAssistance || "").trim(),
+  } });
+  if (!c) return res.status(404).json({ error: "campus introuvable" });
+  logAudit(req, "update", "campus", "dispositif à distance");
+  res.json(c.foad || {});
+});
+
+// Suivi à distance : séance par séance, qui a produit un élément probant.
+app.get("/api/lms/suivi", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const seances = sessionstore.listSessions({ campusId, from: req.query.from, to: req.query.to })
+    .filter((s) => s.modalite !== "presentiel" && s.status !== "cancelled");
+  const suivis = seances.map((s) => {
+    const inscrits = s.classId
+      ? store.listEnrollments({ classId: s.classId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId)
+      : [];
+    return lms.suiviSeance({ seance: s, inscrits, preuves: store.listLmsTraces({ seanceId: s.id }) });
+  });
+  const noms = new Map(store.listLearners({ campusId }).map((l) => [l.id, `${l.prenom} ${l.nom}`.trim()]));
+  res.json({
+    seances: suivis.map((s) => ({ ...s, lignes: s.lignes.map((l) => ({ ...l, nom: noms.get(l.learnerId) || l.learnerId })) })),
+    ...lms.heuresJustifiables(suivis),
+    niveaux: lms.NIVEAUX_PREUVE,
+  });
+});
+
+// --- Côté apprenant, via le portail ---
+app.get("/api/portal/ressources", portalAuth, (req, res) => {
+  if (req.portal.kind !== "learner") return res.status(403).json({ error: "réservé aux apprenants" });
+  const l = store.getLearner(req.portal.subjectId);
+  if (!l) return res.status(404).json({ error: "dossier introuvable" });
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut));
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const liste = lms.pourApprenant(store.listRessources({ campusId: l.campusId }),
+    { classId: enr?.classId || null, aujourdhui });
+  const modules = new Map();
+  for (const c of store.listCurricula()) for (const m of c.modules || []) modules.set(m.id, m.label || m.code);
+  res.json(liste.map((r) => ({ ...r, moduleLabel: modules.get(r.moduleId) || null })));
+});
+
+// Ouverture d'une ressource. C'EST ICI que le lien est délivré, et c'est ici que
+// la consultation se trace : servir les liens dans la liste permettrait de tout
+// télécharger sans qu'aucune trace n'existe.
+app.post("/api/portal/ressources/:id/ouvrir", portalAuth, (req, res) => {
+  if (req.portal.kind !== "learner") return res.status(403).json({ error: "réservé aux apprenants" });
+  const r = store.getRessource(req.params.id);
+  const l = store.getLearner(req.portal.subjectId);
+  if (!r || !l || r.campusId !== l.campusId) return res.status(404).json({ error: "ressource introuvable" });
+  const enr = store.listEnrollments({ learnerId: l.id }).find((e) => store.ENROLLMENT_ACTIFS.includes(e.statut));
+  if (!lms.estDisponible(r, enr?.classId || null, new Date().toISOString().slice(0, 10))) {
+    return res.status(403).json({ error: "cette ressource n'est pas à votre disposition" });
+  }
+  store.addLmsTrace({ ressourceId: r.id, learnerId: l.id, seanceId: req.body?.seanceId || null, probant: false });
+  res.json({ url: r.url || null, documentId: r.documentId || null, titre: r.titre });
+});
+
+// Dépôt d'un travail : c'est CE geste qui produit un élément probant, pas le clic.
+app.post("/api/portal/ressources/:id/rendre", portalAuth, (req, res) => {
+  if (req.portal.kind !== "learner") return res.status(403).json({ error: "réservé aux apprenants" });
+  const r = store.getRessource(req.params.id);
+  const l = store.getLearner(req.portal.subjectId);
+  if (!r || !l || r.campusId !== l.campusId) return res.status(404).json({ error: "ressource introuvable" });
+  if (!lms.RESSOURCE_TYPES[r.type]?.probant) {
+    return res.status(400).json({ error: "cette ressource n'attend pas de travail à rendre" });
+  }
+  const rendu = String(req.body?.rendu || "").trim();
+  if (!rendu) return res.status(400).json({ error: "Votre réponse est vide." });
+  const t = store.addLmsTrace({ ressourceId: r.id, learnerId: l.id, seanceId: req.body?.seanceId || null, probant: true, rendu });
+  res.json({ ok: true, le: t.date, merci: "Travail enregistré." });
+});
+
 // --- Certification : conditions de présentation (indicateur 16) ---
 app.get("/api/certifications", requireAuth, (req, res) => {
   const campusId = req.query.campusId;
@@ -1298,7 +1436,37 @@ app.get("/api/chantier", requireAuth, (req, res) => {
       : "L'indicateur 29 porte sur les ACTIONS menées, pas sur le taux d'insertion — et il couvre aussi la POURSUITE D'ÉTUDES, la moitié que l'on oublie en ne documentant que l'emploi.",
   };
 
-  const chantiers = [alternance, qualiopi, enquetes, certification, insertion];
+  // 6. Dispositif à distance (indicateur 19). Sans objet si le campus ne fait
+  // pas de distanciel : lui reprocher l'absence de référent pédagogique pour des
+  // heures qu'il ne délivre pas serait du bruit.
+  const seancesDist = campusId
+    ? sessionstore.listSessions({ campusId }).filter((s) => s.modalite !== "presentiel" && s.status !== "cancelled")
+    : [];
+  const ressources = store.listRessources({ campusId });
+  const foad = lms.conformiteFoad({
+    dispositif: campus?.foad || {}, ressources, seancesDistance: seancesDist.length,
+  });
+  const suivisDist = seancesDist.map((s) => lms.suiviSeance({
+    seance: s,
+    inscrits: s.classId ? store.listEnrollments({ classId: s.classId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId) : [],
+    preuves: store.listLmsTraces({ seanceId: s.id }),
+  }));
+  const heures = lms.heuresJustifiables(suivisDist);
+  const distance = {
+    cle: "distance", titre: "Dispositif à distance", ecran: "dispositif-foad",
+    seances: seancesDist.length, ressources: ressources.filter((r) => !r.archivee).length,
+    composantes: foad.composantes.map((c) => ({ cle: c.cle, label: c.label, couverte: c.couverte })),
+    tauxJustifie: heures.taux, risque: heures.risque,
+    fait: seancesDist.length > 0 && foad.conforme && heures.taux === 100,
+    sansObjet: seancesDist.length === 0,
+    enjeu: seancesDist.length === 0
+      ? "Aucune séance à distance : rien à justifier."
+      : !foad.conforme
+        ? "Les conditions de l'article D. 6313-3-1 ne sont pas réunies : les heures à distance ne sont pas justifiables en l'état."
+        : heures.risque || "Toutes les participations à distance portent un élément probant.",
+  };
+
+  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance];
   const restants = chantiers.filter((c) => !c.fait && !c.sansObjet);
   res.json({
     campusId: campusId || null, campus: campus?.name || null,

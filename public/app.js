@@ -340,7 +340,7 @@ async function registerPasskey(deviceName) {
 }
 
 // ---------- Navigation ----------
-const NAV_GROUPS = ["Chantier 2026", "Pilotage", "Ouverture de campus", "Décisions", "Réseau", "Enseignement", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
+const NAV_GROUPS = ["Chantier 2026", "Pilotage", "Ouverture de campus", "Décisions", "Réseau", "Enseignement", "LMS", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
 // Rubriques rendues À PLAT, sans repli ni intitulé de groupe. Une ouverture de campus
 // n'est pas une entrée parmi dix : c'est un projet de quinze mois consulté tous les jours,
 // et le ranger dans « Réseau » entre Tournée et SI campus le rendait introuvable.
@@ -387,6 +387,12 @@ const NAV = [
   // (le rythme depuis le planning, la bascule depuis Qualiopi) : ce groupe
   // les rassemble pour les piloter, il ne les déplace pas.
   { id: "chantier", label: "Ce qui reste à mettre en service", icon: I.alert, group: "Chantier 2026" },
+  // LMS — la partie « diffusion et suivi à distance », distincte du suivi
+  // administratif. Ce n'est pas une bibliothèque de contenus : c'est le
+  // système de preuve des heures à distance (indicateur 19, art. D. 6313-3-1).
+  { id: "ressources", label: "Ressources pédagogiques", icon: I.note, group: "LMS" },
+  { id: "suivi-distance", label: "Suivi à distance", icon: I.chart, group: "LMS" },
+  { id: "dispositif-foad", label: "Dispositif à distance", icon: I.shield, group: "LMS" },
   { id: "certification", label: "Présentation à la certification", icon: I.note, group: "Conformité" },
   { id: "insertion-actions", label: "Insertion & poursuite d'études", icon: I.heart, group: "Conformité" },
   { id: "declarations", label: "Déclarations (SIFA, BPF)", icon: I.journal, admin: true, group: "Conformité" },
@@ -483,7 +489,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1753,6 +1759,165 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- LMS ---
+// Trois écrans, un seul fil : à distance, l'heure réalisée ne se prouve pas par
+// une signature. Ce sont les travaux rendus qui la justifient — jamais les clics.
+let lmsCampus = "";
+
+async function renderRessources() {
+  if (!lmsCampus) lmsCampus = state.campuses[0]?.id || "";
+  const [d, curricula] = await Promise.all([
+    api.get(`/api/ressources?campusId=${lmsCampus}`), api.get("/api/curricula"),
+  ]);
+  const vivantes = d.ressources.filter((r) => !r.archivee);
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="rs-new">+ Ressource</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="rs-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === lmsCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(vivantes.length, "ressources")}${fkpi(vivantes.filter((r) => r.aDistance).length, "activités à distance")}
+        ${fkpi(vivantes.filter((r) => d.types[r.type]?.probant).length, "produisent une preuve", vivantes.some((r) => d.types[r.type]?.probant) ? "good" : "bad")}</div>
+    </div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Ressource</th><th>Enseignement</th><th>Type</th><th>À distance</th><th>Durée moy.</th><th>Consultée</th><th>Rendus</th><th></th></tr></thead><tbody>
+      ${vivantes.length ? vivantes.map((r) => `<tr>
+        <td><b>${esc(r.titre)}</b>${r.obligatoire ? ' <span class="pill">obligatoire</span>' : ""}</td>
+        <td>${esc(r.moduleLabel || "—")}</td>
+        <td>${esc(d.types[r.type]?.label || r.type)}${d.types[r.type]?.probant ? ' <span class="pill p-good">probante</span>' : ""}</td>
+        <td>${r.aDistance ? "oui" : "—"}</td>
+        <td>${r.dureeMoyenneMinutes ? `${r.dureeMoyenneMinutes} min` : '<span class="muted">—</span>'}</td>
+        <td>${r.consultations}</td>
+        <td>${d.types[r.type]?.probant ? r.rendus : '<span class="muted">—</span>'}</td>
+        <td><button class="btn-ghost btn-sm rs-del" data-id="${r.id}">Archiver</button></td>
+      </tr>`).join("") : '<tr><td colspan="8" class="muted">Aucune ressource.</td></tr>'}
+      </tbody></table></div>
+    <p class="hint muted">Une ressource consultée n'est pas une heure suivie. Seuls les <b>exercices</b> et les <b>évaluations</b> produisent un élément probant, c'est-à-dire de quoi justifier des heures à distance devant un financeur.</p>`;
+
+  $("#rs-campus").onchange = (e) => { lmsCampus = e.target.value; renderRessources(); };
+  $("#rs-new").onclick = () => openRessourceForm(d, curricula);
+  $$(".rs-del").forEach((b) => { b.onclick = async () => {
+    // « Archiver » et non « Supprimer » : les traces pointent dessus.
+    if (!confirm("Archiver cette ressource ? Les travaux déjà rendus restent consultables.")) return;
+    await api.del(`/api/ressources/${b.dataset.id}`); renderRessources();
+  }; });
+}
+
+function openRessourceForm(d, curricula) {
+  const modules = curricula.flatMap((c) => (c.modules || []).map((m) => ({ id: m.id, label: `${c.name} — ${m.label || m.code}` })));
+  openModal("Nouvelle ressource", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Titre</label><input class="txt" id="rs-titre"></div>
+      <div><label class="field-label">Enseignement</label><select class="txt" id="rs-module">${modules.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Type</label><select class="txt" id="rs-type">${Object.entries(d.types).map(([k, t]) => `<option value="${k}">${esc(t.label)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Lien</label><input class="txt" id="rs-url" placeholder="https://…"></div>
+      <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="rs-distance"> Activité à effectuer à distance</label></div>
+      <div><label class="field-label">Durée moyenne (minutes)</label><input class="txt" id="rs-duree" type="number" min="1"></div>
+      <div><label class="field-label">Disponible jusqu'au</label><input class="txt" id="rs-au" type="date"></div>
+      <div style="grid-column:1/-1;" id="rs-avert"></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="rs-save">Enregistrer</button></div>`);
+
+  // On dit AVANT d'enregistrer ce que ce choix implique, plutôt que de refuser
+  // après coup : la durée moyenne est une condition de l'article D. 6313-3-1.
+  const maj = () => {
+    const dist = $("#rs-distance").checked, probant = d.types[$("#rs-type").value]?.probant;
+    $("#rs-avert").innerHTML = !dist ? ""
+      : `<div class="item" style="border-left:3px solid ${probant ? "#4B7A5A" : "#8A7A4B"};"><div class="grow">
+        ${probant ? "Cette ressource produira un élément probant : le travail rendu justifiera des heures à distance."
+                  : "<b>Ce type ne produit pas d'élément probant.</b> Seule la consultation sera tracée, ce qui ne justifie aucune heure devant un financeur."}
+        <br><span class="muted" style="font-size:12.5px;">La durée moyenne est obligatoire pour une activité à distance (art. D. 6313-3-1).</span></div></div>`;
+  };
+  $("#rs-distance").onchange = maj; $("#rs-type").onchange = maj; maj();
+
+  $("#rs-save").onclick = async () => {
+    const r = await api.post("/api/ressources", {
+      campusId: lmsCampus, titre: $("#rs-titre").value, moduleId: $("#rs-module").value,
+      type: $("#rs-type").value, url: $("#rs-url").value,
+      aDistance: $("#rs-distance").checked,
+      dureeMoyenneMinutes: $("#rs-duree").value === "" ? null : +$("#rs-duree").value,
+      disponibleAu: $("#rs-au").value || null, classIds: [],
+    });
+    if (r?.error) { alert(r.error); return; }
+    if (r.warnings?.length) alert(r.warnings.join("\n"));
+    closeModals(); renderRessources();
+  };
+}
+
+async function renderSuiviDistance() {
+  if (!lmsCampus) lmsCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/lms/suivi?campusId=${lmsCampus}`);
+  const PILL = { travail: "p-good", consultation: "p-warn", aucun: "p-bad" };
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="sd-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === lmsCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="kpis" style="margin-bottom:12px;">${fkpi(d.nbSeances, "séances à distance")}
+      ${fkpi(d.justifiees, "participations justifiées", "good")}
+      ${fkpi(d.consultationSeule, "consultation seule", d.consultationSeule ? "bad" : "")}
+      ${fkpi(d.sansTrace, "sans aucune trace", d.sansTrace ? "bad" : "")}
+      ${d.taux != null ? fkpi(d.taux + " %", "justifiable", d.taux >= 80 ? "good" : "bad") : ""}</div>
+    ${d.risque ? `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid #8A4B4B;"><b>${esc(d.risque)}</b>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;">Une consultation atteste d'un accès, pas d'un temps de formation. Ce sont les travaux rendus et les évaluations qui justifient des heures.</p></div>` : ""}
+    ${d.seances.length ? d.seances.map((s) => `<div class="card card-pad" style="margin-bottom:12px;">
+      <div class="row" style="gap:8px;align-items:center;">
+        <b class="grow">${esc(s.date || "—")} <span class="muted" style="font-weight:400;">${esc(s.modalite)}</span></b>
+        <span class="muted">${s.justifies}/${s.inscrits} justifié(s)</span>
+      </div>
+      <div style="margin-top:8px;">${s.lignes.map((l) => `<div class="row" style="gap:8px;padding:4px 0;border-top:1px solid var(--border);">
+        <span class="grow">${esc(l.nom)}</span>
+        <span class="muted" style="font-size:12px;">${l.travaux ? `${l.travaux} travail/travaux` : l.consultations ? `${l.consultations} consultation(s)` : "—"}</span>
+        <span class="pill ${PILL[l.niveau]}">${esc(d.niveaux[l.niveau].label)}</span>
+      </div>`).join("")}</div>
+      <p class="hint muted" style="margin-top:8px;">${esc(s.reserve)}</p>
+    </div>`).join("") : '<div class="card card-pad"><p class="muted">Aucune séance à distance sur la période. Une séance devient « à distance » depuis sa fiche dans l\'emploi du temps.</p></div>'}`;
+
+  $("#sd-campus").onchange = (e) => { lmsCampus = e.target.value; renderSuiviDistance(); };
+}
+
+async function renderDispositifFoad() {
+  if (!lmsCampus) lmsCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/lms/dispositif?campusId=${lmsCampus}`);
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="fo-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === lmsCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(d.seancesDistance, "séances à distance")}${fkpi(d.elementsProbants, "activités probantes", d.elementsProbants ? "good" : "bad")}</div>
+    </div>
+    <div class="card card-pad" style="margin-bottom:14px;border-left:4px solid ${d.conforme ? "#4B7A5A" : "#8A4B4B"};">
+      <b>${d.conforme ? "Les trois composantes de l'action à distance sont couvertes." : "Le dispositif à distance est incomplet."}</b>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;">L'article D. 6313-3-1 du code du travail pose trois conditions à une action de formation à distance. Ce ne sont pas des bonnes pratiques : sans elles, les heures à distance ne sont pas justifiables.</p>
+    </div>
+    ${d.composantes.map((c) => `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid ${c.couverte ? "#4B7A5A" : "#8A4B4B"};">
+      <div class="row" style="gap:8px;align-items:center;">
+        <b class="grow">${esc(c.label)}</b>
+        <span class="pill ${c.couverte ? "p-good" : "p-bad"}">${c.couverte ? "couverte" : "à compléter"}</span>
+      </div>
+      <p class="muted" style="margin:6px 0 0;font-size:13px;">${esc(c.texte)}</p>
+      ${c.manques.map((m) => `<div class="item" style="border-left:3px solid ${m.gravite === "bloquant" ? "#8A4B4B" : "#8A7A4B"};margin-top:8px;"><div class="grow">${esc(m.message)}</div></div>`).join("")}
+    </div>`).join("")}
+    <div class="card card-pad">
+      <div class="section-title" style="margin-top:0;">Référent pédagogique et assistance</div>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+        <div><label class="field-label">Référent pédagogique</label><input class="txt" id="fo-ref" value="${esc(d.dispositif.referentPedagogique || "")}"></div>
+        <div><label class="field-label">Modalités d'assistance</label><input class="txt" id="fo-mod" placeholder="Par courriel sous 24 h ouvrées, permanence le mardi…" value="${esc(d.dispositif.modalitesAssistance || "")}"></div>
+      </div>
+      <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="fo-save">Enregistrer</button> <span id="fo-msg" class="status"></span></div>
+    </div>
+    <p class="hint muted">${esc(d.reserve)}</p>`;
+
+  $("#fo-campus").onchange = (e) => { lmsCampus = e.target.value; renderDispositifFoad(); };
+  $("#fo-save").onclick = async () => {
+    const r = await api.patch("/api/lms/dispositif", {
+      campusId: lmsCampus, referentPedagogique: $("#fo-ref").value, modalitesAssistance: $("#fo-mod").value,
+    });
+    if (r?.error) { alert(r.error); return; }
+    renderDispositifFoad();
+  };
+}
+
 // --- Présentation à la certification (indicateur 16) ---
 // Le manquement que cet écran sert à voir venir : une habilitation qui expire
 // AVANT l'épreuve. Elle est valable aujourd'hui, elle ne le sera plus en juin,
@@ -1937,6 +2102,15 @@ async function renderChantier() {
       return `<div style="margin-top:10px;">
         ${c.aRefaire != null ? `<div class="kpis">${fkpi(c.aRefaire, "indicateurs à reprendre", "bad")}${fkpi(c.nouveaux.length, "sans équivalent", "bad")}${c.jours != null ? fkpi(c.jours + " j", "avant échéance", c.jours <= 60 ? "bad" : "") : ""}</div>` : ""}
         ${c.nouveaux.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;">Exigences nouvelles : n° ${c.nouveaux.join(", ")}.</p>` : ""}</div>`;
+    }
+    if (c.cle === "distance") {
+      if (c.sansObjet) return "";
+      return `<div style="margin-top:10px;">
+        <div class="kpis">${fkpi(c.seances, "séances à distance")}${fkpi(c.ressources, "ressources")}
+          ${c.tauxJustifie != null ? fkpi(c.tauxJustifie + " %", "justifiable", c.tauxJustifie === 100 ? "good" : "bad") : ""}</div>
+        <div style="margin-top:8px;">${c.composantes.map((x) => `<div class="row" style="gap:8px;padding:4px 0;border-top:1px solid var(--border);">
+          <span class="grow">${esc(x.label)}</span>
+          <span class="pill ${x.couverte ? "p-good" : "p-bad"}">${x.couverte ? "couverte" : "à compléter"}</span></div>`).join("")}</div></div>`;
     }
     return `<div style="margin-top:10px;">${c.lignes.map((l) => `<div style="padding:6px 0;border-top:1px solid var(--border);">
       <div class="row" style="gap:8px;"><b class="grow">${esc(l.label)}</b>
@@ -5220,6 +5394,7 @@ boot();
 
 const PLAN_DAYS = [["lun", "Lundi"], ["mar", "Mardi"], ["mer", "Mercredi"], ["jeu", "Jeudi"], ["ven", "Vendredi"], ["sam", "Samedi"]];
 const SES_KIND = { cours: "Cours", examen: "Examen", rattrapage: "Rattrapage", reunion: "Réunion" };
+const SES_MODALITE = { presentiel: "Présentiel", distanciel: "À distance", hybride: "Hybride" };
 const SES_STATUT = { planned: "Prévue", done: "Faite", cancelled: "Annulée" };
 const TEACH_STATUS = { permanent: "Permanent", vacataire: "Vacataire", intervenant: "Intervenant" };
 const PERIOD_KIND = { vacances: "Vacances", ferie: "Férié", examens: "Examens", stage: "Stage", entreprise: "En entreprise" };
@@ -7193,6 +7368,8 @@ async function openSessionForm(s) {
       <div><label class="field-label">Salle</label><select class="txt ssf" data-f="roomId"><option value="">—</option>${rooms.map((r) => `<option value="${r.id}" ${e.roomId === r.id ? "selected" : ""}>${esc(r.name)}${r.places ? ` (${r.places})` : ""}</option>`).join("")}</select></div>
       <div><label class="field-label">Date *</label><input class="txt ssf" data-f="date" type="date" value="${esc(e.date || "")}"></div>
       <div><label class="field-label">Type</label><select class="txt ssf" data-f="kind">${Object.entries(SES_KIND).map(([kk, l]) => `<option value="${kk}" ${e.kind === kk ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div><label class="field-label">Modalité</label><select class="txt ssf" data-f="modalite">${Object.entries(SES_MODALITE).map(([kk, l]) => `<option value="${kk}" ${(e.modalite || "presentiel") === kk ? "selected" : ""}>${l}</option>`).join("")}</select>
+        <p class="hint muted" style="margin-top:4px;">À distance, l'heure ne se prouve pas par une signature : elle se justifie par les travaux rendus (Suivi à distance).</p></div>
       <div><label class="field-label">Début *</label><input class="txt ssf" data-f="start" type="time" value="${esc(e.start || "")}"></div>
       <div><label class="field-label">Fin *</label><input class="txt ssf" data-f="end" type="time" value="${esc(e.end || "")}"></div>
       ${s ? `<div><label class="field-label">Statut</label><select class="txt ssf" data-f="status">${Object.entries(SES_STATUT).map(([kk, l]) => `<option value="${kk}" ${e.status === kk ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : `
