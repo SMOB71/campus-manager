@@ -213,3 +213,81 @@ test("répondre exige un jeton : la route publique n'accepte rien sans lui", asy
   });
   assert.ok(r.status === 404 || r.status === 400);
 });
+
+// --- Chantier 2026 : l'écran de pilotage des trois dispositifs ---
+// Ce qui est vérifié : l'écran reflète l'ÉTAT RÉEL, et ne se déclare pas prêt
+// tant qu'il reste quelque chose à faire.
+test("le chantier liste les trois dispositifs et compte ce qui reste", async () => {
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  assert.deepEqual(d.chantiers.map((c) => c.cle), ["alternance", "qualiopi", "enquetes"]);
+  assert.equal(d.bascule, "2026-11-01");
+  // Chaque ligne dit la CONSÉQUENCE, pas seulement un compteur : « 0/3 »
+  // n'appelle aucune action.
+  for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
+  assert.equal(d.pret, false);
+  assert.ok(d.restants >= 1);
+  assert.match(d.reserve, /ne vaut pas audit/);
+});
+
+test("une classe sans rythme est comptée comme telle, et une classe en initial est sans objet", async () => {
+  // La classe créée plus haut est en « initial » : le rythme ne la concerne pas.
+  let d = await jget(`/api/chantier?campusId=${campusId}`);
+  let alt = d.chantiers.find((c) => c.cle === "alternance");
+  assert.equal(alt.sansObjet, true);
+  assert.equal(alt.concernees, 0);
+
+  // On passe la classe en alternance : elle devient un chantier ouvert.
+  await req(`/api/classes/${classId}`, { method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { modalite: "alternance" } });
+  d = await jget(`/api/chantier?campusId=${campusId}`);
+  alt = d.chantiers.find((c) => c.cle === "alternance");
+  assert.equal(alt.sansObjet, false);
+  assert.equal(alt.concernees, 1);
+  assert.equal(alt.faites, 0);
+  assert.equal(alt.fait, false);
+  assert.equal(alt.detail[0].rythme, null);
+  assert.match(alt.enjeu, /18 semaines/);
+
+  // Poser le rythme referme la ligne — c'est l'état réel qui est lu, pas un drapeau.
+  const r = await post("/api/schedule/rythme/apply", {
+    classId, debut: "2026-09-14", fin: "2027-06-30", centre: 2, entreprise: 2,
+  });
+  assert.equal(r.status, 200);
+  d = await jget(`/api/chantier?campusId=${campusId}`);
+  alt = d.chantiers.find((c) => c.cle === "alternance");
+  assert.equal(alt.fait, true);
+  assert.equal(alt.faites, 1);
+  assert.match(alt.detail[0].rythme, /2 sem\. centre/);
+});
+
+test("la ligne Qualiopi porte l'échéance et ce qu'il y a à reprendre, puis se referme", async () => {
+  let d = await jget(`/api/chantier?campusId=${campusId}`);
+  let q = d.chantiers.find((c) => c.cle === "qualiopi");
+  assert.equal(q.version, "v2019");
+  assert.equal(q.fait, false);
+  assert.equal(q.aRefaire, 16);
+  assert.deepEqual(q.nouveaux, [16, 29, 33]);
+  assert.match(q.enjeu, /renumérotés/);
+  assert.ok(q.alerte, "l'échéance doit être portée tant que la bascule n'est pas faite");
+
+  await post(`/api/campuses/${campusId}/qualiopi/bascule`, {});
+  d = await jget(`/api/chantier?campusId=${campusId}`);
+  q = d.chantiers.find((c) => c.cle === "qualiopi");
+  assert.equal(q.fait, true);
+  assert.equal(q.version, "v2026");
+  assert.equal(q.alerte, null);
+});
+
+test("le chantier n'est prêt que lorsque les trois lignes le sont", async () => {
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  // Alternance et Qualiopi sont faits ; les enquêtes, non — la satisfaction
+  // générale n'a jamais été exploitée.
+  assert.equal(d.chantiers.find((c) => c.cle === "alternance").fait, true);
+  assert.equal(d.chantiers.find((c) => c.cle === "qualiopi").fait, true);
+  assert.equal(d.chantiers.find((c) => c.cle === "enquetes").fait, false);
+  assert.equal(d.restants, 1);
+  assert.equal(d.pret, false, "un seul dispositif manquant suffit à ne pas être prêt");
+});
+
+test("un campus inconnu, ou hors périmètre, ne renvoie pas un chantier vide et rassurant", async () => {
+  assert.equal((await get("/api/chantier?campusId=inexistant")).status, 404);
+});

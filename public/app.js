@@ -340,7 +340,7 @@ async function registerPasskey(deviceName) {
 }
 
 // ---------- Navigation ----------
-const NAV_GROUPS = ["Pilotage", "Ouverture de campus", "Décisions", "Réseau", "Enseignement", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
+const NAV_GROUPS = ["Chantier 2026", "Pilotage", "Ouverture de campus", "Décisions", "Réseau", "Enseignement", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
 // Rubriques rendues À PLAT, sans repli ni intitulé de groupe. Une ouverture de campus
 // n'est pas une entrée parmi dix : c'est un projet de quinze mois consulté tous les jours,
 // et le ranger dans « Réseau » entre Tournée et SI campus le rendait introuvable.
@@ -382,6 +382,11 @@ const NAV = [
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
   { id: "enquetes", label: "Enquêtes", icon: I.shield, group: "Conformité" },
+  // Chantier 2026 — les trois dispositifs livrés en septembre 2026 et pas
+  // encore mis en service. Ils restent atteignables depuis leur écran métier
+  // (le rythme depuis le planning, la bascule depuis Qualiopi) : ce groupe
+  // les rassemble pour les piloter, il ne les déplace pas.
+  { id: "chantier", label: "Ce qui reste à mettre en service", icon: I.alert, group: "Chantier 2026" },
   { id: "declarations", label: "Déclarations (SIFA, BPF)", icon: I.journal, admin: true, group: "Conformité" },
   { id: "qualite", label: "Réclamations & sous-traitance", icon: I.shield, group: "Conformité" },
   { id: "decrochage", label: "Risque de décrochage", icon: I.alert, group: "Enseignement" },
@@ -476,7 +481,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1746,6 +1751,90 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Chantier 2026 ---
+// Trois dispositifs ont été ajoutés en septembre 2026. Être dans l'application
+// ne veut pas dire être en service : un rythme jamais posé, un campus resté sur
+// l'ancien référentiel et une enquête jamais ouverte laissent exactement les
+// mêmes trous qu'avant. Cet écran ne raconte pas ce qui a été développé — il dit
+// ce qui reste à faire, et ce que ça coûte de ne pas le faire.
+let chCampus = "";
+
+async function renderChantier() {
+  if (!chCampus) chCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/chantier?campusId=${chCampus}`);
+  if (d?.error) { $("#view").innerHTML = `<p class="neg">${esc(d.error)}</p>`; return; }
+
+  const pastille = (c) => c.sansObjet ? '<span class="pill">sans objet</span>'
+    : c.fait ? '<span class="pill p-good">en service</span>'
+    : '<span class="pill p-warn">à faire</span>';
+  const bord = (c) => c.sansObjet ? "var(--border)" : c.fait ? "#4B7A5A" : "#8A7A4B";
+
+  // Le détail par chantier : ce qui se voit, pas un résumé.
+  const corps = (c) => {
+    if (c.cle === "alternance") {
+      if (c.sansObjet) return "";
+      return `<div style="margin-top:10px;">${c.detail.map((k) => `<div class="row" style="gap:8px;padding:5px 0;border-top:1px solid var(--border);">
+        <span class="grow">${esc(k.nom)}</span>
+        ${k.rythme ? `<span class="muted">${esc(k.rythme)} · ${k.semaines} sem. en centre</span>` : '<span class="pill p-warn">aucun rythme</span>'}
+      </div>`).join("")}</div>`;
+    }
+    if (c.cle === "qualiopi") {
+      if (c.fait) return "";
+      return `<div style="margin-top:10px;">
+        ${c.aRefaire != null ? `<div class="kpis">${fkpi(c.aRefaire, "indicateurs à reprendre", "bad")}${fkpi(c.nouveaux.length, "sans équivalent", "bad")}${c.jours != null ? fkpi(c.jours + " j", "avant échéance", c.jours <= 60 ? "bad" : "") : ""}</div>` : ""}
+        ${c.nouveaux.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;">Exigences nouvelles : n° ${c.nouveaux.join(", ")}.</p>` : ""}</div>`;
+    }
+    return `<div style="margin-top:10px;">${c.lignes.map((l) => `<div style="padding:6px 0;border-top:1px solid var(--border);">
+      <div class="row" style="gap:8px;"><b class="grow">${esc(l.label)}</b>
+        <span class="muted" style="font-size:12px;">indicateur ${l.indicateur}</span>
+        ${l.couvert ? '<span class="pill p-good">couvert</span>' : '<span class="pill p-warn">incomplet</span>'}</div>
+      ${l.manques.length ? `<ul style="margin:4px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;">${l.manques.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
+    </div>`).join("")}</div>`;
+  };
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="ch-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === chCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div style="flex:none;text-align:right;">
+        <div class="field-label">Référentiel à 33 indicateurs</div>
+        <div style="font-size:13px;" class="${d.jours != null && d.jours <= 60 ? "neg" : "muted"}">
+          ${d.jours == null ? esc(d.bascule) : d.jours > 0 ? `applicable le ${esc(d.bascule)} — dans ${d.jours} jour(s)` : `applicable depuis le ${esc(d.bascule)}`}</div>
+      </div>
+    </div>
+
+    <div class="card card-pad" style="margin-bottom:14px;border-left:4px solid ${d.pret ? "#4B7A5A" : "#8A7A4B"};">
+      <b>${d.pret ? "Les trois dispositifs sont en service sur ce campus."
+        : `${d.restants} chantier(s) à mettre en service sur ce campus.`}</b>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;">Trois dispositifs ajoutés en septembre 2026. Ils restent accessibles depuis leur écran habituel — le rythme depuis l'emploi du temps, la bascule depuis Qualiopi : ce menu les rassemble pour les piloter, il ne les déplace pas.</p>
+    </div>
+
+    ${d.chantiers.map((c) => `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid ${bord(c)};">
+      <div class="row" style="gap:8px;align-items:center;">
+        <h3 class="grow" style="margin:0;color:var(--marine);">${esc(c.titre)}</h3>
+        ${pastille(c)}
+        <button class="btn-ghost btn-sm ch-go" data-ecran="${esc(c.ecran)}">Ouvrir l'écran</button>
+      </div>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;">${esc(c.enjeu)}</p>
+      ${corps(c)}
+    </div>`).join("")}
+
+    <p class="hint muted">${esc(d.reserve)}</p>`;
+
+  $("#ch-campus").onchange = (e) => { chCampus = e.target.value; renderChantier(); };
+  $$(".ch-go").forEach((b) => {
+    b.onclick = () => {
+      // On emmène le campus choisi avec soi : arriver sur Qualiopi en ayant
+      // perdu le campus qu'on inspectait obligerait à le resélectionner.
+      const ecran = b.dataset.ecran;
+      if (ecran === "qualiopi") qCampus = chCampus;
+      if (ecran === "enquetes") enqCampus = chCampus;
+      if (ecran === "planning") planState.campusId = chCampus;
+      setView(ecran);
+    };
+  });
+}
+
 // --- Enquêtes : satisfaction (indicateur 30) et enseignements (indicateur 33) ---
 // Les deux dispositifs doivent rester distincts. L'écran les présente côte à
 // côte pour que ce soit visible, et refuse de les confondre.
@@ -4430,6 +4519,15 @@ async function openOuvertureDetail(oid) {
   }));
   // Le crayon ouvre désormais la fiche complète (contexte, RACI, livrables, échanges).
   $$(".task-edit").forEach((b) => b.addEventListener("click", () => openTaskSheet(oid, b.dataset.tid)));
+  // Toute la ligne ouvre la fiche. Le crayon restait le SEUL point d'entrée : sur une
+  // ligne de 900 px, viser une icône de 20 px pour accéder au responsable, aux étapes et
+  // aux livrables, c'est une cible de 2 % de la largeur — et la fiche passait pour
+  // inexistante. On exclut la pastille de statut et le crayon, qui ont leur propre action.
+  $$("#ouv-plan .ouv-task").forEach((ligne) => ligne.addEventListener("click", (e) => {
+    if (e.target.closest(".ouv-check, .task-edit, a, input, select")) return;
+    const bouton = ligne.querySelector(".task-edit");
+    if (bouton) openTaskSheet(oid, bouton.dataset.tid);
+  }));
   if (ouvView === "copil") {
     $("#cp-add")?.addEventListener("click", () => openCommitteeForm(oid));
     $$(".cp-edit").forEach((b) => b.addEventListener("click", () => openCommitteeForm(oid, committees.find((c) => c.id === b.dataset.cid))));

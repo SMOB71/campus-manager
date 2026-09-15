@@ -1118,6 +1118,79 @@ function destinatairesEnquete(e) {
   return out;
 }
 
+// --- Chantier 2026 : ce qui est livré mais pas encore en service ---
+//
+// POURQUOI CET ÉCRAN EXISTE. Trois dispositifs ont été ajoutés en septembre
+// 2026 : le rythme d'alternance, le référentiel qualité à 33 indicateurs et les
+// deux enquêtes. Ils sont dans l'application, mais être dans l'application ne
+// veut pas dire être en service : un rythme qui n'a jamais été posé, un campus
+// resté sur l'ancien référentiel et une enquête jamais ouverte laissent
+// exactement les mêmes trous qu'avant.
+//
+// L'écran ne raconte donc pas ce qui a été développé. Il dit, campus par
+// campus, CE QUI RESTE À FAIRE et ce que ça coûte de ne pas le faire — avec la
+// seule échéance qui ne se négocie pas : le 1er novembre 2026.
+app.get("/api/chantier", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  const campus = campusId ? store.listCampuses().find((c) => c.id === campusId) : null;
+  if (campusId && !campus) return res.status(404).json({ error: "campus introuvable" });
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+
+  // 1. Rythme d'alternance : seules les classes en alternance sont concernées.
+  const classes = store.listClasses({ campusId }).filter((k) => ["alternance", "mixte"].includes(k.modalite));
+  const posees = classes.filter((k) => k.weeksAtSchool && k.rythme);
+  const alternance = {
+    cle: "alternance", titre: "Rythme d'alternance", ecran: "planning",
+    concernees: classes.length, faites: posees.length,
+    detail: classes.map((k) => ({ id: k.id, nom: k.name, rythme: k.rythme || null, semaines: k.weeksAtSchool || null })),
+    fait: classes.length > 0 && posees.length === classes.length,
+    sansObjet: classes.length === 0,
+    // On dit la conséquence, pas l'état. « 0/3 » n'appelle aucune action.
+    enjeu: classes.length === 0
+      ? "Aucune classe en alternance sur ce campus : rien à poser."
+      : `${classes.length - posees.length} classe(s) sans rythme déclaré : le générateur travaille alors sur une estimation de 18 semaines, et le contrôle de couverture réclame des heures que le calendrier ne permet pas de poser.`,
+  };
+
+  // 2. Référentiel qualité. C'est la seule ligne qui porte une date butoir.
+  const q = campus ? store.getQualiopi(campus.id) : null;
+  const ev = q ? etatVersion(q, aujourdhui) : null;
+  const prep = q && q.version !== "v2026" ? preparerBascule(q.indicators || {}) : null;
+  const qualiopi = {
+    cle: "qualiopi", titre: "Référentiel national qualité", ecran: "qualiopi",
+    version: q?.version || null, jours: ev?.jours ?? null,
+    alerte: ev?.alerte || null,
+    aRefaire: prep?.aRefaire ?? null, nouveaux: prep?.nouveaux || [],
+    fait: q?.version === "v2026",
+    sansObjet: !campus,
+    enjeu: q?.version === "v2026"
+      ? "Campus suivi sur les 33 indicateurs."
+      : `Les indicateurs sont renumérotés : l'ancien 23 (handicap) devient le 26, la veille légale passe de 24 à 23. Tant que la bascule n'est pas faite, le tableau de conformité ne désigne plus les exigences que l'auditeur vérifiera.`,
+  };
+
+  // 3. Enquêtes : deux dispositifs distincts, tous deux exigibles.
+  const disp = enq.etatDispositif(store.listEnquetes({ campusId }), { aujourdhui });
+  const enquetes = {
+    cle: "enquetes", titre: "Recueil des appréciations", ecran: "enquetes",
+    lignes: disp.lignes, fait: disp.couvert, sansObjet: false,
+    enjeu: disp.couvert
+      ? "Les deux dispositifs sont en place et ont produit des suites."
+      : "Un questionnaire unique ne couvre ni l'indicateur 30 ni l'indicateur 33 : le décret exige deux dispositifs distincts, et l'audit regarde ce qui a été TIRÉ des retours, pas leur existence.",
+  };
+
+  const chantiers = [alternance, qualiopi, enquetes];
+  const restants = chantiers.filter((c) => !c.fait && !c.sansObjet);
+  res.json({
+    campusId: campusId || null, campus: campus?.name || null,
+    bascule: BASCULE_V2026, jours: ev?.jours ?? null,
+    chantiers, restants: restants.length,
+    // « Prêt » et non « conforme » : cet écran constate l'état de l'outil, pas
+    // celui de l'organisme. La conformité se vérifie en audit.
+    pret: restants.length === 0,
+    reserve: "Cet écran constate ce que l'application peut voir. Il ne vaut pas audit : la conformité se vérifie en contrôle.",
+  });
+});
+
 // --- Visites (cadence) ---
 app.get("/api/visits", requireAuth, (req, res) => res.json(scopeByCampus(req, store.listVisits(req.query.campusId))));
 app.post("/api/visits", requireAuth, (req, res) => {
