@@ -387,6 +387,8 @@ const NAV = [
   // (le rythme depuis le planning, la bascule depuis Qualiopi) : ce groupe
   // les rassemble pour les piloter, il ne les déplace pas.
   { id: "chantier", label: "Ce qui reste à mettre en service", icon: I.alert, group: "Chantier 2026" },
+  { id: "certification", label: "Présentation à la certification", icon: I.note, group: "Conformité" },
+  { id: "insertion-actions", label: "Insertion & poursuite d'études", icon: I.heart, group: "Conformité" },
   { id: "declarations", label: "Déclarations (SIFA, BPF)", icon: I.journal, admin: true, group: "Conformité" },
   { id: "qualite", label: "Réclamations & sous-traitance", icon: I.shield, group: "Conformité" },
   { id: "decrochage", label: "Risque de décrochage", icon: I.alert, group: "Enseignement" },
@@ -481,7 +483,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1751,6 +1753,158 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Présentation à la certification (indicateur 16) ---
+// Le manquement que cet écran sert à voir venir : une habilitation qui expire
+// AVANT l'épreuve. Elle est valable aujourd'hui, elle ne le sera plus en juin,
+// et c'est toute la promotion qui ne passe pas.
+let certifCampus = "";
+
+async function renderCertification() {
+  if (!certifCampus) certifCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/certifications?campusId=${certifCampus}`);
+  const ETAT_PILL = { valide: "p-good", expire: "p-bad", suspendue: "p-bad", a_declarer: "p-warn" };
+  const GRAV = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" };
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="cf-new">+ Certification</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="cf-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === certifCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(d.total, "certifications")}${fkpi(d.empechees, "ne peuvent pas être présentées", d.empechees ? "bad" : "good")}</div>
+    </div>
+    ${d.lignes.length ? d.lignes.map((l) => `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid ${l.bloquants ? "#8A4B4B" : "#4B7A5A"};">
+      <div class="row" style="gap:8px;align-items:center;">
+        <h3 class="grow" style="margin:0;color:var(--marine);">${esc(l.intitule || "Sans intitulé")}${l.codeRncp ? ` <span class="muted" style="font-weight:400;font-size:13px;">RNCP ${esc(l.codeRncp)}</span>` : ""}</h3>
+        <span class="pill ${ETAT_PILL[l.etat] || ""}">${esc(d.etats[l.etat] || l.etat)}</span>
+        <button class="btn-ghost btn-sm cf-edit" data-id="${esc(l.curriculumId || "")}">Modifier</button>
+      </div>
+      <p class="muted" style="margin:6px 0 0;font-size:13px;">${esc(l.regimeLabel)}${l.restant != null && l.restant >= 0 ? ` — valable encore ${l.restant} jour(s)` : ""}</p>
+      ${l.alertes.map((a) => `<div class="item" style="border-left:3px solid ${GRAV[a.gravite]};margin-top:8px;"><div class="grow">${esc(a.message)}</div></div>`).join("")}
+      ${l.sessions.length ? `<div class="card" style="overflow-x:auto;margin-top:10px;"><table class="net-table">
+        <thead><tr><th>Épreuve</th><th>Inscription avant</th><th>Déposée</th><th>Exigences</th><th>État</th></tr></thead><tbody>
+        ${l.sessions.map((s) => `<tr>
+          <td>${esc(s.dateEpreuve || "—")}</td><td>${esc(s.dateLimiteInscription || "—")}</td>
+          <td>${s.alertes.some((a) => a.code === "inscription_manquee") ? '<span class="pill p-bad">manquée</span>' : esc(s.dateLimiteInscription && s.manquantes === 0 ? "oui" : "—")}</td>
+          <td>${s.exigences.length ? `${s.exigences.length - s.manquantes}/${s.exigences.length}` : '<span class="muted">aucune déclarée</span>'}</td>
+          <td>${s.presentable ? '<span class="pill p-good">présentable</span>' : `<span class="pill p-bad">${s.bloquants} blocage(s)</span>`}</td>
+        </tr>`).join("")}</tbody></table></div>` : ""}
+    </div>`).join("") : `<div class="card card-pad"><b>Aucune certification déclarée.</b>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;">Tant que le régime de présentation n'est pas déclaré, personne ne sait si cet organisme peut présenter ses candidats — ni sous quel régime, ni jusqu'à quand.</p></div>`}
+    <p class="hint muted">${esc(d.reserve)}</p>`;
+
+  $("#cf-campus").onchange = (e) => { certifCampus = e.target.value; renderCertification(); };
+  $("#cf-new").onclick = () => openCertificationForm(d);
+}
+
+async function openCertificationForm(d, existante = null) {
+  const curricula = await api.get("/api/curricula");
+  const h = existante?.habilitation || {};
+  openModal(existante ? "Modifier la certification" : "Déclarer une certification", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Référentiel</label>
+        <select class="txt" id="cf-cur">${curricula.map((c) => `<option value="${c.id}" ${existante?.curriculumId === c.id ? "selected" : ""}>${esc(c.name)}${c.codeRncp ? ` — RNCP ${esc(c.codeRncp)}` : ""}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Régime de présentation</label>
+        <select class="txt" id="cf-regime">${Object.entries(d.regimes).map(([k, r]) => `<option value="${k}" ${h.regime === k ? "selected" : ""}>${esc(r.label)}</option>`).join("")}</select>
+        <p class="hint muted" id="cf-preuve" style="margin-top:4px;"></p></div>
+      <div><label class="field-label">Autorité de certification</label><input class="txt" id="cf-certificateur" value="${esc(h.certificateur || "")}"></div>
+      <div><label class="field-label">Référence (notification, convention)</label><input class="txt" id="cf-ref" value="${esc(h.reference || "")}"></div>
+      <div><label class="field-label">Valable du</label><input class="txt" id="cf-debut" type="date" value="${esc(h.dateDebut || "")}"></div>
+      <div><label class="field-label">Valable jusqu'au</label><input class="txt" id="cf-fin" type="date" value="${esc(h.dateFin || "")}"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Exigences formelles du certificateur (une par ligne)</label>
+        <textarea class="txt" id="cf-exigences" rows="4" placeholder="Livret de suivi visé par le maître d'apprentissage&#10;Dossier professionnel déposé sur la plateforme">${esc((h.exigences || []).map((e) => e.libelle).join("\n"))}</textarea>
+        <p class="hint muted" style="margin-top:4px;">Saisissez ce que le certificateur VOUS a notifié. L'application ne les connaît pas : les inventer produirait une liste fausse présentée comme réglementaire.</p></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="cf-save">Enregistrer</button></div>`);
+
+  const majPreuve = () => { $("#cf-preuve").textContent = `Se prouve par : ${d.regimes[$("#cf-regime").value]?.preuve || ""}`; };
+  $("#cf-regime").onchange = majPreuve; majPreuve();
+
+  $("#cf-save").onclick = async () => {
+    const exigences = $("#cf-exigences").value.split("\n").map((s) => s.trim()).filter(Boolean)
+      .map((libelle, i) => ({ id: `e${i + 1}`, libelle }));
+    const corps = {
+      campusId: certifCampus, curriculumId: $("#cf-cur").value,
+      habilitation: {
+        regime: $("#cf-regime").value, certificateur: $("#cf-certificateur").value,
+        reference: $("#cf-ref").value, dateDebut: $("#cf-debut").value, dateFin: $("#cf-fin").value,
+        exigences,
+      },
+    };
+    const r = existante ? await api.patch(`/api/certifications/${existante.id}`, corps)
+                        : await api.post("/api/certifications", corps);
+    if (r?.error) { alert(r.error); return; }
+    closeModals(); renderCertification();
+  };
+}
+
+// --- Actions d'insertion et de poursuite d'études (indicateur 29) ---
+// L'écran insiste sur la moitié oubliée : beaucoup d'organismes ne documentent
+// que l'emploi et se font reprendre sur la poursuite d'études.
+let insCampus = "";
+
+async function renderInsertionActions() {
+  if (!insCampus) insCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/actions-insertion?campusId=${insCampus}`);
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="ia-new">+ Action</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="ia-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === insCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:14px;">
+      ${d.voies.map((v) => `<div class="card card-pad" style="border-left:4px solid ${v.couvert ? "#4B7A5A" : "#8A7A4B"};">
+        <div class="section-title" style="margin-top:0;">${esc(v.label)}</div>
+        <div class="kpis">${fkpi(v.total, "actions")}${fkpi(v.avecResultat, "avec résultat", v.avecResultat ? "good" : "bad")}${fkpi(v.participants, "participants")}</div>
+        ${v.manque ? `<p class="muted" style="margin:8px 0 0;font-size:13px;">${esc(v.manque)}</p>` : '<p class="muted" style="margin:8px 0 0;font-size:13px;">Rien à signaler.</p>'}
+      </div>`).join("")}
+    </div>
+    <p class="hint muted" style="margin-bottom:14px;">${esc(d.reserve)}</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Date</th><th>Action</th><th>Type</th><th>Visée</th><th>Participants</th><th>Résultat</th><th></th></tr></thead><tbody>
+      ${d.actions.length ? d.actions.map((a) => `<tr>
+        <td>${esc(a.date || "—")}</td><td><b>${esc(a.intitule)}</b></td>
+        <td>${esc(d.types[a.type]?.label || a.type)}</td>
+        <td>${esc(d.visees[a.vise || d.types[a.type]?.vise] || "—")}</td>
+        <td>${a.participants ?? "—"}</td>
+        <td>${a.resultat ? esc(a.resultat) : '<span class="pill p-warn">non renseigné</span>'}</td>
+        <td><button class="btn-ghost btn-sm ia-del" data-id="${a.id}">Supprimer</button></td>
+      </tr>`).join("") : '<tr><td colspan="7" class="muted">Aucune action enregistrée.</td></tr>'}
+      </tbody></table></div>`;
+
+  $("#ia-campus").onchange = (e) => { insCampus = e.target.value; renderInsertionActions(); };
+  $("#ia-new").onclick = () => openActionInsertionForm(d);
+  $$(".ia-del").forEach((b) => { b.onclick = async () => {
+    if (!confirm("Supprimer cette action ?")) return;
+    await api.del(`/api/actions-insertion/${b.dataset.id}`); renderInsertionActions();
+  }; });
+}
+
+function openActionInsertionForm(d) {
+  openModal("Action d'insertion ou de poursuite d'études", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Intitulé</label><input class="txt" id="ia-titre" placeholder="Forum entreprises de printemps"></div>
+      <div><label class="field-label">Type</label><select class="txt" id="ia-type">${Object.entries(d.types).map(([k, t]) => `<option value="${k}">${esc(t.label)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Date</label><input class="txt" id="ia-date" type="date"></div>
+      <div><label class="field-label">Visée</label><select class="txt" id="ia-vise"><option value="">— celle du type —</option>${Object.entries(d.visees).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Participants</label><input class="txt" id="ia-part" type="number" min="0"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Résultat</label><input class="txt" id="ia-res" placeholder="12 contrats signés, 8 dossiers de poursuite déposés…">
+        <p class="hint muted" style="margin-top:4px;">C'est ce champ qui sépare une action d'un événement. Une action dont on ne sait pas ce qu'elle a produit ne démontre rien en audit.</p></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="ia-save">Enregistrer</button></div>`);
+
+  $("#ia-save").onclick = async () => {
+    const r = await api.post("/api/actions-insertion", {
+      campusId: insCampus, intitule: $("#ia-titre").value, type: $("#ia-type").value,
+      date: $("#ia-date").value, vise: $("#ia-vise").value || null,
+      participants: $("#ia-part").value === "" ? null : +$("#ia-part").value,
+      resultat: $("#ia-res").value,
+    });
+    if (r?.error) { alert(r.error); return; }
+    if (r.warnings?.length) alert(r.warnings.join("\n"));
+    closeModals(); renderInsertionActions();
+  };
+}
+
 // --- Chantier 2026 ---
 // Trois dispositifs ont été ajoutés en septembre 2026. Être dans l'application
 // ne veut pas dire être en service : un rythme jamais posé, un campus resté sur
@@ -1985,14 +2139,6 @@ async function openEnquete(e) {
   };
 }
 
-// Périmètre d'un indicateur 2026. On n'affiche rien quand il concerne tout le
-// monde : un badge présent partout ne distingue plus rien.
-const Q_PERIMETRE = { af: "formation", app: "apprentissage", bc: "bilan de compétences", vae: "VAE" };
-function qPerimetreTag(p) {
-  if (!Array.isArray(p) || p.length === 0 || p.length === 4) return "";
-  return ` <span class="q-tag">${p.map((x) => esc(Q_PERIMETRE[x] || x)).join(" · ")}</span>`;
-}
-
 // L'échéance du 1er novembre 2026. Tant qu'un campus n'a pas basculé, c'est
 // l'information la plus importante de l'écran — devant le taux de conformité,
 // qui porte sur un référentiel en train d'être remplacé.
@@ -2107,7 +2253,7 @@ async function renderQualiopi() {
         const cur = ind[i.n] || {};
         return `<div class="q-ind">
           <div class="q-num">${i.n}</div>
-          <div class="grow"><div>${esc(i.l)}${i.tag ? ` <span class="q-tag">${i.tag}</span>` : ""}${qPerimetreTag(i.p)}${i.nouveau ? ' <span class="q-tag" style="background:var(--good-bg);">nouveau</span>' : ""}</div>
+          <div class="grow"><div>${esc(i.l)}${i.tag ? ` <span class="q-tag">${i.tag}</span>` : ""}${i.nouveau ? ' <span class="q-tag" style="background:var(--good-bg);">nouveau</span>' : ""}</div>
             <input class="txt q-note" data-n="${i.n}" placeholder="Note / preuve…" value="${esc(cur.note || "")}"></div>
           <button type="button" class="btn-ghost btn-sm q-proof" data-n="${i.n}" title="Pièces justificatives">${I.clip}${docCount[i.n] ? `<span class="q-proof-n">${docCount[i.n]}</span>` : ""}</button>
           <select class="q-stat s-${cur.status || "a_verifier"}" data-n="${i.n}">${STAT.map((s) => `<option value="${s.k}" ${(cur.status || "a_verifier") === s.k ? "selected" : ""}>${s.l}</option>`).join("")}</select>
@@ -2120,6 +2266,7 @@ async function renderQualiopi() {
         ${g.sec ? `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;color:var(--marine);opacity:.7;margin-top:6px;border-top:1px solid var(--border);padding-top:10px;">${esc(g.sec)}</div>` : ""}
         <div><dt style="font-weight:600;color:var(--marine);">${esc(g.t)}</dt><dd style="margin:2px 0 0;color:var(--muted);line-height:1.5;">${esc(g.d)}</dd></div>`).join("")}</dl>
     </details>` : ""}
+    <p class="hint muted">Tous les indicateurs ne concernent pas toutes les catégories d'actions : le tableau annexé au décret dit lesquels. Marquez « N/A » ceux qui ne relèvent pas de votre périmètre — ils sortent alors du taux de conformité. L'application ne le décide pas à votre place : un périmètre deviné trop étroit ferait paraître l'organisme plus conforme qu'il ne l'est.${(ref.versions.find((v) => v.cle === q.version)?.source) ? ` <a href="${esc(ref.versions.find((v) => v.cle === q.version).source)}" target="_blank" rel="noopener">Texte du référentiel</a>` : ""}</p>
     <div class="actions" style="position:sticky;bottom:0;background:var(--bg);padding:10px 0;"><button id="q-save" class="btn-primary">Enregistrer Qualiopi</button> <span id="q-msg" class="status"></span></div>`;
   $("#q-campus").addEventListener("change", (e) => { qCampus = e.target.value; renderQualiopi(); });
   if ($("#q-bascule")) $("#q-bascule").onclick = () => openBasculeQualiopi(qCampus);

@@ -99,18 +99,43 @@ test("chaque indicateur 2026 a une correspondance déclarée — aucun oubli sil
   }
 });
 
-// Un indicateur hors périmètre est SANS OBJET, pas non conforme.
-test("le périmètre ne pénalise pas un organisme qui ne fait pas d'apprentissage", () => {
+// LE FILTRE AUTOMATIQUE DE PÉRIMÈTRE A ÉTÉ RETIRÉ, ET C'EST LE TEST.
+// Une première version excluait du calcul les indicateurs hors périmètre,
+// d'après une table dérivée de l'annexe qui s'est révélée contradictoire d'une
+// lecture à l'autre. L'erreur n'est pas symétrique : un périmètre trop étroit
+// retire des indicateurs du dénominateur et fait paraître l'organisme PLUS
+// conforme qu'il ne l'est. C'est le seul sens dans lequel on ne peut pas se
+// tromper sans que personne ne le voie.
+test("le taux ne retire AUCUN indicateur de lui-même — seul « non applicable » le fait", () => {
   const tout = Object.fromEntries(numerosDe("v2026").map((n) => [n, { status: "conforme" }]));
-  // Un organisme de formation seul : les indicateurs « apprentissage » ne le
-  // concernent pas. On les retire du calcul au lieu de les compter en échec.
+  assert.equal(conformityRate(tout, "v2026"), 100);
+
+  // Six indicateurs « apprentissage » laissés à vérifier : le taux BAISSE.
+  // L'application ne devine pas qu'ils ne concernent pas l'organisme.
   const sansApp = { ...tout };
   for (const n of [13, 14, 15, 20, 28, 29]) delete sansApp[n];
-  assert.equal(conformityRate(sansApp, "v2026", ["af"]), 100);
-  // Sans filtre de périmètre, les mêmes données plafonnent sans recours.
-  assert.ok(conformityRate(sansApp, "v2026") < 100);
-  // Et un CFA, lui, doit bien les traiter.
-  assert.ok(conformityRate(sansApp, "v2026", ["af", "app"]) < 100);
+  const devine = conformityRate(sansApp, "v2026");
+  assert.ok(devine < 100, "un indicateur non renseigné ne doit pas être présumé hors périmètre");
+  assert.equal(devine, Math.round((27 / 33) * 100));
+
+  // C'est l'organisme qui déclare son périmètre, indicateur par indicateur.
+  const declare = { ...tout };
+  for (const n of [13, 14, 15, 20, 28, 29]) declare[n] = { status: "non_applicable" };
+  assert.equal(conformityRate(declare, "v2026"), 100);
+
+  // Et un appel resté sur l'ancienne signature ne filtre plus rien en douce :
+  // le troisième argument est ignoré, il ne retire aucun indicateur.
+  assert.equal(conformityRate(sansApp, "v2026", ["af"]), devine);
+});
+
+// Le périmètre n'est pas porté par les données : le dire est le but du test.
+test("aucun indicateur ne prétend connaître son périmètre", () => {
+  for (const cle of ["v2019", "v2026"]) {
+    for (const n of numerosDe(cle)) {
+      assert.equal(indicateurDe(cle, n).p, undefined,
+        `l'indicateur ${n} (${cle}) ne doit pas encoder un périmètre approximatif`);
+    }
+  }
 });
 
 test("le taux se calcule sur la version de l'enregistrement, pas sur la date du jour", () => {

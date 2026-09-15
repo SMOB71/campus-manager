@@ -39,6 +39,8 @@ import * as taxe from "./lib/taxe.js";
 import * as indicateurs from "./lib/indicateurs.js";
 import * as mobilite from "./lib/mobilite.js";
 import * as enq from "./lib/enquetes.js";
+import * as certif from "./lib/certification.js";
+import * as ins from "./lib/insertion.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -843,7 +845,7 @@ app.get("/api/campuses/:id/qualiopi", campusGuard, (req, res) => {
   if (!q) return res.status(404).json({ error: "campus introuvable" });
   res.json({
     ...q,
-    conformity: conformityRate(q.indicators || {}, q.version, q.categories),
+    conformity: conformityRate(q.indicators || {}, q.version),
     control: computeControlDates(q.lastAudit),
     // L'échéance du 1er novembre 2026 est la seule information qui compte
     // aujourd'hui sur cet écran : elle voyage avec l'état du campus.
@@ -866,7 +868,7 @@ app.post("/api/campuses/:id/qualiopi/bascule", campusGuard, requireAdmin, (req, 
   logAudit(req, "update", "qualiopi",
     `bascule vers le référentiel 2026 (33 indicateurs) — ${store.listCampuses().find((c) => c.id === req.params.id)?.name || req.params.id}`);
   res.json({
-    ...out, conformity: conformityRate(out.indicators, "v2026", out.categories),
+    ...out, conformity: conformityRate(out.indicators, "v2026"),
     aRefaire: prep.aRefaire, nouveaux: prep.nouveaux, reserve: prep.reserve,
   });
 });
@@ -889,7 +891,7 @@ app.patch("/api/campuses/:id/qualiopi", campusGuard, (req, res) => {
   const q = store.updateQualiopi(req.params.id, req.body || {});
   if (!q) return res.status(404).json({ error: "campus introuvable" });
   logAudit(req, "update", "qualiopi", store.listCampuses().find((c) => c.id === req.params.id)?.name || req.params.id);
-  res.json({ ...q, conformity: conformityRate(q.indicators || {}, q.version, q.categories), etatVersion: etatVersion(q) });
+  res.json({ ...q, conformity: conformityRate(q.indicators || {}, q.version), etatVersion: etatVersion(q) });
 });
 
 // --- Enquêtes : satisfaction (indicateur 30) et enseignements (indicateur 33) ---
@@ -1118,6 +1120,94 @@ function destinatairesEnquete(e) {
   return out;
 }
 
+// --- Certification : conditions de présentation (indicateur 16) ---
+app.get("/api/certifications", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const items = scopeByCampus(req, store.listCertifications({ campusId }));
+  // On joint l'intitulé du référentiel : une ligne « c1 » n'apprend rien.
+  const curricula = new Map(store.listCurricula().map((c) => [c.id, c]));
+  const enrichies = items.map((c) => ({
+    ...c,
+    intitule: c.intitule || curricula.get(c.curriculumId)?.name || "",
+    codeRncp: c.codeRncp || curricula.get(c.curriculumId)?.codeRncp || null,
+  }));
+  res.json({ ...certif.tableauDeBord(enrichies, aujourdhui), regimes: certif.REGIMES, etats: certif.ETATS });
+});
+app.post("/api/certifications", requireAuth, requireAdmin, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = certif.validateHabilitation(req.body?.habilitation || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const made = store.addCertification({ ...req.body, sessions: [] });
+  logAudit(req, "create", "certification", made.intitule || made.curriculumId || "");
+  res.json({ ...made, warnings: v.warnings });
+});
+app.patch("/api/certifications/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCertification(req.params.id);
+  if (!c) return res.status(404).json({ error: "certification introuvable" });
+  if (!requireCampus(req, res, c.campusId)) return;
+  if (req.body?.habilitation) {
+    const v = certif.validateHabilitation(req.body.habilitation);
+    if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  }
+  res.json(store.updateCertification(c.id, req.body || {}));
+});
+// Les sessions vivent dans la certification : une session d'examen sans la
+// certification à laquelle elle présente ne veut rien dire.
+app.post("/api/certifications/:id/sessions", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCertification(req.params.id);
+  if (!c) return res.status(404).json({ error: "certification introuvable" });
+  if (!requireCampus(req, res, c.campusId)) return;
+  const v = certif.validateSession(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const sessions = [...(c.sessions || []), { ...req.body, id: store.id(), exigencesSatisfaites: {} }];
+  res.json(store.updateCertification(c.id, { sessions }));
+});
+app.patch("/api/certifications/:id/sessions/:sid", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCertification(req.params.id);
+  if (!c) return res.status(404).json({ error: "certification introuvable" });
+  if (!requireCampus(req, res, c.campusId)) return;
+  const sessions = (c.sessions || []).map((s) => (s.id === req.params.sid ? { ...s, ...req.body, id: s.id } : s));
+  if (!sessions.some((s) => s.id === req.params.sid)) return res.status(404).json({ error: "session introuvable" });
+  res.json(store.updateCertification(c.id, { sessions }));
+});
+
+// --- Actions d'insertion et de poursuite d'études (indicateur 29) ---
+app.get("/api/actions-insertion", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  const actions = scopeByCampus(req, store.listActionsInsertion({ campusId }));
+  res.json({
+    actions,
+    ...ins.etatDispositif(actions, { aujourdhui: new Date().toISOString().slice(0, 10) }),
+    parType: ins.parType(actions), types: ins.TYPES, visees: ins.VISEES,
+  });
+});
+app.post("/api/actions-insertion", requireAuth, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = ins.validateAction(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const made = store.addActionInsertion(req.body);
+  logAudit(req, "create", "action-insertion", made.intitule || "");
+  res.json({ ...made, warnings: v.warnings });
+});
+app.patch("/api/actions-insertion/:id", requireAuth, (req, res) => {
+  const a = store.getActionInsertion(req.params.id);
+  if (!a) return res.status(404).json({ error: "action introuvable" });
+  if (!requireCampus(req, res, a.campusId)) return;
+  const v = ins.validateAction({ ...a, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json({ ...store.updateActionInsertion(a.id, req.body || {}), warnings: v.warnings });
+});
+app.delete("/api/actions-insertion/:id", requireAuth, requireAdmin, (req, res) => {
+  const a = store.getActionInsertion(req.params.id);
+  if (!a) return res.status(404).json({ error: "action introuvable" });
+  if (!requireCampus(req, res, a.campusId)) return;
+  store.deleteActionInsertion(a.id);
+  res.json({ ok: true });
+});
+
 // --- Chantier 2026 : ce qui est livré mais pas encore en service ---
 //
 // POURQUOI CET ÉCRAN EXISTE. Trois dispositifs ont été ajoutés en septembre
@@ -1178,7 +1268,37 @@ app.get("/api/chantier", requireAuth, (req, res) => {
       : "Un questionnaire unique ne couvre ni l'indicateur 30 ni l'indicateur 33 : le décret exige deux dispositifs distincts, et l'audit regarde ce qui a été TIRÉ des retours, pas leur existence.",
   };
 
-  const chantiers = [alternance, qualiopi, enquetes];
+  // 4. Conditions de présentation à la certification (indicateur 16).
+  const curricula = new Map(store.listCurricula().map((c) => [c.id, c]));
+  const certifs = store.listCertifications({ campusId }).map((c) => ({
+    ...c, intitule: c.intitule || curricula.get(c.curriculumId)?.name || "",
+  }));
+  const tdbCertif = certif.tableauDeBord(certifs, aujourdhui);
+  const certification = {
+    cle: "certification", titre: "Présentation à la certification", ecran: "certification",
+    total: tdbCertif.total, empechees: tdbCertif.empechees, bloquants: tdbCertif.bloquants,
+    lignes: tdbCertif.lignes.slice(0, 5).map((l) => ({ intitule: l.intitule, etat: l.etat, regime: l.regimeLabel, bloquants: l.bloquants })),
+    fait: tdbCertif.total > 0 && tdbCertif.bloquants === 0,
+    sansObjet: false,
+    enjeu: tdbCertif.total === 0
+      ? "Aucune certification déclarée : on ne sait pas si cet organisme peut présenter ses candidats, ni sous quel régime."
+      : tdbCertif.empechees
+        ? `${tdbCertif.empechees} certification(s) ne peuvent pas être présentées en l'état. Une habilitation expirée ne se rattrape pas au dernier moment : c'est la promotion entière qui ne passe pas.`
+        : `${tdbCertif.bloquants} point(s) bloquant(s) sur les sessions — inscription hors délai ou exigence du certificateur non confirmée.`,
+  };
+
+  // 5. Actions d'insertion et de poursuite d'études (indicateur 29).
+  const dispIns = ins.etatDispositif(store.listActionsInsertion({ campusId }), { aujourdhui });
+  const insertion = {
+    cle: "insertion", titre: "Insertion et poursuite d'études", ecran: "insertion-actions",
+    voies: dispIns.voies, total: dispIns.total,
+    fait: dispIns.couvert, sansObjet: false,
+    enjeu: dispIns.couvert
+      ? "Des actions datées, sur les deux voies, avec leurs résultats."
+      : "L'indicateur 29 porte sur les ACTIONS menées, pas sur le taux d'insertion — et il couvre aussi la POURSUITE D'ÉTUDES, la moitié que l'on oublie en ne documentant que l'emploi.",
+  };
+
+  const chantiers = [alternance, qualiopi, enquetes, certification, insertion];
   const restants = chantiers.filter((c) => !c.fait && !c.sansObjet);
   res.json({
     campusId: campusId || null, campus: campus?.name || null,
@@ -1235,7 +1355,7 @@ function buildNetworkRows(req) {
   const today = new Date().toISOString().slice(0, 10);
   const monthsSince = (d) => (d ? Math.round((Date.now() - new Date(d).getTime()) / (30 * 864e5)) : null);
   return campuses.map((c) => {
-    const q = c.qualiopi ? conformityRate(c.qualiopi.indicators || {}, c.qualiopi.version, c.qualiopi.categories) : null;
+    const q = c.qualiopi ? conformityRate(c.qualiopi.indicators || {}, c.qualiopi.version) : null;
     const openActions = actions.filter((a) => a.campusId === c.id && a.status !== "done").length;
     const overdue = actions.filter((a) => a.campusId === c.id && a.status !== "done" && a.dueDate && a.dueDate < today).length;
     const openIncidents = incidents.filter((i) => i.campusId === c.id).length;
@@ -1346,7 +1466,7 @@ app.get("/api/campus360/:id", campusGuard, (req, res) => {
   res.json({
     campus,
     row: buildNetworkRows(req).find((r) => r.id === campus.id),
-    qualiopi: campus.qualiopi ? { conformity: conformityRate(campus.qualiopi.indicators || {}, campus.qualiopi.version, campus.qualiopi.categories), lastAudit: campus.qualiopi.lastAudit || "", nextSurveillance: campus.qualiopi.nextSurveillance || "", renewalDate: campus.qualiopi.renewalDate || "" } : null,
+    qualiopi: campus.qualiopi ? { conformity: conformityRate(campus.qualiopi.indicators || {}, campus.qualiopi.version), lastAudit: campus.qualiopi.lastAudit || "", nextSurveillance: campus.qualiopi.nextSurveillance || "", renewalDate: campus.qualiopi.renewalDate || "" } : null,
     actions: { open: actions.filter((a) => a.status !== "done"), overdue: actions.filter((a) => a.status !== "done" && a.dueDate && a.dueDate < today) },
     deliverables: store.listDeliverables({ campusId: campus.id }).slice(0, 6),
     kpi: store.listKpi(campus.id),

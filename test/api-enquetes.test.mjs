@@ -217,9 +217,10 @@ test("répondre exige un jeton : la route publique n'accepte rien sans lui", asy
 // --- Chantier 2026 : l'écran de pilotage des trois dispositifs ---
 // Ce qui est vérifié : l'écran reflète l'ÉTAT RÉEL, et ne se déclare pas prêt
 // tant qu'il reste quelque chose à faire.
-test("le chantier liste les trois dispositifs et compte ce qui reste", async () => {
+test("le chantier liste tous les dispositifs et compte ce qui reste", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
-  assert.deepEqual(d.chantiers.map((c) => c.cle), ["alternance", "qualiopi", "enquetes"]);
+  assert.deepEqual(d.chantiers.map((c) => c.cle),
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion"]);
   assert.equal(d.bascule, "2026-11-01");
   // Chaque ligne dit la CONSÉQUENCE, pas seulement un compteur : « 0/3 »
   // n'appelle aucune action.
@@ -277,17 +278,139 @@ test("la ligne Qualiopi porte l'échéance et ce qu'il y a à reprendre, puis se
   assert.equal(q.alerte, null);
 });
 
-test("le chantier n'est prêt que lorsque les trois lignes le sont", async () => {
+test("le chantier n'est prêt que lorsque TOUTES les lignes le sont", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   // Alternance et Qualiopi sont faits ; les enquêtes, non — la satisfaction
-  // générale n'a jamais été exploitée.
+  // générale n'a jamais été exploitée. Certification et insertion non plus :
+  // rien n'y est encore déclaré à ce stade du scénario.
   assert.equal(d.chantiers.find((c) => c.cle === "alternance").fait, true);
   assert.equal(d.chantiers.find((c) => c.cle === "qualiopi").fait, true);
   assert.equal(d.chantiers.find((c) => c.cle === "enquetes").fait, false);
-  assert.equal(d.restants, 1);
+  // `restants` compte exactement les lignes ni faites ni sans objet : c'est le
+  // seul chiffre de l'écran, il ne doit pas dériver quand on ajoute un chantier.
+  const attendu = d.chantiers.filter((c) => !c.fait && !c.sansObjet).length;
+  assert.equal(d.restants, attendu);
+  assert.ok(d.restants >= 1);
   assert.equal(d.pret, false, "un seul dispositif manquant suffit à ne pas être prêt");
 });
 
 test("un campus inconnu, ou hors périmètre, ne renvoie pas un chantier vide et rassurant", async () => {
   assert.equal((await get("/api/chantier?campusId=inexistant")).status, 404);
+});
+
+// --- Indicateurs 16 et 29, bout en bout ---
+test("sans certification déclarée, le chantier ne conclut pas que tout va bien", async () => {
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  const c = d.chantiers.find((x) => x.cle === "certification");
+  assert.equal(c.total, 0);
+  assert.equal(c.fait, false, "rien de déclaré n'est pas la même chose que rien à signaler");
+  assert.match(c.enjeu, /on ne sait pas/);
+});
+
+test("une habilitation sans date de fin est refusée à la création", async () => {
+  const curricula = await jget("/api/curricula");
+  const r = await post("/api/certifications", {
+    campusId, curriculumId: curricula[0].id,
+    habilitation: { regime: "habilitation", certificateur: "Ministère X", reference: "H-1" },
+  });
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).error, /date de fin/);
+});
+
+let certifId = null;
+
+test("une habilitation qui expire avant l'épreuve bloque la session, et remonte au chantier", async () => {
+  const curricula = await jget("/api/curricula");
+  const c = await (await post("/api/certifications", {
+    campusId, curriculumId: curricula[0].id,
+    habilitation: {
+      regime: "habilitation", certificateur: "Ministère X", reference: "H-1",
+      dateDebut: "2024-01-01", dateFin: "2027-03-31",
+      exigences: [{ id: "e1", libelle: "Livret de suivi visé" }],
+    },
+  })).json();
+  certifId = c.id;
+
+  // Épreuve en juin, habilitation jusqu'en mars.
+  const avecSession = await (await post(`/api/certifications/${certifId}/sessions`, {
+    dateEpreuve: "2027-06-15", dateLimiteInscription: "2027-01-10",
+  })).json();
+  assert.equal(avecSession.sessions.length, 1);
+
+  const tdb = await jget(`/api/certifications?campusId=${campusId}`);
+  const ligne = tdb.lignes.find((l) => l.curriculumId === curricula[0].id);
+  const s = ligne.sessions[0];
+  assert.equal(s.presentable, false);
+  assert.ok(s.alertes.some((a) => a.code === "habilitation_expire_avant_epreuve"));
+  // L'exigence du certificateur n'est pas confirmée : signalée, pas bloquante
+  // tant que l'épreuve n'a pas eu lieu.
+  assert.equal(s.manquantes, 1);
+
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  const ch = d.chantiers.find((x) => x.cle === "certification");
+  assert.equal(ch.total, 1);
+  assert.ok(ch.bloquants >= 1);
+  assert.equal(ch.fait, false);
+});
+
+test("prolonger l'habilitation referme le blocage — l'état est lu, pas stocké", async () => {
+  const r = await req(`/api/certifications/${certifId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { habilitation: {
+      regime: "habilitation", certificateur: "Ministère X", reference: "H-2",
+      dateDebut: "2024-01-01", dateFin: "2029-06-30",
+      exigences: [{ id: "e1", libelle: "Livret de suivi visé" }],
+    } },
+  });
+  assert.equal(r.status, 200);
+  const tdb = await jget(`/api/certifications?campusId=${campusId}`);
+  const s = tdb.lignes[0].sessions[0];
+  assert.equal(s.alertes.some((a) => a.code === "habilitation_expire_avant_epreuve"), false);
+  assert.equal(tdb.empechees, 0);
+});
+
+test("l'indicateur 29 n'est couvert que si la POURSUITE D'ÉTUDES l'est aussi", async () => {
+  // Trois actions d'insertion : la voie emploi est couverte, l'autre non.
+  for (const t of ["forum", "atelier_technique", "relation_entreprise"]) {
+    const r = await post("/api/actions-insertion", {
+      campusId, type: t, intitule: `Action ${t}`, date: "2026-05-12",
+      participants: 30, resultat: "12 contrats signés",
+    });
+    assert.equal(r.status, 200);
+  }
+  let d = await jget(`/api/actions-insertion?campusId=${campusId}`);
+  assert.equal(d.voies.find((v) => v.voie === "insertion").couvert, true);
+  assert.equal(d.voies.find((v) => v.voie === "poursuite").couvert, false);
+  assert.equal(d.couvert, false);
+  assert.match(d.reserve, /pas sur le taux/);
+
+  let ch = (await jget(`/api/chantier?campusId=${campusId}`)).chantiers.find((x) => x.cle === "insertion");
+  assert.equal(ch.fait, false);
+  assert.match(ch.enjeu, /POURSUITE D'ÉTUDES/);
+
+  // Une action sur la poursuite d'études referme la ligne.
+  await post("/api/actions-insertion", {
+    campusId, type: "information_poursuite", intitule: "Réunion poursuite d'études",
+    date: "2026-06-02", participants: 22, resultat: "8 dossiers déposés",
+  });
+  d = await jget(`/api/actions-insertion?campusId=${campusId}`);
+  assert.equal(d.couvert, true);
+  ch = (await jget(`/api/chantier?campusId=${campusId}`)).chantiers.find((x) => x.cle === "insertion");
+  assert.equal(ch.fait, true);
+});
+
+test("une action sans résultat est acceptée mais signalée, et ne couvre rien seule", async () => {
+  const r = await (await post("/api/actions-insertion", {
+    campusId, type: "passerelle", intitule: "Partenariat sans suite", date: "2026-07-01",
+  })).json();
+  assert.match(r.warnings.join(" "), /ne démontre rien/);
+  // Une action sans date, elle, est refusée.
+  assert.equal((await post("/api/actions-insertion", { campusId, type: "forum", intitule: "x" })).status, 400);
+});
+
+test("le chantier compte maintenant cinq dispositifs", async () => {
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  assert.deepEqual(d.chantiers.map((c) => c.cle),
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion"]);
+  for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
 });
