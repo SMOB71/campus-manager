@@ -583,3 +583,139 @@ test("une fois une séance passée à distance, le chantier cesse d'être sans o
   assert.ok(dist.tauxJustifie < 100);
   assert.match(dist.enjeu, /contrôle de service fait|D\. 6313-3-1/);
 });
+
+// --- Dossiers RH des intervenants et masse horaire ---
+let profId = null;
+
+test("un dossier incomplet dit ce que chaque manque empêche", async () => {
+  const t = await (await post("/api/teachers", {
+    name: "Claire Martin", email: "claire@x.fr", status: "vacataire", campusIds: [campusId],
+  })).json();
+  profId = t.id;
+
+  const d = await jget(`/api/intervenants/dossiers?campusId=${campusId}`);
+  const mien = d.dossiers.find((x) => x.teacherId === profId);
+  assert.equal(mien.dossier.complet, false);
+  assert.ok(mien.dossier.manquants.length >= 3);
+  for (const m of mien.dossier.manquants) assert.ok(m.bloque.length > 15, m.cle);
+  assert.equal(d.incomplets >= 1, true);
+  // Les données les plus sensibles ne sont PAS demandées ici.
+  assert.doesNotMatch(JSON.stringify(d.champs), /sécurité sociale|bancaire|iban/i);
+  assert.match(JSON.stringify(d.aTransmettre), /sécurité sociale/);
+});
+
+test("LE VOLUME HORAIRE VIENT DU PLANNING, PAS D'UNE SAISIE", async () => {
+  await req(`/api/teachers/${profId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { subjects: ["Optique"], tauxHoraire: 45, heuresAnnuelles: 4, matricule: "M12", regle: "+10 % préparation" },
+  });
+
+  const curricula = await jget("/api/curricula");
+  const mod = curricula[0].modules[0];
+  const room = (await jget("/api/rooms")).find((r) => r.campusId === campusId);
+  let posees = 0;
+  for (let j = 0; j < 40 && posees < 3; j++) {
+    const date = new Date(Date.UTC(2027, 4, 3 + j)).toISOString().slice(0, 10);
+    const res = await post("/api/sessions", {
+      campusId, classId, roomId: room?.id, teacherId: profId, moduleId: mod.id,
+      date, start: "09:00", end: "11:00", kind: "cours",
+    });
+    if (res.status === 200) posees++;
+  }
+  assert.equal(posees, 3, "trois séances de 2 h doivent avoir pu être posées");
+
+  const d = await jget(`/api/intervenants/dossiers?campusId=${campusId}`);
+  const mien = d.dossiers.find((x) => x.teacherId === profId);
+  // 3 × 2 h = 6 h, lues dans les séances — jamais saisies.
+  assert.equal(mien.volume.heuresAffectees, 6);
+  assert.equal(mien.volume.heuresAuContrat, 4);
+  assert.equal(mien.volume.ecart, 2);
+  assert.match(mien.volume.alerte.message, /avenant/);
+  assert.equal(mien.volume.matieres[0].heures, 6);
+  assert.equal(mien.dossier.complet, true);
+});
+
+test("la fiche RH rassemble tout, et refuse de chiffrer sans coefficient", async () => {
+  const f = await jget(`/api/intervenants/${profId}/fiche-rh?campusId=${campusId}`);
+  assert.equal(f.intervenant.nom, "Claire Martin");
+  assert.equal(f.volume.heuresAffectees, 6);
+  assert.equal(f.cout.brut, 270);
+  // LE PIÈGE : sans coefficient de charges déclaré, on ne sert PAS le brut
+  // comme s'il était le coût employeur.
+  assert.equal(f.cout.charge, null);
+  assert.match(f.cout.motif, /40 %/);
+  // Et la fiche ne prétend pas rédiger le contrat.
+  assert.match(f.reserve, /ne le rédige pas/);
+});
+
+// LE PIÈGE DU BUDGET ANNUEL.
+test("UN BUDGET CONSOMMÉ PLUS VITE QUE L'ANNÉE DÉCLENCHE UNE ALERTE DE TRAJECTOIRE", async () => {
+  // Année 2027 entière, budget 1 000 € : 6 h à 45 € chargées à 1,42 = 383,40 €.
+  const r = await req("/api/intervenants/masse", {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { campusId, masse: { budgetAnnuel: 1000, coefficientCharges: 1.42, anneeDebut: "2027-01-01", anneeFin: "2027-12-31" } },
+  });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).coefficientCharges, 1.42);
+
+  const m = await jget(`/api/intervenants/masse?campusId=${campusId}`);
+  assert.equal(m.heures, 6);
+  assert.equal(m.cout, 383.4);
+  assert.equal(m.budget, 1000);
+  assert.equal(m.consommation, 38);
+  // L'année 2027 n'a pas commencé : l'avancement est nul, donc AUCUNE
+  // projection inventée. Mieux vaut ne rien dire que projeter sur zéro.
+  assert.equal(m.projection, null);
+  assert.equal(m.horsContrat, 2);
+
+  // Avec une année déjà entamée à 10 %, la même dépense devient une alerte.
+  await req("/api/intervenants/masse", {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { campusId, masse: { budgetAnnuel: 1000, coefficientCharges: 1.42, anneeDebut: "2026-08-01", anneeFin: "2027-07-31" } },
+  });
+  const tard = await jget(`/api/intervenants/masse?campusId=${campusId}`);
+  assert.ok(tard.avancement > 0.08 && tard.avancement < 0.25, `avancement ${tard.avancement}`);
+  const traj = tard.alertes.find((a) => a.code === "trajectoire");
+  assert.ok(traj, "consommer 38 % du budget sur 11 % de l'année doit alerter");
+  assert.equal(traj.gravite, "bloquant");
+  assert.match(traj.message, /atterrissage/);
+});
+
+test("un intervenant sans taux rend le total partiel, et le taux de consommation se tait", async () => {
+  const t2 = await (await post("/api/teachers", {
+    name: "Sans taux", email: "st@x.fr", status: "vacataire", campusIds: [campusId], subjects: ["Gestion"],
+  })).json();
+  const room = (await jget("/api/rooms")).find((r) => r.campusId === campusId);
+  for (let j = 0; j < 20; j++) {
+    const date = new Date(Date.UTC(2027, 5, 1 + j)).toISOString().slice(0, 10);
+    const res = await post("/api/sessions", {
+      campusId, classId, roomId: room?.id, teacherId: t2.id,
+      date, start: "14:00", end: "16:00", kind: "cours",
+    });
+    if (res.status === 200) break;
+  }
+  const m = await jget(`/api/intervenants/masse?campusId=${campusId}`);
+  const a = m.alertes.find((x) => x.code === "incomplet");
+  assert.ok(a, "un intervenant non chiffrable doit rendre le total explicitement partiel");
+  assert.match(a.message, /partiel/);
+  assert.equal(m.consommation, null, "un taux calculé sur une partie des lignes paraîtrait tenu à tort");
+  // Les heures, elles, restent comptées.
+  assert.ok(m.heures >= 8);
+  assert.ok(m.alertes.some((x) => x.code === "dossiers"));
+});
+
+test("un prestataire ne génère pas de charges patronales", async () => {
+  const p = await (await post("/api/teachers", {
+    name: "Studio X", email: "sx@x.fr", status: "prestataire", campusIds: [campusId],
+    subjects: ["Design"], tauxHoraire: 100, heuresAnnuelles: 10, company: "Studio X SARL",
+  })).json();
+  const f = await jget(`/api/intervenants/${p.id}/fiche-rh?campusId=${campusId}`);
+  assert.equal(f.dossier.prestataire, true);
+  assert.equal(f.dossier.complet, true);
+  // Aucune séance : coût nul, mais surtout coefficient 1 et non 1,42.
+  assert.equal(f.cout.charge, f.cout.brut);
+  assert.equal(f.cout.coefficient, 1);
+  // Et son dossier ne réclame ni matricule ni règle de paie.
+  assert.equal(f.dossier.lignes.some((l) => l.cle === "matricule"), false);
+  assert.match(JSON.stringify(f.dossier.aTransmettre), /URSSAF/);
+});

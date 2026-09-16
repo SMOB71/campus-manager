@@ -42,6 +42,7 @@ import * as enq from "./lib/enquetes.js";
 import * as certif from "./lib/certification.js";
 import * as ins from "./lib/insertion.js";
 import * as lms from "./lib/lms.js";
+import * as interv from "./lib/intervenants.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -1120,6 +1121,102 @@ function destinatairesEnquete(e) {
   // Plutôt que d'inventer une liste, on ne crée rien et l'écran le dit.
   return out;
 }
+
+// --- Dossiers RH des intervenants et masse horaire ---
+// Le volume horaire n'est pas saisi : il est LU dans les séances réellement
+// affectées. C'est ce qui garantit que le contrat rédigé par la RH et le
+// planning parlent du même nombre.
+function dossiersIntervenants(campusId, { from, to } = {}) {
+  const libelles = {};
+  for (const c of store.listCurricula()) for (const m of c.modules || []) libelles[m.id] = m.label || m.code;
+  return store.listTeachers({ campusId })
+    .filter((t) => t.active !== false)
+    .map((t) => {
+      const affectations = sessionstore.listSessions({ teacherId: t.id, from, to })
+        .filter((s) => !campusId || s.campusId === campusId);
+      return {
+        intervenant: t,
+        dossier: interv.dossierRh(t),
+        volume: interv.volumeContractuel(t, affectations, { libelles }),
+      };
+    });
+}
+
+app.get("/api/intervenants/dossiers", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  const dossiers = dossiersIntervenants(campusId, { from: req.query.from, to: req.query.to });
+  res.json({
+    dossiers: dossiers.map((d) => ({
+      teacherId: d.intervenant.id, nom: d.intervenant.name, statut: d.intervenant.status,
+      email: d.intervenant.email || "", matieres: d.intervenant.subjects || [],
+      tauxHoraire: d.intervenant.tauxHoraire ?? null,
+      dossier: d.dossier, volume: d.volume,
+    })),
+    champs: interv.CHAMPS_RH, aTransmettre: interv.A_TRANSMETTRE_RH,
+    incomplets: dossiers.filter((d) => !d.dossier.complet).length,
+  });
+});
+
+app.get("/api/intervenants/masse", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  if (!campus) return res.status(404).json({ error: "campus introuvable" });
+  const m = campus.masse || {};
+  const dossiers = dossiersIntervenants(campusId, { from: m.anneeDebut || undefined, to: m.anneeFin || undefined });
+  const avancement = interv.avancementAnnee(m.anneeDebut, m.anneeFin, new Date().toISOString().slice(0, 10));
+  res.json({
+    campusId, campus: campus.name, parametres: m,
+    ...interv.masseCampus({
+      dossiers, budget: m.budgetAnnuel ?? null,
+      coefficientCharges: m.coefficientCharges ?? null, avancement,
+    }),
+  });
+});
+
+app.patch("/api/intervenants/masse", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const c = store.updateCampus(campusId, { masse: req.body?.masse || {} });
+  if (!c) return res.status(404).json({ error: "campus introuvable" });
+  logAudit(req, "update", "campus", "budget des heures d'enseignement");
+  res.json(c.masse || {});
+});
+
+// Fiche de préparation de contrat : tout ce que la RH doit recopier, au même
+// endroit. On ne GÉNÈRE pas le contrat — sa rédaction dépend de la convention
+// collective applicable, et produire un modèle ferait passer pour juridique un
+// document qui ne l'est pas.
+app.get("/api/intervenants/:id/fiche-rh", requireAuth, (req, res) => {
+  const t = store.getTeacher(req.params.id);
+  if (!t) return res.status(404).json({ error: "intervenant introuvable" });
+  const campusId = req.query.campusId || (t.campusIds || [])[0] || null;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  const campus = campusId ? store.listCampuses().find((c) => c.id === campusId) : null;
+  const m = campus?.masse || {};
+  const libelles = {};
+  for (const c of store.listCurricula()) for (const mm of c.modules || []) libelles[mm.id] = mm.label || mm.code;
+  const affectations = sessionstore.listSessions({ teacherId: t.id, from: m.anneeDebut || undefined, to: m.anneeFin || undefined })
+    .filter((s) => !campusId || s.campusId === campusId);
+  const volume = interv.volumeContractuel(t, affectations, { libelles });
+  res.json({
+    intervenant: {
+      id: t.id, nom: t.name, email: t.email, telephone: t.phone,
+      statut: t.status, societe: t.company || null, matricule: t.matricule || null,
+      tauxHoraire: t.tauxHoraire ?? null, regle: t.regle || null,
+      campus: campus?.name || null,
+    },
+    volume,
+    cout: interv.coutIntervenant({
+      heures: volume.heuresAffectees, tauxHoraire: t.tauxHoraire,
+      statut: t.status, coefficientCharges: m.coefficientCharges ?? null,
+    }),
+    dossier: interv.dossierRh(t),
+    periode: { du: m.anneeDebut || null, au: m.anneeFin || null },
+    reserve: "Cette fiche rassemble les éléments à reporter dans le contrat. Elle ne le rédige pas : la forme du contrat dépend de la convention collective applicable.",
+  });
+});
 
 // --- LMS : ressources pédagogiques et suivi à distance (indicateur 19) ---
 app.get("/api/ressources", requireAuth, (req, res) => {

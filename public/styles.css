@@ -845,3 +845,7 @@ h3.sec { font-family: Georgia, serif; font-size: 15px; color: var(--teal); margi
 .licence-banner.grave { border-left-color: var(--bad, #B03A2E); }
 .licence-banner .grow { flex: 1; }
 @media print { .licence-banner { display: none; } }
+
+/* Statut d'un livrable : « À produire » etait coupe en « À produi » — un select trop
+   etroit pour son propre libelle donne un produit qui a l'air casse. */
+.out-st { min-width: 7.5rem; }

@@ -1,6 +1,8 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// Heures : une décimale suffit, et « 12.000000000000002 h » discrédite un tableau.
+const round1 = (n) => Math.round((Number(n) || 0) * 10) / 10;
 // Markdown -> HTML SÛR : marked + DOMPurify (défense XSS sur tout contenu rendu, dont le brief email externe).
 function mdSafe(md) {
   if (window.marked && window.DOMPurify) return window.DOMPurify.sanitize(window.marked.parse(String(md ?? "")));
@@ -403,6 +405,11 @@ const NAV = [
   { id: "emargement", label: "Émargement", icon: I.sign, group: "Enseignement" },
   { id: "notes", label: "Notes & bulletins", icon: I.note, group: "Enseignement" },
   { id: "professeurs", label: "Professeurs", icon: I.campus, group: "Enseignement" },
+  // Dossiers RH et masse horaire : le volume contractuel est DÉRIVÉ du
+  // planning, jamais saisi — c'est ce qui garantit que le contrat rédigé et
+  // l'emploi du temps parlent du même nombre d'heures.
+  { id: "dossiers-rh", label: "Dossiers RH intervenants", icon: I.brief, group: "Enseignement" },
+  { id: "masse-horaire", label: "Masse horaire & budget", icon: I.euro, admin: true, group: "Performance" },
   { id: "referentiels", label: "Référentiels", icon: I.note, admin: true, group: "Enseignement" },
   { id: "sallesclasses", label: "Salles & classes", icon: I.net, group: "Enseignement" },
   { id: "risques", label: "Risques", icon: I.alert, group: "Conformité" },
@@ -489,7 +496,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1759,6 +1766,139 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Dossiers RH des intervenants ---
+// L'écran ne demande pas « remplissez la fiche » : il dit, champ par champ, ce
+// que le manque EMPÊCHE. Une liste de cases à cocher sans conséquence ne se
+// remplit jamais.
+let rhCampus = "";
+
+async function renderDossiersRh() {
+  if (!rhCampus) rhCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/intervenants/dossiers?campusId=${rhCampus}`);
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="rh-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === rhCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(d.dossiers.length, "intervenants")}${fkpi(d.incomplets, "dossiers incomplets", d.incomplets ? "bad" : "good")}
+        ${fkpi(round1(d.dossiers.reduce((a, x) => a + x.volume.heuresAffectees, 0)) + " h", "affectées")}</div>
+    </div>
+    ${d.incomplets ? `<div class="card card-pad" style="margin-bottom:14px;border-left:4px solid #8A7A4B;">
+      <b>${d.incomplets} dossier(s) incomplet(s) : la RH ne peut pas rédiger les contrats correspondants.</b></div>` : ""}
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Intervenant</th><th>Statut</th><th>Matières</th><th>Heures affectées</th><th>Au contrat</th><th>Écart</th><th>Dossier</th><th></th></tr></thead><tbody>
+      ${d.dossiers.length ? d.dossiers.map((x) => `<tr>
+        <td><b>${esc(x.nom)}</b><br><span class="muted" style="font-size:12px;">${esc(x.email || "—")}</span></td>
+        <td>${esc(x.statut || "—")}</td>
+        <td>${x.matieres.length ? x.matieres.map(esc).join(", ") : '<span class="pill p-warn">non déclarées</span>'}</td>
+        <td><b>${round1(x.volume.heuresAffectees)} h</b>${x.volume.matieres.length ? `<br><span class="muted" style="font-size:12px;">${x.volume.matieres.slice(0, 3).map((m) => `${esc(m.label)} ${round1(m.heures)} h`).join(" · ")}</span>` : ""}</td>
+        <td>${x.volume.heuresAuContrat ?? '<span class="muted">—</span>'}</td>
+        <td>${x.volume.alerte ? `<span class="pill ${x.volume.alerte.gravite === "important" ? "p-warn" : ""}" title="${esc(x.volume.alerte.message)}">${x.volume.ecart > 0 ? "+" : ""}${x.volume.ecart ?? "?"}</span>` : '<span class="pill p-good">aligné</span>'}</td>
+        <td>${x.dossier.complet ? '<span class="pill p-good">complet</span>' : `<span class="pill p-warn">${x.dossier.completude} %</span>`}</td>
+        <td><button class="btn-ghost btn-sm rh-fiche" data-id="${x.teacherId}">Fiche RH</button></td>
+      </tr>`).join("") : '<tr><td colspan="8" class="muted">Aucun intervenant sur ce campus.</td></tr>'}
+      </tbody></table></div>
+    <p class="hint muted">Les heures affichées viennent des séances réellement affectées, pas d'une saisie : c'est ce qui garantit que le contrat et l'emploi du temps parlent du même nombre. Un écart positif se paie en heures supplémentaires ou demande un avenant.</p>`;
+
+  $("#rh-campus").onchange = (e) => { rhCampus = e.target.value; renderDossiersRh(); };
+  $$(".rh-fiche").forEach((b) => { b.onclick = () => openFicheRh(b.dataset.id); });
+}
+
+async function openFicheRh(teacherId) {
+  const f = await api.get(`/api/intervenants/${teacherId}/fiche-rh?campusId=${rhCampus}`);
+  if (f?.error) { alert(f.error); return; }
+  const i = f.intervenant;
+  const ligne = (l, v) => `<tr><td class="muted" style="width:45%;">${esc(l)}</td><td>${v}</td></tr>`;
+  openModal(`Fiche RH — ${i.nom}`, `
+    <p class="muted" style="font-size:13.5px;">${esc(f.reserve)}</p>
+    <div class="card" style="overflow-x:auto;margin-top:10px;"><table class="net-table"><tbody>
+      ${ligne("Statut", esc(i.statut || "—") + (i.societe ? ` — ${esc(i.societe)}` : ""))}
+      ${ligne("Courriel", esc(i.email || "—"))}
+      ${ligne("Téléphone", esc(i.telephone || "—"))}
+      ${ligne("Campus", esc(i.campus || "—"))}
+      ${i.matricule ? ligne("Matricule paie", esc(i.matricule)) : ""}
+      ${ligne("Période", `${esc(f.periode.du || "—")} → ${esc(f.periode.au || "—")}`)}
+      ${ligne("<b>Heures à porter au contrat</b>", `<b>${round1(f.volume.heuresAffectees)} h</b>`)}
+      ${ligne("Taux horaire", i.tauxHoraire != null ? `${i.tauxHoraire} €` : '<span class="pill p-warn">non renseigné</span>')}
+      ${ligne("Coût brut", f.cout.brut != null ? `${f.cout.brut} €` : "—")}
+      ${ligne("Coût employeur", f.cout.charge != null ? `<b>${f.cout.charge} €</b>${f.cout.prestataire ? ' <span class="muted">(prestataire : pas de charges patronales)</span>' : ""}`
+        : `<span class="muted">${esc(f.cout.motif || "—")}</span>`)}
+      ${i.regle ? ligne("Heures payées", esc(i.regle)) : ""}
+    </tbody></table></div>
+    <div class="section-title">Détail par matière</div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Matière</th><th>Séances</th><th>Heures</th></tr></thead><tbody>
+      ${f.volume.matieres.length ? f.volume.matieres.map((m) => `<tr><td>${esc(m.label)}</td><td>${m.seances}</td><td>${round1(m.heures)} h</td></tr>`).join("")
+        : '<tr><td colspan="3" class="muted">Aucune séance affectée sur la période.</td></tr>'}
+      </tbody></table></div>
+    ${f.volume.alerte ? `<div class="item" style="border-left:3px solid ${f.volume.alerte.gravite === "important" ? "#8A7A4B" : "var(--border)"};margin-top:10px;"><div class="grow">${esc(f.volume.alerte.message)}</div></div>` : ""}
+    ${f.dossier.manquants.length ? `<div class="section-title">À compléter avant rédaction</div>
+      <ul style="margin:0;padding-left:18px;color:var(--muted);font-size:13px;">${f.dossier.manquants.map((m) => `<li><b>${esc(m.label)}</b> — ${esc(m.bloque)}</li>`).join("")}</ul>` : ""}
+    <div class="section-title">À transmettre à la RH (non conservé ici)</div>
+    <ul style="margin:0;padding-left:18px;color:var(--muted);font-size:13px;">${f.dossier.aTransmettre.map((x) => `<li><b>${esc(x.label)}</b> — ${esc(x.pourquoi)}</li>`).join("")}</ul>
+    <p class="hint muted">${esc(f.dossier.reserve)}</p>`);
+}
+
+// --- Masse horaire face au budget du campus ---
+let mhCampus = "";
+
+async function renderMasseHoraire() {
+  if (!mhCampus) mhCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/intervenants/masse?campusId=${mhCampus}`);
+  if (d?.error) { $("#view").innerHTML = `<p class="neg">${esc(d.error)}</p>`; return; }
+  const GRAV = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" };
+  const eur = (n) => (n == null ? "—" : `${n.toLocaleString("fr-FR")} €`);
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="mh-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === mhCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="kpis" style="margin-bottom:12px;">
+      ${fkpi(round1(d.heures) + " h", "heures affectées")}
+      ${fkpi(eur(d.cout), "coût employeur")}
+      ${fkpi(eur(d.budget), "budget alloué")}
+      ${d.consommation != null ? fkpi(d.consommation + " %", "consommé", d.consommation > 100 ? "bad" : "") : ""}
+      ${d.avancement != null ? fkpi(Math.round(d.avancement * 100) + " %", "année écoulée") : ""}
+      ${d.projection != null ? fkpi(eur(d.projection), "atterrissage projeté", d.budget && d.projection > d.budget ? "bad" : "good") : ""}</div>
+    ${d.alertes.map((a) => `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid ${GRAV[a.gravite]};"><b>${esc(a.message)}</b></div>`).join("")}
+    ${d.horsContrat ? `<p class="hint muted">${round1(d.horsContrat)} h affectées au-delà des volumes contractuels, tous intervenants confondus.</p>` : ""}
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Intervenant</th><th>Statut</th><th>Heures</th><th>Au contrat</th><th>Brut</th><th>Coût employeur</th></tr></thead><tbody>
+      ${d.lignes.length ? d.lignes.map((l) => `<tr>
+        <td>${esc(l.nom)}${l.dossierComplet ? "" : ' <span class="pill p-warn">dossier incomplet</span>'}</td>
+        <td>${esc(l.statut || "—")}</td>
+        <td>${round1(l.heures)} h</td>
+        <td>${l.heuresAuContrat ?? '<span class="muted">—</span>'}${l.ecart > 0 ? ` <span class="pill p-warn">+${round1(l.ecart)}</span>` : ""}</td>
+        <td>${eur(l.brut)}</td>
+        <td>${l.charge != null ? `<b>${eur(l.charge)}</b>` : `<span class="muted" title="${esc(l.motif || "")}">non chiffré</span>`}</td>
+      </tr>`).join("") : '<tr><td colspan="6" class="muted">Aucun intervenant.</td></tr>'}
+      </tbody></table></div>
+
+    <div class="card card-pad" style="margin-top:14px;">
+      <div class="section-title" style="margin-top:0;">Budget et paramètres</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+        <div><label class="field-label">Budget annuel (€)</label><input class="txt" id="mh-budget" type="number" min="0" value="${d.parametres.budgetAnnuel ?? ""}"></div>
+        <div><label class="field-label">Coefficient de charges</label><input class="txt" id="mh-coef" type="number" step="0.01" min="1" placeholder="1.42" value="${d.parametres.coefficientCharges ?? ""}"></div>
+        <div><label class="field-label">Année du</label><input class="txt" id="mh-du" type="date" value="${esc(d.parametres.anneeDebut || "")}"></div>
+        <div><label class="field-label">au</label><input class="txt" id="mh-au" type="date" value="${esc(d.parametres.anneeFin || "")}"></div>
+      </div>
+      <p class="hint muted" style="margin-top:8px;">Le <b>coefficient de charges</b> transforme un taux horaire brut en coût employeur. Il dépend du statut et de la convention collective : l'application ne le devine pas, et sans lui elle refuse de chiffrer plutôt que d'afficher un brut qui sous-estime la dépense d'environ 40 %. Un prestataire n'en génère pas — sa facture est le coût.</p>
+      <div class="actions" style="margin-top:10px;"><button class="btn-primary" id="mh-save">Enregistrer</button></div>
+    </div>
+    <p class="hint muted">${esc(d.reserve)}</p>`;
+
+  $("#mh-campus").onchange = (e) => { mhCampus = e.target.value; renderMasseHoraire(); };
+  $("#mh-save").onclick = async () => {
+    const r = await api.patch("/api/intervenants/masse", { campusId: mhCampus, masse: {
+      budgetAnnuel: $("#mh-budget").value === "" ? null : +$("#mh-budget").value,
+      coefficientCharges: $("#mh-coef").value === "" ? null : +$("#mh-coef").value,
+      anneeDebut: $("#mh-du").value, anneeFin: $("#mh-au").value,
+    } });
+    if (r?.error) { alert(r.error); return; }
+    renderMasseHoraire();
+  };
+}
+
 // --- LMS ---
 // Trois écrans, un seul fil : à distance, l'heure réalisée ne se prouve pas par
 // une signature. Ce sont les travaux rendus qui la justifient — jamais les clics.
@@ -5071,7 +5211,8 @@ async function openTaskSheet(oid, tid) {
     <td>${esc(out.owner || "—")}</td><td>${esc(out.dueDate || "—")}</td>
     <td>${out.documentId ? `<a class="btn-ghost btn-sm" href="/api/documents/${out.documentId}/download">Télécharger</a>` : `<label class="btn-ghost btn-sm" style="cursor:pointer;">joindre<input type="file" class="out-file" data-oid="${out.id}" hidden></label>`}</td>
     <td><button class="btn-ghost btn-sm out-del" data-oid="${out.id}">×</button></td></tr>`;
-  openModal(esc(t.title), `
+  // openModal echappe deja son titre : le passer pre-echappe affichait « &amp; » a l'ecran.
+  openModal(t.title, `
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
       <div style="grid-column:1/-1;"><label class="field-label">Intitulé *</label><input class="txt tsf" data-f="title" value="${esc(t.title)}"></div>
       <div><label class="field-label">Lot</label><select class="txt tsf" data-f="lot">${OUV_LOTS.map((l) => `<option value="${l.k}" ${t.lot === l.k ? "selected" : ""}>${l.l}</option>`).join("")}</select></div>
