@@ -412,6 +412,7 @@ const NAV = [
   // planning, jamais saisi — c'est ce qui garantit que le contrat rédigé et
   // l'emploi du temps parlent du même nombre d'heures.
   { id: "dossiers-rh", label: "Dossiers RH intervenants", icon: I.brief, group: "Enseignement" },
+  { id: "contrats-profs", label: "Contrats intervenants", icon: I.brief, group: "Enseignement" },
   { id: "masse-horaire", label: "Masse horaire & budget", icon: I.euro, admin: true, group: "Performance" },
   { id: "referentiels", label: "Référentiels", icon: I.note, admin: true, group: "Enseignement" },
   { id: "sallesclasses", label: "Salles & classes", icon: I.net, group: "Enseignement" },
@@ -499,7 +500,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1769,6 +1770,125 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Contrats des intervenants ---
+// L'écran ne classe pas par date mais par RISQUE : ce qui expose à une
+// requalification passe devant, parce que c'est ce qui ne se rattrape pas.
+let cpCampus = "";
+
+async function renderContratsProfs() {
+  if (!cpCampus) cpCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/contrats-intervenants?campusId=${cpCampus}`);
+  if (d?.error) { $("#view").innerHTML = `<p class="neg">${esc(d.error)}</p>`; return; }
+  const GRAV = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" };
+  const ETAT = { en_cours: "p-good", a_venir: "", echu: "p-bad", rompu: "" };
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="cp-new">+ Contrat</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="cp-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === cpCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(d.actifs, "en cours")}${fkpi(d.echus, "échus", d.echus ? "bad" : "")}
+        ${fkpi(d.sansContrat.length, "sans contrat", d.sansContrat.length ? "bad" : "good")}
+        ${fkpi(d.bloquants, "points bloquants", d.bloquants ? "bad" : "good")}</div>
+    </div>
+
+    ${d.sansContrat.length ? `<div class="card card-pad" style="margin-bottom:12px;border-left:4px solid #8A4B4B;">
+      <b>${d.sansContrat.length} intervenant(s) sans aucun contrat enregistré.</b>
+      <p class="muted" style="margin:6px 0 0;font-size:13.5px;">${d.sansContrat.map((x) => esc(x.nom)).join(", ")} — leurs heures s'exécutent sans support contractuel.</p></div>` : ""}
+
+    ${d.risques.map((r) => `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid ${GRAV[r.gravite]};">
+      <b>${r.code === "carence" ? "Délai de carence" : r.code === "succession" ? "Succession de CDD" : "Poursuite au-delà du terme"}</b>
+      <p class="muted" style="margin:6px 0 0;font-size:13.5px;">${esc(r.message)}</p></div>`).join("")}
+
+    ${d.couvertures.map((c) => `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid #8A4B4B;">
+      <b>${esc(c.nom || "Intervenant")}</b>
+      <p class="muted" style="margin:6px 0 0;font-size:13.5px;">${esc(c.alerte.message)}</p></div>`).join("")}
+
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Intervenant</th><th>Nature</th><th>Motif</th><th>Période</th><th>État</th><th>Alertes</th><th></th></tr></thead><tbody>
+      ${d.lignes.length ? d.lignes.map((l) => `<tr>
+        <td><b>${esc(l.nom)}</b>${l.poste ? `<br><span class="muted" style="font-size:12px;">${esc(l.poste)}</span>` : ""}</td>
+        <td>${esc(l.natureLabel)}</td>
+        <td>${esc(l.motifLabel || "—")}</td>
+        <td>${esc(l.dateDebut || "—")} → ${esc(l.dateFin || "sans terme")}</td>
+        <td><span class="pill ${ETAT[l.etat] || ""}">${esc(l.etat.replace("_", " "))}</span></td>
+        <td>${l.alertes.length ? l.alertes.map((a) => `<div style="color:${GRAV[a.gravite]};font-size:12.5px;margin-bottom:3px;">${esc(a.message)}</div>`).join("") : '<span class="muted">—</span>'}</td>
+        <td>${l.vigilance?.requise ? `<button class="btn-ghost btn-sm cp-vig" data-id="${l.id}">+ Vigilance</button>` : ""}</td>
+      </tr>`).join("") : '<tr><td colspan="7" class="muted">Aucun contrat enregistré.</td></tr>'}
+      </tbody></table></div>
+    <p class="hint muted">${esc(d.reserve)}</p>`;
+
+  $("#cp-campus").onchange = (e) => { cpCampus = e.target.value; renderContratsProfs(); };
+  $("#cp-new").onclick = () => openContratProfForm(d);
+  $$(".cp-vig").forEach((b) => { b.onclick = async () => {
+    const date = prompt("Date de l'attestation de vigilance (AAAA-MM-JJ) :", new Date().toISOString().slice(0, 10));
+    if (!date) return;
+    const r = await api.post(`/api/contrats-intervenants/${b.dataset.id}/vigilance`, { date });
+    if (r?.error) { alert(r.error); return; }
+    renderContratsProfs();
+  }; });
+}
+
+async function openContratProfForm(d) {
+  const profs = (await api.get("/api/teachers")).filter((t) => (t.campusIds || []).includes(cpCampus) && t.active !== false);
+  openModal("Contrat d'intervenant", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Intervenant</label><select class="txt cf" data-f="teacherId">${profs.map((t) => `<option value="${t.id}">${esc(t.name)} — ${esc(t.status || "")}</option>`).join("")}</select></div>
+      <div><label class="field-label">Nature</label><select class="txt" id="cf-nature">${Object.entries(d.natures).map(([k, n]) => `<option value="${k}">${esc(n.label)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Poste ou matière</label><input class="txt cf" data-f="poste" placeholder="Optique géométrique">
+        <p class="hint muted" style="margin-top:4px;">Le délai de carence entre deux CDD s'apprécie sur le POSTE : sans lui, l'enchaînement ne peut pas être détecté.</p></div>
+      <div><label class="field-label">Début</label><input class="txt cf" data-f="dateDebut" type="date"></div>
+      <div><label class="field-label">Terme</label><input class="txt cf" data-f="dateFin" type="date"></div>
+      <div style="grid-column:1/-1;" id="cf-specifique"></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="cf-save">Enregistrer</button></div>`);
+
+  // Les champs dépendent de la nature : un prestataire n'a ni essai ni DPAE, et
+  // les lui proposer serait suggérer une pièce qui joue contre l'organisme.
+  const maj = () => {
+    const nat = $("#cf-nature").value;
+    const salarie = d.natures[nat].salarie;
+    $("#cf-specifique").innerHTML = nat === "cdd" ? `
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+        <div><label class="field-label">Motif de recours</label><select class="txt cf" data-f="motif">${Object.entries(d.motifs).map(([k, m]) => `<option value="${k}">${esc(m)}</option>`).join("")}</select></div>
+        <div><label class="field-label">Personne remplacée</label><input class="txt cf" data-f="remplace" placeholder="si motif « remplacement »"></div>
+        <div><label class="field-label">Signé le</label><input class="txt cf" data-f="signeLe" type="date"></div>
+        <div><label class="field-label">DPAE le</label><input class="txt cf" data-f="dpaeLe" type="date"></div>
+        <div><label class="field-label">Essai (jours)</label><input class="txt cf" data-f="dureeEssaiJours" type="number" min="0"></div>
+        <div><label class="field-label">Convention collective</label><input class="txt cf" data-f="conventionCollective"></div>
+      </div>
+      <p class="hint muted" style="margin-top:6px;">Un CDD sans motif de recours est réputé à durée indéterminée (L. 1242-12), et il doit être signé dans les deux jours ouvrables suivant l'embauche (L. 1242-13).</p>`
+      : salarie ? `
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+        <div><label class="field-label">Signé le</label><input class="txt cf" data-f="signeLe" type="date"></div>
+        <div><label class="field-label">DPAE le</label><input class="txt cf" data-f="dpaeLe" type="date"></div>
+        <div><label class="field-label">Essai (jours)</label><input class="txt cf" data-f="dureeEssaiJours" type="number" min="0"></div>
+        <div><label class="field-label">Convention collective</label><input class="txt cf" data-f="conventionCollective"></div>
+      </div>` : `
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+        <div><label class="field-label">Société</label><input class="txt cf" data-f="societe"></div>
+        <div><label class="field-label">Montant (€)</label><input class="txt cf" data-f="montant" type="number" min="0"></div>
+      </div>
+      <p class="hint muted" style="margin-top:6px;">Un prestataire n'a ni période d'essai ni déclaration d'embauche : ces mentions serviraient à démontrer un lien de subordination. Au-delà de ${d.seuilVigilance} €, l'attestation de vigilance URSSAF est requise et se renouvelle tous les six mois.</p>`;
+  };
+  $("#cf-nature").onchange = maj; maj();
+
+  const enregistrer = async (confirmerCarence) => {
+    const body = { campusId: cpCampus, nature: $("#cf-nature").value, confirmerCarence };
+    $$(".cf").forEach((i) => { if (i.value !== "") body[i.dataset.f] = i.dataset.f === "dureeEssaiJours" || i.dataset.f === "montant" ? +i.value : i.value; });
+    const r = await api.post("/api/contrats-intervenants", body);
+    if (r?.code === "carence") {
+      // On refuse AVANT d'écrire, et on laisse la possibilité d'assumer.
+      if (confirm(`${r.error}\n\n${r.indice}\n\nEnregistrer malgré tout ?`)) return enregistrer(true);
+      return;
+    }
+    if (r?.error) { alert(r.error); return; }
+    if (r.warnings?.length) alert("Enregistré. À compléter :\n" + r.warnings.join("\n"));
+    closeModals(); renderContratsProfs();
+  };
+  $("#cf-save").onclick = () => enregistrer(false);
+}
+
 // --- Documents obligatoires de l'organisme de formation ---
 // Le point que l'écran doit rendre évident : le choix entre convention et
 // contrat n'en est pas un, il se déduit de qui paie.
@@ -2405,6 +2525,13 @@ async function renderChantier() {
       return `<div style="margin-top:10px;">
         ${c.aRefaire != null ? `<div class="kpis">${fkpi(c.aRefaire, "indicateurs à reprendre", "bad")}${fkpi(c.nouveaux.length, "sans équivalent", "bad")}${c.jours != null ? fkpi(c.jours + " j", "avant échéance", c.jours <= 60 ? "bad" : "") : ""}</div>` : ""}
         ${c.nouveaux.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;">Exigences nouvelles : n° ${c.nouveaux.join(", ")}.</p>` : ""}</div>`;
+    }
+    if (c.cle === "contrats") {
+      if (c.sansObjet) return "";
+      return `<div style="margin-top:10px;">
+        <div class="kpis">${fkpi(c.actifs, "en cours")}${fkpi(c.echus, "échus", c.echus ? "bad" : "")}
+          ${fkpi(c.sansContrat, "sans contrat", c.sansContrat ? "bad" : "good")}</div>
+        ${c.risques.length ? `<ul style="margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;">${c.risques.map((r) => `<li>${esc(r.message)}</li>`).join("")}</ul>` : ""}</div>`;
     }
     if (c.cle === "documents") {
       return `<div style="margin-top:10px;">

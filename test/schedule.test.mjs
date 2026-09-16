@@ -254,3 +254,36 @@ test("mobilité : un partant isolé avertit, la moitié du groupe bloque", () =>
   // Et sans contexte de mobilité, le comportement est inchangé.
   assert.equal(conflictsFor(s, [], {}).some((c) => c.code === "mobilite"), false);
 });
+
+// --- Couverture contractuelle de l'intervenant ---
+// Symétrique du contrôle d'habilitation : faire travailler sans contrat qui
+// couvre la date, c'est la poursuite au-delà du terme qui requalifie en CDI.
+test("une séance hors couverture contractuelle est signalée, forçable", () => {
+  const s = { id: "s1", date: "2027-02-10", start: "09:00", end: "11:00", teacherId: "t1" };
+  const teacher = { id: "t1", name: "C. Martin" };
+
+  // Aucun contrat du tout : simple alerte. Le module n'est peut-être pas encore
+  // alimenté, et faire confirmer chaque séance de chaque intervenant ferait
+  // ignorer le message en une matinée.
+  const sans = conflictsFor(s, [], { teacher, contratsIntervenant: [] });
+  const a = sans.find((c) => c.code === "contrat");
+  assert.equal(a.level, "warn");
+  assert.match(a.message, /rien ne permet de vérifier/);
+
+  // Un contrat qui s'est terminé avant la séance.
+  const echu = conflictsFor(s, [], { teacher, contratsIntervenant: [
+    { nature: "cdd", dateDebut: "2026-09-01", dateFin: "2026-12-31" },
+  ] });
+  const b = echu.find((c) => c.code === "contrat");
+  assert.match(b.message, /L\. 1243-11/);
+
+  // Un contrat qui couvre : plus rien.
+  const ok = conflictsFor(s, [], { teacher, contratsIntervenant: [
+    { nature: "cdd", dateDebut: "2026-09-01", dateFin: "2027-06-30" },
+  ] });
+  assert.equal(ok.some((c) => c.code === "contrat"), false);
+
+  // Sans contexte de contrat, le comportement est inchangé : les plannings
+  // existants ne se mettent pas à alerter du jour au lendemain.
+  assert.equal(conflictsFor(s, [], { teacher }).some((c) => c.code === "contrat"), false);
+});

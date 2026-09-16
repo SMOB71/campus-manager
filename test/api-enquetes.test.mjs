@@ -220,7 +220,7 @@ test("répondre exige un jeton : la route publique n'accepte rien sans lui", asy
 test("le chantier liste tous les dispositifs et compte ce qui reste", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats"]);
   assert.equal(d.bascule, "2026-11-01");
   // Chaque ligne dit la CONSÉQUENCE, pas seulement un compteur : « 0/3 »
   // n'appelle aucune action.
@@ -411,7 +411,7 @@ test("une action sans résultat est acceptée mais signalée, et ne couvre rien 
 test("chaque dispositif du chantier dit une conséquence, pas un compteur", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
   // Le dispositif à distance est SANS OBJET tant qu'aucune séance n'est à
   // distance — et à ce stade du scénario il n'y en a aucune. Reprocher un
@@ -903,4 +903,114 @@ test("un acte sans programme est refusé, et une action commencée sans signatur
   // signée : la formation s'exécute sans base contractuelle.
   const d = await jget(`/api/documents-of?campusId=${campusId}`);
   assert.match(JSON.stringify(d.points), /sans base contractuelle/);
+});
+
+// --- Contrats des intervenants (lot 2) ---
+test("un intervenant sans contrat remonte au chantier", async () => {
+  const d = await jget(`/api/contrats-intervenants?campusId=${campusId}`);
+  assert.ok(d.sansContrat.length >= 1, "des intervenants ont été créés sans contrat");
+  const ch = (await jget(`/api/chantier?campusId=${campusId}`)).chantiers.find((c) => c.cle === "contrats");
+  assert.equal(ch.fait, false);
+  assert.match(ch.enjeu, /sans support contractuel/);
+});
+
+test("un CDD sans motif de recours est refusé par l'API", async () => {
+  const t = (await jget("/api/teachers")).find((x) => x.name === "Claire Martin");
+  const r = await post("/api/contrats-intervenants", {
+    campusId, teacherId: t.id, nature: "cdd", poste: "Optique",
+    dateDebut: "2026-09-01", dateFin: "2027-06-30",
+  });
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).error, /L\. 1242-12/);
+});
+
+// LE RISQUE QUE SEUL UN LOGICIEL VOIT.
+test("LE DÉLAI DE CARENCE ENTRE DEUX CDD EST REFUSÉ AVANT ÉCRITURE, PAS CORRIGÉ APRÈS", async () => {
+  const t = (await jget("/api/teachers")).find((x) => x.name === "Claire Martin");
+  const commun = { campusId, teacherId: t.id, nature: "cdd", motif: "accroissement", poste: "Optique",
+    dpaeLe: "2025-08-28", signeLe: "2025-09-01", conventionCollective: "OF privés" };
+
+  const premier = await post("/api/contrats-intervenants", { ...commun, dateDebut: "2025-09-01", dateFin: "2026-06-28" });
+  assert.equal(premier.status, 200);
+
+  // Rentrée suivante : 300 jours de contrat → carence de 100 jours, soit
+  // jusqu'au 2026-10-06. Un début au 1er septembre tombe dedans.
+  const dansLaCarence = await post("/api/contrats-intervenants", {
+    ...commun, dateDebut: "2026-09-01", dateFin: "2027-06-30", signeLe: "2026-09-01", dpaeLe: "2026-08-28",
+  });
+  assert.equal(dansLaCarence.status, 409);
+  const b = await dansLaCarence.json();
+  assert.equal(b.code, "carence");
+  assert.match(b.error, /L\. 1244-3/);
+  assert.match(b.indice, /Décaler la date de début/);
+
+  // On peut assumer en connaissance de cause — mais pas par inadvertance.
+  const force = await post("/api/contrats-intervenants", {
+    ...commun, dateDebut: "2026-09-01", dateFin: "2027-06-30", signeLe: "2026-09-01",
+    dpaeLe: "2026-08-28", confirmerCarence: true,
+  });
+  assert.equal(force.status, 200);
+
+  const d = await jget(`/api/contrats-intervenants?campusId=${campusId}`);
+  assert.ok(d.risques.some((r) => r.code === "carence"), "le risque reste visible après coup");
+});
+
+test("un prestataire ne reçoit ni essai ni DPAE, et son attestation de vigilance se suit", async () => {
+  const p = (await jget("/api/teachers")).find((x) => x.name === "Studio X");
+  const refus = await post("/api/contrats-intervenants", {
+    campusId, teacherId: p.id, nature: "prestation", societe: "Studio X SARL",
+    dateDebut: "2026-09-01", dateFin: "2027-06-30", montant: 9000, dureeEssaiJours: 30,
+  });
+  assert.equal(refus.status, 400);
+  assert.match((await refus.json()).error, /lien de subordination/);
+
+  const ok = await (await post("/api/contrats-intervenants", {
+    campusId, teacherId: p.id, nature: "prestation", societe: "Studio X SARL",
+    dateDebut: "2026-09-01", dateFin: "2027-06-30", montant: 9000,
+  })).json();
+
+  let d = await jget(`/api/contrats-intervenants?campusId=${campusId}`);
+  let ligne = d.lignes.find((l) => l.id === ok.id);
+  assert.equal(ligne.vigilance.requise, true);
+  assert.match(ligne.alertes.map((a) => a.message).join(" "), /solidairement responsable/);
+
+  // On enregistre l'attestation : l'alerte tombe.
+  const v = await post(`/api/contrats-intervenants/${ok.id}/vigilance`, { date: new Date().toISOString().slice(0, 10) });
+  assert.equal(v.status, 200);
+  d = await jget(`/api/contrats-intervenants?campusId=${campusId}`);
+  ligne = d.lignes.find((l) => l.id === ok.id);
+  assert.equal(ligne.vigilance.aJour, true);
+
+  // L'attestation ne concerne pas un salarié.
+  const salarie = d.lignes.find((l) => l.nature === "cdd");
+  assert.equal((await post(`/api/contrats-intervenants/${salarie.id}/vigilance`, {})).status, 400);
+});
+
+// LA GARDE PLANNING, BOUT EN BOUT.
+test("poser une séance hors couverture contractuelle est signalé au planning", async () => {
+  const t = (await jget("/api/teachers")).find((x) => x.name === "Claire Martin");
+  const room = (await jget("/api/rooms")).find((r) => r.campusId === campusId);
+  // 2028 : aucun contrat de Claire Martin ne va jusque-là.
+  const check = await (await post("/api/sessions/check", {
+    campusId, classId, teacherId: t.id, roomId: room?.id,
+    date: "2028-03-06", start: "09:00", end: "11:00", kind: "cours",
+  })).json();
+  const c = check.conflicts.find((x) => x.code === "contrat");
+  assert.ok(c, "le planning doit voir la couverture contractuelle");
+  assert.equal(c.level, "block-forcable");
+  assert.match(c.message, /L\. 1243-11/);
+
+  // Une date couverte ne déclenche rien.
+  const couvert = await (await post("/api/sessions/check", {
+    campusId, classId, teacherId: t.id, roomId: room?.id,
+    date: "2027-03-08", start: "09:00", end: "11:00", kind: "cours",
+  })).json();
+  assert.equal(couvert.conflicts.some((x) => x.code === "contrat"), false);
+});
+
+test("le chantier compte maintenant huit dispositifs", async () => {
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  assert.deepEqual(d.chantiers.map((c) => c.cle),
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats"]);
+  for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
 });

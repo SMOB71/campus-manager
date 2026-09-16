@@ -44,6 +44,7 @@ import * as ins from "./lib/insertion.js";
 import * as lms from "./lib/lms.js";
 import * as interv from "./lib/intervenants.js";
 import * as doc from "./lib/documents.js";
+import * as ci from "./lib/contratsintervenants.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -1123,6 +1124,90 @@ function destinatairesEnquete(e) {
   return out;
 }
 
+// --- Contrats des intervenants ---
+// Les manquements du droit du travail ne se constatent pas à l'échéance : ils
+// se constatent des mois après, et ils sont alors irréparables.
+function tableauContrats(campusId, aujourdhui) {
+  const contrats = store.listContratsIntervenants({ campusId });
+  const noms = Object.fromEntries(store.listTeachers({ campusId }).map((t) => [t.id, t.name]));
+  const attestations = store.listAttestationsVigilance();
+  return ci.tableauDeBord({ contrats, attestations, aujourdhui, noms });
+}
+
+app.get("/api/contrats-intervenants", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const t = tableauContrats(campusId, aujourdhui);
+
+  // Couverture du planning : affecter une séance à quelqu'un dont aucun contrat
+  // ne couvre la date, c'est faire travailler sans support contractuel.
+  const contrats = store.listContratsIntervenants({ campusId });
+  const parIntervenant = new Map();
+  for (const c of contrats) {
+    if (!parIntervenant.has(c.teacherId)) parIntervenant.set(c.teacherId, []);
+    parIntervenant.get(c.teacherId).push(c);
+  }
+  const couvertures = [];
+  for (const [teacherId, liste] of parIntervenant) {
+    const seances = sessionstore.listSessions({ teacherId }).filter((s) => s.campusId === campusId);
+    const c = ci.couvertureSeances(liste, seances);
+    if (c.alerte) couvertures.push({ teacherId, nom: liste[0] && store.getTeacher(teacherId)?.name, ...c });
+  }
+
+  res.json({
+    ...t, couvertures,
+    natures: ci.NATURES, motifs: ci.MOTIFS_CDD,
+    seuilVigilance: ci.VIGILANCE_SEUIL_EUROS,
+    // Les intervenants SANS aucun contrat : l'absence ne se voit pas dans une
+    // liste de contrats, et c'est pourtant le manque le plus fréquent.
+    sansContrat: store.listTeachers({ campusId })
+      .filter((x) => x.active !== false && !contrats.some((c) => c.teacherId === x.id))
+      .map((x) => ({ id: x.id, nom: x.name, statut: x.status })),
+  });
+});
+
+app.post("/api/contrats-intervenants", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const v = ci.validateContrat(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors, warnings: v.warnings });
+
+  // On PRÉVIENT avant d'écrire : un CDD qui tombe dans la carence du précédent
+  // se refuse, il ne se corrige pas après coup.
+  if (req.body.nature === "cdd") {
+    const memePoste = store.listContratsIntervenants({ campusId, teacherId: req.body.teacherId })
+      .filter((c) => c.nature === "cdd" && (c.poste || "").trim().toLowerCase() === (req.body.poste || "").trim().toLowerCase());
+    const simule = ci.risquesRequalification([...memePoste, { ...req.body, id: "__nouveau" }], { aujourdhui: new Date().toISOString().slice(0, 10) });
+    const carence = simule.find((r) => r.code === "carence" && r.contrats.includes("__nouveau"));
+    if (carence && !req.body.confirmerCarence) {
+      return res.status(409).json({ error: carence.message, code: "carence", indice: "Décaler la date de début, changer de nature de contrat, ou confirmer en connaissance de cause." });
+    }
+  }
+  const made = store.addContratIntervenant(req.body);
+  logAudit(req, "create", "contrat-intervenant", `${ci.NATURES[made.nature]?.label} — ${store.getTeacher(made.teacherId)?.name || made.teacherId}`);
+  res.json({ ...made, warnings: v.warnings });
+});
+
+app.patch("/api/contrats-intervenants/:id", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getContratIntervenant(req.params.id);
+  if (!c) return res.status(404).json({ error: "contrat introuvable" });
+  if (!requireCampus(req, res, c.campusId)) return;
+  const v = ci.validateContrat({ ...c, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json({ ...store.updateContratIntervenant(c.id, req.body || {}), warnings: v.warnings });
+});
+
+app.post("/api/contrats-intervenants/:id/vigilance", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getContratIntervenant(req.params.id);
+  if (!c) return res.status(404).json({ error: "contrat introuvable" });
+  if (!requireCampus(req, res, c.campusId)) return;
+  if (ci.NATURES[c.nature]?.salarie !== false) {
+    return res.status(400).json({ error: "l'attestation de vigilance concerne les prestataires, pas les salariés" });
+  }
+  res.json(store.addAttestationVigilance({ contratId: c.id, date: req.body?.date, reference: req.body?.reference }));
+});
+
 // --- Documents obligatoires de l'organisme de formation ---
 // Règlement intérieur, programme préétabli, convention ou contrat de formation.
 // Ce ne sont pas des pièces de confort : leur absence est relevable en contrôle.
@@ -1809,7 +1894,27 @@ app.get("/api/chantier", requireAuth, (req, res) => {
         : etatDoc.points.map((p) => p.message).join(" "),
   };
 
-  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance, documents];
+  // 8. Contrats des intervenants (lot 2).
+  const tdbC = campusId ? tableauContrats(campusId, aujourdhui) : { total: 0, bloquants: 0, risques: [], lignes: [] };
+  const sansContrat = campusId
+    ? store.listTeachers({ campusId }).filter((x) => x.active !== false
+        && !store.listContratsIntervenants({ campusId, teacherId: x.id }).length).length
+    : 0;
+  const contratsProfs = {
+    cle: "contrats", titre: "Contrats des intervenants", ecran: "contrats-profs",
+    total: tdbC.total, actifs: tdbC.actifs || 0, echus: tdbC.echus || 0,
+    sansContrat, bloquants: tdbC.bloquants,
+    risques: (tdbC.risques || []).slice(0, 3).map((r) => ({ code: r.code, message: r.message })),
+    fait: tdbC.total > 0 && tdbC.bloquants === 0 && sansContrat === 0,
+    sansObjet: campusId ? store.listTeachers({ campusId }).filter((x) => x.active !== false).length === 0 : true,
+    enjeu: sansContrat
+      ? `${sansContrat} intervenant(s) sans aucun contrat enregistré : leurs heures s'exécutent sans support contractuel.`
+      : tdbC.bloquants
+        ? "Des échéances dépassées ou des enchaînements de contrats exposent à une requalification — elle se constate des mois après, devant le conseil de prud'hommes."
+        : "Contrats couverts, échéances tenues.",
+  };
+
+  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance, documents, contratsProfs];
   const restants = chantiers.filter((c) => !c.fait && !c.sansObjet);
   res.json({
     campusId: campusId || null, campus: campus?.name || null,
@@ -4544,6 +4649,11 @@ function conflictCtx(s) {
     // Mobilités des inscrits de la classe, pour que le planning cesse de poser
     // des cours devant un groupe parti à l'étranger.
     ...(s.classId ? mobilitesDeLaClasse(s.classId) : { mobilites: [], effectifClasse: 0 }),
+    // Couverture contractuelle de l'intervenant à la date de la séance :
+    // symétrique du contrôle d'habilitation à la certification.
+    contratsIntervenant: s.teacherId
+      ? store.listContratsIntervenants({ teacherId: s.teacherId })
+      : null,
   };
 }
 
