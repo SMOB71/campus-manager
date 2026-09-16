@@ -47,6 +47,8 @@ import * as doc from "./lib/documents.js";
 import * as ci from "./lib/contratsintervenants.js";
 import * as cat from "./lib/catalogue.js";
 import * as dv from "./lib/devis.js";
+import * as expl from "./lib/exploitation.js";
+import * as real from "./lib/realisation.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -1125,6 +1127,123 @@ function destinatairesEnquete(e) {
   // Plutôt que d'inventer une liste, on ne crée rien et l'écran le dit.
   return out;
 }
+
+// --- Exploitation : exports configurables et tableaux croisés ---
+// Le module le plus dangereux de l'application : un export libre contourne tous
+// les seuils que les autres écrans appliquent. Ils sont donc appliqués ICI.
+
+// Les lignes plates d'une source. Chaque source est construite explicitement :
+// exposer une requête générique sur le store reviendrait à offrir un accès
+// direct aux données, sans aucun des contrôles qui précèdent.
+function lignesSource(source, campusId) {
+  if (source === "apprenants") {
+    const classes = new Map(store.listClasses({ campusId }).map((k) => [k.id, k.name]));
+    const campus = new Map(store.listCampuses().map((c) => [c.id, c.name]));
+    return store.listLearners({ campusId }).map((l) => {
+      const e = store.listEnrollments({ learnerId: l.id })[0];
+      return {
+        nom: l.nom || "", prenom: l.prenom || "", email: l.email || "",
+        classe: classes.get(e?.classId) || "—", statut: e?.statut || "—",
+        campus: campus.get(l.campusId) || "—",
+      };
+    });
+  }
+  if (source === "resultats") {
+    const classes = new Map(store.listClasses({ campusId }).map((k) => [k.id, k]));
+    const curricula = new Map(store.listCurricula().map((c) => [c.id, c.name]));
+    return store.listEnrollments({ campusId }).map((e) => {
+      const k = classes.get(e.classId);
+      return {
+        classe: k?.name || "—", formation: curricula.get(k?.curriculumId) || "—",
+        obtenu: e.diplome ? "oui" : "non", millesime: (e.schoolYear || "—"),
+      };
+    });
+  }
+  if (source === "assiduite") {
+    const classes = new Map(store.listClasses({ campusId }).map((k) => [k.id, k.name]));
+    return attendancestore.listSheets({ campusId, status: "locked" }).map((s) => ({
+      classe: classes.get(s.classId) || "—", mois: String(s.date || "").slice(0, 7),
+      heuresPrevues: 1, heuresRealisees: (s.entries || []).filter((x) => x.status === "present").length,
+    }));
+  }
+  if (source === "appreciations") {
+    const out = [];
+    for (const e of store.listEnquetes({ campusId })) {
+      if (e.type !== "enseignements") continue;
+      for (const r of store.listReponses({ enqueteId: e.id })) {
+        out.push({
+          enseignement: r.moduleId || "—",
+          intervenant: store.getTeacher(r.teacherId)?.name || "—",
+          note: Number(Object.values(r.reponses || {}).find((v) => Number.isFinite(Number(v)))) || null,
+        });
+      }
+    }
+    return out;
+  }
+  return [];
+}
+
+app.get("/api/exploitation/sources", requireAuth, (_req, res) => {
+  res.json({ sources: expl.SOURCES, finalites: expl.FINALITES, seuil: expl.SEUIL_CROISEMENT });
+});
+
+// Tableau croisé. Les seuils sont appliqués au RÉSULTAT, avec masquage
+// complémentaire : une case masquée seule se recalculerait par soustraction.
+app.post("/api/exploitation/croiser", requireAuth, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const { source, ligne, colonne, mesure } = req.body || {};
+  if (!expl.SOURCES[source]) return res.status(400).json({ error: "source inconnue" });
+  const champs = expl.SOURCES[source].champs.map((c) => c.cle);
+  if (!champs.includes(ligne) || !champs.includes(colonne)) {
+    return res.status(400).json({ error: "ligne et colonne doivent appartenir à la source" });
+  }
+  // Un croisement ne porte JAMAIS sur un champ nominatif en tête de ligne : ce
+  // serait une liste nominative déguisée en tableau.
+  const nominatif = expl.SOURCES[source].champs.filter((c) => c.nominatif).map((c) => c.cle);
+  if (nominatif.includes(ligne) || nominatif.includes(colonne)) {
+    return res.status(400).json({
+      error: "un tableau croisé ne peut pas être ventilé sur un champ nominatif : le résultat serait une liste de personnes, pas une statistique.",
+    });
+  }
+  const brut = expl.croiser(lignesSource(source, campusId), { ligne, colonne, mesure: mesure || null });
+  const seuil = expl.SOURCES[source].seuil || expl.SEUIL_CROISEMENT;
+  res.json(expl.masquer(brut, { seuil }));
+});
+
+// Export de lignes. Nominatif = finalité obligatoire, et trace au journal.
+app.post("/api/exploitation/exporter", requireAuth, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const v = expl.validateExport(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+
+  const champs = req.body.champs;
+  const lignes = lignesSource(req.body.source, campusId)
+    .map((r) => Object.fromEntries(champs.map((c) => [c, r[c]])));
+
+  store.addJournalExport({
+    campusId,
+    ...expl.entreeJournal({
+      source: req.body.source, champs, finalite: req.body.finalite,
+      finalitePrecision: req.body.finalitePrecision, nominatifs: v.nominatifs,
+      lignes: lignes.length, par: req.user?.name || req.user?.email || "", campusId,
+    }),
+    date: new Date().toISOString().slice(0, 10),
+  });
+  logAudit(req, "read", "export", `${req.body.source} — ${lignes.length} ligne(s)${v.nominatifs.length ? " (nominatif)" : ""}`);
+  res.json({ lignes, total: lignes.length, warnings: v.warnings });
+});
+
+app.get("/api/exploitation/journal", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const journal = store.listJournalExports({ campusId });
+  res.json({
+    journal: journal.slice(0, 200),
+    ...expl.synthese(journal, { aujourdhui: new Date().toISOString().slice(0, 10) }),
+  });
+});
 
 // --- Catalogue de formation ---
 // Ce qui est publié engage l'organisme : c'est l'indicateur 1 du référentiel.
@@ -3458,6 +3577,54 @@ app.post("/api/openings/:id/seed", requireAuth, requireAdmin, (req, res) => {
   logAudit(req, "seed", "opening", `${o.name} — rétroplanning type`);
   res.json(store.getOpening(o.id));
 });
+// --- Répertoire des personnes du projet ---
+// Une seule liste alimente les membres de comité ET les responsabilités des
+// étapes : deux listes parallèles se désynchronisent au premier départ.
+app.get("/api/personnes", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  res.json({ personnes: scopeByCampus(req, store.listPersonnes({ campusId })), raci: real.RACI });
+});
+app.post("/api/personnes", requireAuth, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = real.validatePersonne(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const made = store.addPersonne(req.body);
+  logAudit(req, "create", "personne", made.nom || "");
+  res.json({ ...made, warnings: v.warnings });
+});
+app.patch("/api/personnes/:id", requireAuth, (req, res) => {
+  const p = store.getPersonne(req.params.id);
+  if (!p) return res.status(404).json({ error: "personne introuvable" });
+  if (!requireCampus(req, res, p.campusId)) return;
+  const v = real.validatePersonne({ ...p, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json(store.updatePersonne(p.id, req.body || {}));
+});
+
+// État documentaire d'un plan d'ouverture : ce qu'un audit démonterait.
+app.get("/api/openings/:id/realisation", requireAuth, (req, res) => {
+  const o = store.listOpenings().find((x) => x.id === req.params.id);
+  if (!o) return res.status(404).json({ error: "ouverture introuvable" });
+  const campusId = o.campusId || req.query.campusId || null;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  const ctx = {
+    repertoire: store.listPersonnes({ campusId }),
+    documents: campusId ? store.listDocuments(campusId) : [],
+  };
+  res.json({ ...real.etatPlan(o.tasks || [], ctx), repertoire: ctx.repertoire });
+});
+
+// Qui peut effectivement être convoqué sur une étape — calculé AVANT l'envoi.
+app.get("/api/openings/:id/tasks/:tid/convocables", requireAuth, (req, res) => {
+  const o = store.listOpenings().find((x) => x.id === req.params.id);
+  const t = (o?.tasks || []).find((x) => x.id === req.params.tid);
+  if (!t) return res.status(404).json({ error: "étape introuvable" });
+  const campusId = o.campusId || req.query.campusId || null;
+  if (campusId && !requireCampus(req, res, campusId)) return;
+  res.json(real.convocables(t, store.listPersonnes({ campusId })));
+});
+
 app.post("/api/openings/:id/tasks", requireAuth, requireAdmin, (req, res) => {
   const t = store.addOpeningTask(req.params.id, req.body || {});
   if (!t) return res.status(404).json({ error: "ouverture introuvable" });
@@ -3466,7 +3633,16 @@ app.post("/api/openings/:id/tasks", requireAuth, requireAdmin, (req, res) => {
 app.patch("/api/openings/:id/tasks/:tid", requireAuth, requireAdmin, (req, res) => {
   const t = store.updateOpeningTask(req.params.id, req.params.tid, req.body || {});
   if (!t) return res.status(404).json({ error: "introuvable" });
-  res.json(t);
+  // Le diagnostic part AVEC la réponse : cocher sans rien écrire doit se dire
+  // tout de suite, pas au prochain audit. On ne bloque pas — une étape se coche
+  // vite, en réunion — mais l'écart est nommé.
+  const o = store.listOpenings().find((x) => x.id === req.params.id);
+  const campusId = o?.campusId || null;
+  const diagnostic = real.validateRealisation(t, {
+    repertoire: store.listPersonnes({ campusId }),
+    documents: campusId ? store.listDocuments(campusId) : [],
+  });
+  res.json({ ...t, diagnostic: { manques: diagnostic.manques, documentee: diagnostic.documentee } });
 });
 app.delete("/api/openings/:id/tasks/:tid", requireAuth, requireAdmin, (req, res) => { store.deleteOpeningTask(req.params.id, req.params.tid); res.json({ ok: true }); });
 

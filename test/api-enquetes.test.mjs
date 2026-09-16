@@ -1162,3 +1162,112 @@ test("le chantier compte maintenant neuf dispositifs", async () => {
     ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
 });
+
+// --- Réalisation des étapes : compte rendu, personnes, pièces ---
+let ouvertureId = null, tacheId = null, persoId = null;
+
+test("une personne sans adresse est refusée : le répertoire sert à convoquer", async () => {
+  const ko = await post("/api/personnes", { campusId, nom: "Sans adresse", role: "Observateur" });
+  assert.equal(ko.status, 400);
+  assert.match((await ko.json()).error, /ne peut pas être convoquée/);
+
+  const p = await (await post("/api/personnes", {
+    campusId, nom: "Stéphane Francese", role: "Directeur des opérations", email: "s@campus.fr",
+  })).json();
+  persoId = p.id;
+  const liste = await jget(`/api/personnes?campusId=${campusId}`);
+  assert.equal(liste.personnes.length, 1);
+  assert.equal(liste.raci.owner.convoque, true);
+  assert.equal(liste.raci.informed.convoque, false);
+});
+
+test("cocher une étape sans rien écrire le dit TOUT DE SUITE", async () => {
+  const o = await (await post("/api/openings", { name: "CFA Test", targetDate: "2027-09-01", campusId })).json();
+  ouvertureId = o.id;
+  const t = await (await post(`/api/openings/${ouvertureId}/tasks`, {
+    title: "Conseil de perfectionnement", lot: "pedagogie",
+    outputs: [{ label: "Procès-verbal" }],
+  })).json();
+  tacheId = t.id;
+
+  const coche = await (await req(`/api/openings/${ouvertureId}/tasks/${tacheId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { status: "done" },
+  })).json();
+  // Le diagnostic part AVEC la réponse, pas au prochain audit.
+  assert.equal(coche.diagnostic.documentee, false);
+  const cles = coche.diagnostic.manques.map((m) => m.cle);
+  assert.ok(cles.includes("compte_rendu"));
+  assert.ok(cles.includes("preuve"), "un livrable est annoncé, aucune pièce n'est jointe");
+  assert.ok(cles.includes("sans_responsable"));
+  assert.match(coche.diagnostic.manques.find((m) => m.cle === "compte_rendu").message, /six mois plus tard/);
+});
+
+test("ON NE CONVOQUE PAS UNE CHAÎNE DE CARACTÈRES", async () => {
+  // Responsable en texte libre : hérité, affiché, mais injoignable.
+  await req(`/api/openings/${ouvertureId}/tasks/${tacheId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { owner: "le directeur" },
+  });
+  let c = await jget(`/api/openings/${ouvertureId}/tasks/${tacheId}/convocables`);
+  assert.equal(c.complet, false);
+  assert.equal(c.retenus.length, 0);
+  assert.match(c.ecartes[0].motif, /saisi à la main/);
+
+  // Rattaché à une personne du répertoire : il devient joignable.
+  await req(`/api/openings/${ouvertureId}/tasks/${tacheId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { ownerId: persoId },
+  });
+  c = await jget(`/api/openings/${ouvertureId}/tasks/${tacheId}/convocables`);
+  assert.equal(c.retenus.length, 1);
+  assert.equal(c.retenus[0].email, "s@campus.fr");
+  assert.deepEqual(c.retenus[0].roles, ["R"]);
+});
+
+test("une pièce qui pointe dans le vide est BLOQUANTE : elle rassure sans rien prouver", async () => {
+  const r = await (await req(`/api/openings/${ouvertureId}/tasks/${tacheId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { preuves: [{ documentId: "document-supprime", label: "PV" }] },
+  })).json();
+  const m = r.diagnostic.manques.find((x) => x.cle === "preuve_introuvable");
+  assert.equal(m.gravite, "bloquant");
+  assert.match(m.message, /rassure sans rien démontrer/);
+});
+
+test("une étape SANS livrable annoncé est documentée par son seul compte rendu", async () => {
+  // Nouvelle étape : `outputs` n'est pas modifiable par ce PATCH (il a ses
+  // propres routes), donc on part d'une étape qui n'en annonce aucun.
+  const t = await (await post(`/api/openings/${ouvertureId}/tasks`, {
+    title: "Désignation du référent handicap", lot: "rh", ownerId: persoId,
+  })).json();
+  const r = await (await req(`/api/openings/${ouvertureId}/tasks/${t.id}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: {
+      status: "done",
+      realisation: { texte: "Référent désigné le 12 septembre, note de service diffusée à l'équipe.", le: "2026-09-12", par: persoId },
+    },
+  })).json();
+  assert.equal(r.realisation.texte.startsWith("Référent désigné"), true);
+  assert.equal(r.diagnostic.documentee, true, "aucun livrable annoncé : aucune pièce n'est exigée");
+  assert.deepEqual(r.diagnostic.manques, []);
+});
+
+test("mais dès qu'un livrable est annoncé, la pièce devient attendue", async () => {
+  const t = await (await post(`/api/openings/${ouvertureId}/tasks`, {
+    title: "Dépôt de la déclaration d'activité", lot: "juridique", ownerId: persoId,
+    outputs: [{ label: "Récépissé de déclaration" }],
+  })).json();
+  const r = await (await req(`/api/openings/${ouvertureId}/tasks/${t.id}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { status: "done", realisation: { texte: "Déposée en ligne le 10 septembre.", le: "2026-09-10", par: persoId } },
+  })).json();
+  assert.equal(r.diagnostic.documentee, false);
+  assert.match(r.diagnostic.manques.find((m) => m.cle === "preuve").message, /la pièce le démontre/);
+});
+
+test("l'état du plan montre ce qu'un audit démonterait", async () => {
+  const e = await jget(`/api/openings/${ouvertureId}/realisation`);
+  assert.ok(e.total >= 1);
+  assert.equal(e.repertoire.length, 1);
+  assert.match(e.reserve, /pas un jugement sur la qualité/);
+  assert.equal(typeof e.sansCompteRendu, "number");
+  assert.equal(typeof e.sansPreuve, "number");
+});
