@@ -367,6 +367,10 @@ const NAV = [
   { id: "ouvertures", label: "Ouverture de campus", icon: I.rocket, admin: true, group: "Ouverture de campus" },
   { id: "si", label: "SI campus (ERP)", icon: I.plug, group: "Réseau" },
   { id: "documents", label: "Documents", icon: I.folder, group: "Réseau" },
+  // Répertoire projet : une seule liste alimente les comités ET les
+  // responsabilités des étapes. On ne convoque pas une chaîne de caractères.
+  { id: "repertoire", label: "Répertoire du projet", icon: I.campus, group: "Réseau" },
+  { id: "exploitation", label: "Exports & tableaux croisés", icon: I.chart, admin: true, group: "Performance" },
   { id: "admissions", label: "Admissions", icon: I.funnel, group: "Recrutement" },
   { id: "evenements", label: "JPO & événements", icon: I.mega, group: "Recrutement" },
   { id: "finance", label: "Finance", icon: I.euro, group: "Performance" },
@@ -503,7 +507,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, catalogue: renderCatalogue, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, catalogue: renderCatalogue, repertoire: renderRepertoire, exploitation: renderExploitation, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1773,6 +1777,186 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Répertoire du projet ---
+// Une seule liste alimente les membres de comité et les responsabilités des
+// étapes : deux listes parallèles se désynchronisent au premier départ.
+let repCampus = "";
+
+async function renderRepertoire() {
+  if (!repCampus) repCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/personnes?campusId=${repCampus}`);
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="rp-new">+ Personne</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="rp-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === repCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(d.personnes.length, "personnes")}</div>
+    </div>
+    <p class="hint muted" style="margin-bottom:12px;">Ces personnes alimentent à la fois les membres des comités et les responsabilités des étapes d'ouverture. Une adresse est obligatoire : c'est la seule raison d'être du répertoire — pouvoir convoquer.</p>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Nom</th><th>Rôle</th><th>Courriel</th><th>Téléphone</th><th></th></tr></thead><tbody>
+      ${d.personnes.length ? d.personnes.map((p) => `<tr>
+        <td><b>${esc(p.nom)}</b></td><td>${esc(p.role || "—")}</td>
+        <td>${esc(p.email)}</td><td>${esc(p.telephone || "—")}</td>
+        <td><button class="btn-ghost btn-sm rp-edit" data-id="${p.id}">Modifier</button></td>
+      </tr>`).join("") : '<tr><td colspan="5" class="muted">Répertoire vide. Tant qu\'il l\'est, aucune responsabilité d\'étape n\'est convocable.</td></tr>'}
+      </tbody></table></div>
+    <div class="section-title">Les quatre responsabilités</div>
+    <div class="card card-pad"><div style="display:flex;flex-direction:column;gap:6px;">
+      ${Object.entries(d.raci).map(([k, r]) => `<div class="row" style="gap:8px;padding:4px 0;border-top:1px solid var(--border);">
+        <span class="pill">${esc(r.code)}</span><span class="grow">${esc(r.label)}</span>
+        <span class="muted" style="font-size:12.5px;">${r.convoque ? "reçoit les convocations" : "informé, non convoqué"}</span></div>`).join("")}
+    </div></div>`;
+
+  $("#rp-campus").onchange = (e) => { repCampus = e.target.value; renderRepertoire(); };
+  $("#rp-new").onclick = () => openPersonneForm();
+  $$(".rp-edit").forEach((b) => { b.onclick = () => openPersonneForm(d.personnes.find((p) => p.id === b.dataset.id)); });
+}
+
+function openPersonneForm(p = null) {
+  openModal(p ? `Modifier — ${p.nom}` : "Nouvelle personne", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Nom et prénom</label><input class="txt pf" data-f="nom" value="${esc(p?.nom || "")}"></div>
+      <div><label class="field-label">Rôle</label><input class="txt pf" data-f="role" value="${esc(p?.role || "")}" placeholder="Directeur des opérations"></div>
+      <div><label class="field-label">Courriel</label><input class="txt pf" data-f="email" type="email" value="${esc(p?.email || "")}">
+        <p class="hint muted" style="margin-top:4px;">Obligatoire : une personne sans adresse ne peut pas être convoquée.</p></div>
+      <div><label class="field-label">Téléphone</label><input class="txt pf" data-f="telephone" value="${esc(p?.telephone || "")}"></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="pf-save">Enregistrer</button></div>`);
+
+  $("#pf-save").onclick = async () => {
+    const body = { campusId: repCampus };
+    $$(".pf").forEach((i) => (body[i.dataset.f] = i.value));
+    const r = p ? await api.patch(`/api/personnes/${p.id}`, body) : await api.post("/api/personnes", body);
+    if (r?.error) { alert(r.error); return; }
+    if (r.warnings?.length) alert(r.warnings.join("\n"));
+    closeModals(); renderRepertoire();
+  };
+}
+
+// --- Exports et tableaux croisés ---
+// Le module le plus dangereux : un export libre contournerait tous les seuils
+// que les autres écrans appliquent. L'écran le dit, et les seuils tiennent.
+let xplCampus = "", xplOnglet = "croiser";
+
+async function renderExploitation() {
+  if (!xplCampus) xplCampus = state.campuses[0]?.id || "";
+  const [ref, jr] = await Promise.all([
+    api.get("/api/exploitation/sources"), api.get(`/api/exploitation/journal?campusId=${xplCampus}`),
+  ]);
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;gap:8px;">
+      <div><label class="field-label">Campus</label><select id="ex-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === xplCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <button class="btn-ghost btn-sm ex-tab ${xplOnglet === "croiser" ? "btn-primary" : ""}" data-t="croiser">Tableau croisé</button>
+      <button class="btn-ghost btn-sm ex-tab ${xplOnglet === "exporter" ? "btn-primary" : ""}" data-t="exporter">Export</button>
+      <button class="btn-ghost btn-sm ex-tab ${xplOnglet === "journal" ? "btn-primary" : ""}" data-t="journal">Journal (${jr.total})</button>
+    </div>
+
+    ${xplOnglet === "croiser" ? `
+      <div class="card card-pad" style="margin-bottom:12px;">
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;">
+          <div><label class="field-label">Source</label><select class="txt" id="ex-src">${Object.entries(ref.sources).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div>
+          <div><label class="field-label">En ligne</label><select class="txt" id="ex-l"></select></div>
+          <div><label class="field-label">En colonne</label><select class="txt" id="ex-c"></select></div>
+          <div><label class="field-label">Mesure (moyenne)</label><select class="txt" id="ex-m"><option value="">— compter —</option></select></div>
+        </div>
+        <div class="actions" style="margin-top:10px;"><button class="btn-primary" id="ex-go">Croiser</button></div>
+      </div>
+      <div id="ex-out"></div>
+    ` : xplOnglet === "exporter" ? `
+      <div class="card card-pad" style="margin-bottom:12px;">
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+          <div><label class="field-label">Source</label><select class="txt" id="ex-esrc">${Object.entries(ref.sources).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div>
+          <div><label class="field-label">Finalité</label><select class="txt" id="ex-fin"><option value="">—</option>${Object.entries(ref.finalites).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join("")}</select></div>
+          <div style="grid-column:1/-1;"><label class="field-label">Champs</label><div id="ex-champs" class="row" style="flex-wrap:wrap;gap:10px;"></div></div>
+          <div style="grid-column:1/-1;" id="ex-prec"></div>
+        </div>
+        <div class="actions" style="margin-top:10px;"><button class="btn-primary" id="ex-exp">Exporter</button></div>
+      </div>
+      <div id="ex-eout"></div>
+    ` : `
+      <div class="kpis" style="margin-bottom:12px;">${fkpi(jr.total, "exports")}${fkpi(jr.nominatifs, "nominatifs", jr.nominatifs ? "bad" : "good")}${fkpi(jr.lignesExportees, "lignes sorties")}</div>
+      ${jr.parFinalite.length ? `<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px;">${jr.parFinalite.map((f) => `<span class="pill">${esc(f.label)} : ${f.n}</span>`).join("")}</div>` : ""}
+      <div class="card" style="overflow-x:auto;"><table class="net-table">
+        <thead><tr><th>Date</th><th>Source</th><th>Champs</th><th>Finalité</th><th>Lignes</th><th>Par</th></tr></thead><tbody>
+        ${jr.journal.length ? jr.journal.map((e) => `<tr>
+          <td>${esc(e.date || "—")}</td><td>${esc(ref.sources[e.source]?.label || e.source)}</td>
+          <td>${esc((e.champs || []).join(", "))}${e.nominatif ? ' <span class="pill p-bad">nominatif</span>' : ""}</td>
+          <td>${esc(e.finaliteLabel || "—")}${e.finalitePrecision ? `<br><span class="muted" style="font-size:12px;">${esc(e.finalitePrecision)}</span>` : ""}</td>
+          <td>${e.lignes}</td><td>${esc(e.par || "—")}</td>
+        </tr>`).join("") : '<tr><td colspan="6" class="muted">Aucun export enregistré.</td></tr>'}
+        </tbody></table></div>
+      <p class="hint muted">${esc(jr.reserve)}</p>`}`;
+
+  $("#ex-campus").onchange = (e) => { xplCampus = e.target.value; renderExploitation(); };
+  $$(".ex-tab").forEach((b) => { b.onclick = () => { xplOnglet = b.dataset.t; renderExploitation(); }; });
+
+  // Les axes ne proposent jamais un champ nominatif : ventiler un tableau sur
+  // un nom produirait une liste de personnes déguisée en statistique.
+  const majAxes = () => {
+    const src = ref.sources[$("#ex-src").value];
+    const axes = src.champs.filter((c) => !c.nominatif);
+    const opts = axes.map((c) => `<option value="${c.cle}">${esc(c.label)}</option>`).join("");
+    $("#ex-l").innerHTML = opts;
+    $("#ex-c").innerHTML = opts;
+    if (axes[1]) $("#ex-c").value = axes[1].cle;
+    $("#ex-m").innerHTML = '<option value="">— compter —</option>' + axes.map((c) => `<option value="${c.cle}">${esc(c.label)}</option>`).join("");
+  };
+  if ($("#ex-src")) { $("#ex-src").onchange = majAxes; majAxes(); }
+
+  if ($("#ex-go")) $("#ex-go").onclick = async () => {
+    const r = await api.post("/api/exploitation/croiser", {
+      campusId: xplCampus, source: $("#ex-src").value,
+      ligne: $("#ex-l").value, colonne: $("#ex-c").value, mesure: $("#ex-m").value || null,
+    });
+    if (r?.error) { $("#ex-out").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    $("#ex-out").innerHTML = `
+      ${r.reserve ? `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid #8A7A4B;"><b>${esc(r.reserve)}</b></div>` : ""}
+      ${r.exploitable === false ? `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid #8A4B4B;"><b>${r.degenere ? "Ce croisement ne peut pas être protégé." : "Tableau trop masqué pour être exploité."}</b><p class="muted" style="margin:6px 0 0;font-size:13px;">${r.degenere ? "Avec une seule ligne ou une seule colonne, le masquage est décoratif : chaque case se déduit d'un effectif connu par ailleurs." : "Mieux vaut le dire que laisser tirer une conclusion de trois cases."}</p></div>` : ""}
+      <div class="card" style="overflow-x:auto;"><table class="net-table">
+        <thead><tr><th></th>${r.valColonnes.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>
+        ${r.valLignes.map((l, i) => `<tr><td><b>${esc(l)}</b></td>${r.grille[i].map((c) => `<td${c.masquee ? ` class="muted" title="${esc(c.motif || "")}"` : ""}>${c.masquee ? "—" : (c.valeur ?? 0)}</td>`).join("")}</tr>`).join("")}
+        </tbody></table></div>`;
+  };
+
+  const majChamps = () => {
+    const src = ref.sources[$("#ex-esrc").value];
+    $("#ex-champs").innerHTML = src.champs.map((c) => `<label class="jal-chk"><input type="checkbox" class="ex-ch" value="${c.cle}"> ${esc(c.label)}${c.nominatif ? ' <span class="pill p-warn">nominatif</span>' : ""}</label>`).join("");
+    $$(".ex-ch").forEach((i) => { i.onchange = majPrec; });
+    majPrec();
+  };
+  const majPrec = () => {
+    const src = ref.sources[$("#ex-esrc").value];
+    const coches = $$(".ex-ch").filter((i) => i.checked).map((i) => i.value);
+    const nom = src.champs.filter((c) => c.nominatif && coches.includes(c.cle));
+    $("#ex-prec").innerHTML = nom.length
+      ? `<div class="item" style="border-left:3px solid #8A7A4B;"><div class="grow"><b>Export nominatif</b> (${nom.map((c) => esc(c.label)).join(", ")}).
+         Un export de données personnelles est un traitement : il se justifie par une finalité, et il devra être expliqué.
+         <br><input class="txt" id="ex-precis" placeholder="Préciser si « autre »" style="margin-top:6px;"></div></div>`
+      : "";
+  };
+  if ($("#ex-esrc")) { $("#ex-esrc").onchange = majChamps; majChamps(); }
+
+  if ($("#ex-exp")) $("#ex-exp").onclick = async () => {
+    const champs = $$(".ex-ch").filter((i) => i.checked).map((i) => i.value);
+    const r = await api.post("/api/exploitation/exporter", {
+      campusId: xplCampus, source: $("#ex-esrc").value, champs,
+      finalite: $("#ex-fin").value || null, finalitePrecision: $("#ex-precis")?.value || "",
+    });
+    if (r?.error) { $("#ex-eout").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    $("#ex-eout").innerHTML = `
+      ${(r.warnings || []).map((w) => `<div class="item" style="border-left:3px solid #8A7A4B;margin-bottom:6px;"><div class="grow">${esc(w)}</div></div>`).join("")}
+      <div class="card" style="overflow-x:auto;"><table class="net-table">
+        <thead><tr>${champs.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>
+        ${r.lignes.slice(0, 50).map((l) => `<tr>${champs.map((c) => `<td>${esc(l[c] ?? "")}</td>`).join("")}</tr>`).join("")}
+        </tbody></table></div>
+      <p class="hint muted">${r.total} ligne(s) — ${Math.min(50, r.total)} affichée(s). L'export est tracé au journal : qui, quoi, quand, pourquoi.</p>`;
+  };
+}
+
 // --- Catalogue et devis ---
 // Un seul écran pour la chaîne : offre → devis → convention. Les séparer
 // laisserait croire que ce sont trois sujets.
@@ -5709,6 +5893,27 @@ async function openTaskSheet(oid, tid) {
   const o = await api.get(`/api/openings/${oid}`);
   const t = (o?.tasks || []).find((x) => x.id === tid);
   if (!t) return;
+  // Le répertoire et la GED du campus : sans eux, le RACI reste du texte libre
+  // et les pièces ne se rattachent à rien.
+  const cid = o.campusId || "";
+  const [rep, ged] = await Promise.all([
+    cid ? api.get(`/api/personnes?campusId=${cid}`) : Promise.resolve({ personnes: [] }),
+    cid ? api.get(`/api/documents?campusId=${cid}`) : Promise.resolve([]),
+  ]);
+  const gens = rep.personnes || [];
+  const docs = Array.isArray(ged) ? ged : [];
+  const nomDe = (id) => gens.find((g) => g.id === id)?.nom || null;
+
+  // Un rôle se choisit dans le répertoire. Le texte libre hérité reste visible
+  // sous le champ, marqué pour ce qu'il est : un nom qu'on ne peut pas convoquer.
+  const choixPersonne = (champ, label, valeur, libre) => `
+    <div><label class="field-label">${label}</label>
+      <select class="txt tsf" data-f="${champ}"><option value="">—</option>${gens.map((g) => `<option value="${g.id}" ${valeur === g.id ? "selected" : ""}>${esc(g.nom)}${g.role ? ` · ${esc(g.role)}` : ""}</option>`).join("")}</select>
+      ${libre && !valeur ? `<p class="hint muted" style="margin-top:4px;color:#8A7A4B;">Saisi à la main : « ${esc(libre)} » — non convocable tant que la personne n'est pas rattachée.</p>` : ""}</div>`;
+  const choixMulti = (champ, label, valeurs, libre) => `
+    <div><label class="field-label">${label}</label>
+      <select class="txt" id="ts-${champ}" multiple size="3">${gens.map((g) => `<option value="${g.id}" ${(valeurs || []).includes(g.id) ? "selected" : ""}>${esc(g.nom)}</option>`).join("")}</select>
+      ${libre && !(valeurs || []).length ? `<p class="hint muted" style="margin-top:4px;color:#8A7A4B;">Saisi à la main : « ${esc(libre)} »</p>` : ""}</div>`;
   const others = (o.tasks || []).filter((x) => x.id !== tid);
   const dep = new Set(t.dependsOn || []);
   const outRow = (out) => `<tr>
@@ -5726,10 +5931,11 @@ async function openTaskSheet(oid, tid) {
       <div><label class="field-label">Statut</label><select class="txt tsf" data-f="status">${Object.entries(TASK_STATUS).map(([k, l]) => `<option value="${k}" ${t.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
       <div><label class="field-label">Avancement %</label><input class="txt tsf" data-f="progress" type="number" min="0" max="100" value="${t.progress == null ? "" : t.progress}" ${(t.steps || []).length ? "disabled" : ""}>${(t.steps || []).length ? '<span class="hint muted">calculé depuis la checklist</span>' : ""}</div>
       <div style="grid-column:1/-1;"><label class="field-label">Contexte</label><textarea class="txt tsf" data-f="description" rows="3">${esc(t.description || "")}</textarea></div>
-      <div><label class="field-label">Responsable (R)</label><input class="txt tsf" data-f="owner" value="${esc(t.owner || "")}"></div>
-      <div><label class="field-label">Approbateur (A)</label><input class="txt tsf" data-f="accountable" value="${esc(t.accountable || "")}"></div>
-      <div><label class="field-label">Consulté (C)</label><input class="txt tsf" data-f="consulted" value="${esc(t.consulted || "")}"></div>
-      <div><label class="field-label">Informé (I)</label><input class="txt tsf" data-f="informed" value="${esc(t.informed || "")}"></div>
+      ${choixPersonne("ownerId", "Responsable (R)", t.ownerId, t.owner)}
+      ${choixPersonne("accountableId", "Approbateur (A)", t.accountableId, t.accountable)}
+      ${choixMulti("consultedIds", "Consultés (C)", t.consultedIds, t.consulted)}
+      ${choixMulti("informedIds", "Informés (I)", t.informedIds, t.informed)}
+      ${gens.length ? "" : '<div style="grid-column:1/-1;"><p class="hint muted" style="color:#8A7A4B;">Le répertoire du campus est vide : tant qu\'aucune personne n\'y figure, aucun rôle n\'est convocable. Réseau → Répertoire du projet.</p></div>'}
       <div style="grid-column:1/-1;"><label class="jal-chk"><input type="checkbox" id="ts-crit" ${t.critical ? "checked" : ""}> Chemin critique</label></div>
       ${others.length ? `<div style="grid-column:1/-1;"><label class="field-label">Dépend de</label><select class="txt" id="ts-dep" multiple size="4">${others.map((x) => `<option value="${x.id}" ${dep.has(x.id) ? "selected" : ""}>${esc(x.title)}</option>`).join("")}</select></div>` : ""}
     </div>
@@ -5749,6 +5955,31 @@ async function openTaskSheet(oid, tid) {
       <button class="btn-ghost btn-sm" id="ts-oadd">Ajouter</button>
     </div>
 
+    <p class="field-label" style="margin-top:16px;">Ce qui a été fait</p>
+    <p class="hint muted" style="margin-top:0;">Une case cochée ne dit rien. Ce texte est le seul élément qui survivra au départ de celui qui a fait l'étape — et c'est lui qu'on relira devant un auditeur ou au comité suivant.</p>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="grid-column:1/-1;"><textarea class="txt" id="ts-real" rows="4" placeholder="Séance du 12 septembre, sept membres présents. Deux décisions : ouverture d'une seconde section, révision du rythme.">${esc(t.realisation?.texte || "")}</textarea></div>
+      <div><label class="field-label">Réalisée le</label><input class="txt" id="ts-real-le" type="date" value="${esc(t.realisation?.le || t.doneAt || "")}"></div>
+      <div><label class="field-label">Par</label><select class="txt" id="ts-real-par"><option value="">—</option>${gens.map((g) => `<option value="${g.id}" ${t.realisation?.par === g.id ? "selected" : ""}>${esc(g.nom)}</option>`).join("")}</select></div>
+    </div>
+
+    <p class="field-label" style="margin-top:16px;">Pièces qui valident le livrable</p>
+    <p class="hint muted" style="margin-top:0;">Le compte rendu dit ce qui a été fait ; la pièce le démontre. Procès-verbal signé, récépissé, attestation.</p>
+    <div class="list" id="ts-pr">${(t.preuves || []).length ? (t.preuves || []).map((pr) => {
+      const d = docs.find((x) => x.id === pr.documentId);
+      return `<div class="ouv-task"><span class="ttl">${esc(pr.label || d?.name || "Pièce")}</span>
+        ${d ? `<a class="btn-ghost btn-sm" href="/api/documents/${pr.documentId}/download">Ouvrir</a>`
+            : '<span class="pill p-bad">document introuvable</span>'}
+        <button class="btn-ghost btn-sm pr-del" data-doc="${esc(pr.documentId)}">×</button></div>`;
+    }).join("") : '<p class="muted">Aucune pièce annexée.</p>'}</div>
+    <div class="row" style="gap:8px;margin-top:8px;">
+      <select class="txt" id="ts-prdoc" style="flex:1;"><option value="">— choisir un document du campus —</option>${docs.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join("")}</select>
+      <input class="txt" id="ts-prlab" placeholder="Intitulé" style="max-width:200px;">
+      <button class="btn-ghost btn-sm" id="ts-pradd">Annexer</button>
+    </div>
+    ${docs.length ? "" : '<p class="hint muted" style="color:#8A7A4B;">Aucun document dans la GED de ce campus : dépose d\'abord la pièce dans Documents.</p>'}
+    <div id="ts-diag" style="margin-top:12px;"></div>
+
     <p class="field-label" style="margin-top:16px;">Échanges</p>
     <div class="list" id="ts-cm">${(t.comments || []).length ? (t.comments || []).map((c) => `<div class="ouv-task"><span class="ttl">${esc(c.text)}</span><span class="muted">${esc(c.by || "")} · ${esc((c.at || "").slice(0, 10))}</span><button class="btn-ghost btn-sm cm-del" data-cid="${c.id}">×</button></div>`).join("") : '<p class="muted">Aucun échange.</p>'}</div>
     <div class="row" style="gap:8px;margin-top:8px;"><input class="txt" id="ts-cmt" placeholder="Ajouter un message" style="flex:1;"><button class="btn-ghost btn-sm" id="ts-cmadd">Envoyer</button></div>`);
@@ -5760,9 +5991,42 @@ async function openTaskSheet(oid, tid) {
     body.critical = $("#ts-crit").checked;
     body.progress = body.progress === "" ? null : Number(body.progress);
     if ($("#ts-dep")) body.dependsOn = $$("#ts-dep option").filter((op) => op.selected).map((op) => op.value);
-    await api.patch(`/api/openings/${oid}/tasks/${tid}`, body);
+    // Les listes multiples et le bloc de réalisation ne passent pas par `.tsf`.
+    for (const f of ["consultedIds", "informedIds"]) {
+      body[f] = $$(`#ts-${f} option`).filter((op) => op.selected).map((op) => op.value);
+    }
+    const texte = $("#ts-real").value.trim();
+    body.realisation = texte || $("#ts-real-le").value || $("#ts-real-par").value
+      ? { texte, le: $("#ts-real-le").value || null, par: $("#ts-real-par").value || null }
+      : null;
+
+    const r = await api.patch(`/api/openings/${oid}/tasks/${tid}`, body);
+    // Le diagnostic s'affiche SUR PLACE : refermer la fiche en emportant
+    // l'avertissement reviendrait à ne pas l'avoir donné.
+    const d = r?.diagnostic;
+    if (d && d.manques.length) {
+      const GRAV = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" };
+      $("#ts-diag").innerHTML = d.manques.map((m) => `<div class="item" style="border-left:3px solid ${GRAV[m.gravite]};margin-bottom:6px;"><div class="grow">${esc(m.message)}</div></div>`).join("")
+        + '<p class="hint muted">Enregistré. Ces points n\'empêchent rien — ils sont ce qu\'un audit relèverait.</p>';
+      return;
+    }
     closeModals(); openOuvertureDetail(oid);
   };
+
+  // Annexer une pièce : on enregistre immédiatement, sinon l'ajout se perdrait
+  // si la fiche est fermée sans « Enregistrer ».
+  $("#ts-pradd").onclick = async () => {
+    const doc = $("#ts-prdoc").value;
+    if (!doc) { alert("Choisis un document du campus."); return; }
+    const preuves = [...(t.preuves || []), { documentId: doc, label: $("#ts-prlab").value.trim() }];
+    await api.patch(`/api/openings/${oid}/tasks/${tid}`, { preuves });
+    back();
+  };
+  $$(".pr-del").forEach((b) => { b.onclick = async () => {
+    const preuves = (t.preuves || []).filter((x) => x.documentId !== b.dataset.doc);
+    await api.patch(`/api/openings/${oid}/tasks/${tid}`, { preuves });
+    back();
+  }; });
   $("#ts-del").onclick = async () => { if (!confirm("Supprimer cette action ?")) return; await api.del(`/api/openings/${oid}/tasks/${tid}`); closeModals(); openOuvertureDetail(oid); };
   $("#ts-stadd").onclick = async () => {
     const text = $("#ts-stt").value.trim(); if (!text) return;

@@ -1271,3 +1271,61 @@ test("l'état du plan montre ce qu'un audit démonterait", async () => {
   assert.equal(typeof e.sansCompteRendu, "number");
   assert.equal(typeof e.sansPreuve, "number");
 });
+
+// --- Exploitation : les seuils survivent à l'export ---
+test("un tableau croisé ne se ventile PAS sur un champ nominatif", async () => {
+  const r = await post("/api/exploitation/croiser", {
+    campusId, source: "apprenants", ligne: "nom", colonne: "classe",
+  });
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).error, /liste de personnes, pas une statistique/);
+});
+
+test("LE SEUIL SURVIT AU CROISEMENT, avec masquage complémentaire", async () => {
+  const r = await (await post("/api/exploitation/croiser", {
+    campusId, source: "resultats", ligne: "classe", colonne: "obtenu",
+  })).json();
+  assert.ok(Array.isArray(r.grille));
+  // Huit inscrits : sous le seuil de dix, rien ne se publie.
+  assert.ok(r.masquees > 0, "des effectifs de huit ne se publient pas");
+  // Ce croisement n'a qu'une colonne (aucun diplômé dans ce scénario) : il est
+  // DÉGÉNÉRÉ, et le module le dit au lieu de faire croire que le masquage
+  // protège quelqu'un.
+  if (r.degenere) {
+    assert.equal(r.exploitable, false);
+    assert.match(r.reserve, /trop étroit pour être protégé/);
+  } else {
+    // Sinon, jamais une seule case masquée par ligne : elle se recalculerait.
+    for (const ligne of r.grille) {
+      const k = ligne.filter((c) => c.masquee).length;
+      assert.ok(k === 0 || k >= 2, `ligne avec ${k} case(s) masquée(s)`);
+    }
+    assert.match(r.reserve, /par soustraction/);
+  }
+});
+
+test("un export nominatif sans finalité est refusé, et l'export est tracé", async () => {
+  const sans = await post("/api/exploitation/exporter", {
+    campusId, source: "apprenants", champs: ["nom", "classe"],
+  });
+  assert.equal(sans.status, 400);
+  assert.match((await sans.json()).error, /finalité doit être déclarée/);
+
+  const ok = await (await post("/api/exploitation/exporter", {
+    campusId, source: "apprenants", champs: ["nom", "classe"], finalite: "financeur",
+  })).json();
+  assert.equal(ok.total, 8);
+  assert.ok(ok.lignes[0].nom);
+  assert.match(ok.warnings.join(" "), /responsable de traitement/);
+
+  // Le journal garde la trace, jamais le contenu.
+  const j = await jget(`/api/exploitation/journal?campusId=${campusId}`);
+  assert.equal(j.nominatifs, 1);
+  assert.equal(j.journal[0].finalite, "financeur");
+  const brut = JSON.stringify(j);
+  for (const l of learners) assert.equal(brut.includes(l.nom), false, "le journal ne recopie pas les données exportées");
+});
+
+test("un export non nominatif ne réclame aucune finalité", async () => {
+  assert.equal((await post("/api/exploitation/exporter", { campusId, source: "resultats", champs: ["classe", "obtenu"] })).status, 200);
+});
