@@ -45,6 +45,8 @@ import * as lms from "./lib/lms.js";
 import * as interv from "./lib/intervenants.js";
 import * as doc from "./lib/documents.js";
 import * as ci from "./lib/contratsintervenants.js";
+import * as cat from "./lib/catalogue.js";
+import * as dv from "./lib/devis.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -1124,6 +1126,144 @@ function destinatairesEnquete(e) {
   return out;
 }
 
+// --- Catalogue de formation ---
+// Ce qui est publié engage l'organisme : c'est l'indicateur 1 du référentiel.
+app.get("/api/offres", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const offres = store.listOffres({ campusId });
+  res.json({
+    offres: offres.map((o) => ({ ...o, validation: cat.validateOffre(o), tarifLibelle: cat.libelleTarif(o) })),
+    ...cat.etatCatalogue(offres),
+    natures: cat.NATURES, modalites: cat.MODALITES, mentions: cat.MENTIONS_PUBLIABLES,
+  });
+});
+app.post("/api/offres", requireAuth, requireAdmin, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const v = cat.validateOffre(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const made = store.addOffre(req.body);
+  logAudit(req, "create", "offre", made.intitule || "");
+  res.json({ ...made, warnings: v.warnings });
+});
+app.patch("/api/offres/:id", requireAuth, requireAdmin, (req, res) => {
+  const o = store.getOffre(req.params.id);
+  if (!o) return res.status(404).json({ error: "offre introuvable" });
+  if (!requireCampus(req, res, o.campusId)) return;
+  const v = cat.validateOffre({ ...o, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json({ ...store.updateOffre(o.id, req.body || {}), warnings: v.warnings });
+});
+
+// Vue publique d'une offre. Rien d'interne ne traverse cette route : ni coût de
+// revient, ni marge, ni note commerciale.
+app.get("/api/offres/:id/public", requireAuth, (req, res) => {
+  const o = store.getOffre(req.params.id);
+  if (!o) return res.status(404).json({ error: "offre introuvable" });
+  if (!requireCampus(req, res, o.campusId)) return;
+  res.json(cat.versPublic(o, { resultats: o.resultats || null }));
+});
+
+// --- Devis ---
+app.get("/api/devis", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  res.json({
+    ...dv.pipeline(store.listDevis({ campusId }), new Date().toISOString().slice(0, 10)),
+    etapes: dv.ETAPES, validiteDefaut: dv.VALIDITE_DEFAUT_JOURS,
+  });
+});
+app.get("/api/devis/:id", requireAuth, (req, res) => {
+  const d = store.getDevis(req.params.id);
+  if (!d) return res.status(404).json({ error: "devis introuvable" });
+  if (!requireCampus(req, res, d.campusId)) return;
+  res.json({ ...d, totaux: dv.totaux(d), etat: dv.etatDevis(d, new Date().toISOString().slice(0, 10)) });
+});
+app.post("/api/devis", requireAuth, (req, res) => {
+  if (!requireCampus(req, res, req.body?.campusId)) return;
+  const corps = { ...req.body };
+  // Reprise SANS RESSAISIE depuis l'offre : c'est la ressaisie qui fabrique les
+  // écarts entre le tarif publié, le devis, la convention et la facture.
+  if (corps.offreId) {
+    const o = store.getOffre(corps.offreId);
+    // On ne devise pas une formation gratuite. Un devis suppose un prix à
+    // proposer ; en apprentissage il n'y en a pas, et la relation ne se noue
+    // pas avec la famille mais avec l'employeur et l'opérateur de compétences.
+    if (o && cat.NATURES[o.nature]?.gratuitePourBeneficiaire) {
+      return res.status(400).json({
+        error: `« ${o.intitule} » est une formation par apprentissage : elle est gratuite pour l'apprenti et son représentant légal (${cat.NATURES[o.nature].base}). Un devis n'a pas d'objet — le financement passe par le contrat d'apprentissage et la prise en charge de l'opérateur de compétences.`,
+      });
+    }
+    if (o && o.campusId === corps.campusId) {
+      corps.intitule = corps.intitule || o.intitule;
+      corps.objectifs = corps.objectifs || o.objectifs;
+      corps.dureeHeures = corps.dureeHeures ?? o.dureeHeures;
+      corps.evaluation = corps.evaluation || o.evaluation;
+      corps.natureAction = corps.natureAction || o.nature;
+      if (!corps.lignes?.length && o.tarifMontant != null) {
+        corps.lignes = [{ libelle: o.intitule, quantite: corps.effectif || 1, prixUnitaire: o.tarifMontant }];
+      }
+    }
+  }
+  corps.dateEmission = corps.dateEmission || new Date().toISOString().slice(0, 10);
+  corps.dateValidite = corps.dateValidite || dv.validiteParDefaut(corps.dateEmission);
+  corps.etape = corps.etape || "brouillon";
+  const v = dv.validateDevis(corps);
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const made = store.addDevis(corps);
+  logAudit(req, "create", "devis", `${made.client} — ${made.intitule || ""}`);
+  res.json({ ...made, totaux: dv.totaux(made), warnings: v.warnings });
+});
+app.patch("/api/devis/:id", requireAuth, (req, res) => {
+  const d = store.getDevis(req.params.id);
+  if (!d) return res.status(404).json({ error: "devis introuvable" });
+  if (!requireCampus(req, res, d.campusId)) return;
+  if (d.acteId) return res.status(409).json({ error: "devis déjà transformé en acte : il ne se modifie plus" });
+  const v = dv.validateDevis({ ...d, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const out = store.updateDevis(d.id, req.body || {});
+  res.json({ ...out, totaux: dv.totaux(out), warnings: v.warnings });
+});
+
+// LA TRANSFORMATION. Un devis accepté n'est pas une convention : on le
+// TRANSFORME en acte, on ne le promeut jamais au rang d'acte.
+app.post("/api/devis/:id/transformer", requireAuth, requireAdmin, (req, res) => {
+  const d = store.getDevis(req.params.id);
+  if (!d) return res.status(404).json({ error: "devis introuvable" });
+  if (!requireCampus(req, res, d.campusId)) return;
+  // La requête se valide AVANT l'état : un payeur inconnu est une requête
+  // malformée (400), pas un conflit d'état (409). Les intervertir ferait
+  // répondre « devis non accepté » à quelqu'un dont le vrai problème est
+  // ailleurs.
+  const payeur = req.body?.payeur;
+  if (!doc.PAYEURS[payeur]) return res.status(400).json({ error: `payeur requis (${Object.keys(doc.PAYEURS).join(", ")})` });
+
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const p = dv.peutTransformer(d, aujourdhui);
+  if (!p.autorise && !(p.forcable && req.body?.confirmer)) {
+    return res.status(409).json({ error: p.motif, forcable: !!p.forcable });
+  }
+
+  // Le programme doit être PRÉÉTABLI : on le rattache à la transformation, pas
+  // après coup.
+  let programme = null;
+  if (req.body?.classId) {
+    const k = store.getClass(req.body.classId);
+    const cur = k?.curriculumId ? store.getCurriculum(k.curriculumId) : null;
+    const campus = store.listCampuses().find((c) => c.id === d.campusId);
+    if (cur) programme = doc.construireProgramme({ curriculum: cur, campus, annee: k.year ?? null });
+  }
+  const corps = { ...dv.versActe(d, { payeur, programme }), campusId: d.campusId, classId: req.body?.classId || null };
+  const v = doc.validateActe(corps);
+  // On crée quand même le brouillon : refuser ici obligerait à ressaisir tout
+  // le devis dans l'acte. Mais on renvoie ce qui manque, et l'acte ne pourra
+  // pas être signé tant qu'il n'est pas complet.
+  const acte = store.addActe({ ...corps, statut: "brouillon" });
+  store.updateDevis(d.id, { acteId: acte.id, etape: "transforme" });
+  logAudit(req, "create", "acte", `transformation du devis ${d.id} en ${doc.TYPES[corps.type]?.label}`);
+  res.json({ acte, aCompleter: v.ok ? [] : v.errors, warnings: v.warnings });
+});
+
 // --- Contrats des intervenants ---
 // Les manquements du droit du travail ne se constatent pas à l'échéance : ils
 // se constatent des mois après, et ils sont alors irréparables.
@@ -1914,7 +2054,27 @@ app.get("/api/chantier", requireAuth, (req, res) => {
         : "Contrats couverts, échéances tenues.",
   };
 
-  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance, documents, contratsProfs];
+  // 9. Catalogue et chaîne commerciale (lot 3).
+  const lesOffres = store.listOffres({ campusId });
+  const etatCat = cat.etatCatalogue(lesOffres);
+  const pipe = dv.pipeline(store.listDevis({ campusId }), aujourdhui);
+  const commerce = {
+    cle: "commerce", titre: "Catalogue et chaîne commerciale", ecran: "catalogue",
+    offres: etatCat.total, publiees: etatCat.publiees, invalides: etatCat.invalides.length,
+    sansDelaiAcces: etatCat.sansDelaiAcces,
+    devisEnCours: pipe.enCours, devisBloquants: pipe.bloquants,
+    fait: etatCat.total > 0 && etatCat.conforme && pipe.bloquants === 0,
+    sansObjet: false,
+    enjeu: !etatCat.total
+      ? "Aucune offre au catalogue : l'information du public sur les prestations est l'indicateur 1 du référentiel."
+      : etatCat.invalides.length
+        ? `${etatCat.invalides.length} offre(s) publiée(s) sans toutes les mentions attendues : ce qui est publié engage l'organisme.`
+        : pipe.bloquants
+          ? "Des devis acceptés n'ont pas donné lieu à une convention : démarrer sur un devis, c'est exécuter sans le document requis (L. 6353-2)."
+          : "Catalogue complet, chaîne commerciale sans rupture.",
+  };
+
+  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance, documents, contratsProfs, commerce];
   const restants = chantiers.filter((c) => !c.fait && !c.sansObjet);
   res.json({
     campusId: campusId || null, campus: campus?.name || null,

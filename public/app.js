@@ -381,6 +381,9 @@ const NAV = [
   { id: "indicateurs", label: "Indicateurs", icon: I.chart, group: "Performance" },
   { id: "insertion", label: "Insertion & satisfaction", icon: I.heart, group: "Performance" },
   { id: "contrats", label: "Contrats d'alternance", icon: I.brief, group: "Réseau" },
+  // Chaîne commerciale : offre → devis → convention. Le pipeline EST la liste
+  // des devis, il n'y a pas d'entité « opportunité » à tenir synchronisée.
+  { id: "catalogue", label: "Catalogue & devis", icon: I.brief, group: "Performance" },
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
   { id: "enquetes", label: "Enquêtes", icon: I.shield, group: "Conformité" },
@@ -500,7 +503,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, catalogue: renderCatalogue, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1770,6 +1773,203 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Catalogue et devis ---
+// Un seul écran pour la chaîne : offre → devis → convention. Les séparer
+// laisserait croire que ce sont trois sujets.
+let catCampus = "", catOnglet = "offres";
+
+async function renderCatalogue() {
+  if (!catCampus) catCampus = state.campuses[0]?.id || "";
+  const [c, p] = await Promise.all([
+    api.get(`/api/offres?campusId=${catCampus}`), api.get(`/api/devis?campusId=${catCampus}`),
+  ]);
+  if (c?.error) { $("#view").innerHTML = `<p class="neg">${esc(c.error)}</p>`; return; }
+  const GRAV = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" };
+
+  $("#topbar-actions").innerHTML = catOnglet === "offres"
+    ? `<button class="btn-primary btn-sm" id="cat-new">+ Offre</button>`
+    : `<button class="btn-primary btn-sm" id="dv-new">+ Devis</button>`;
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;gap:8px;">
+      <div><label class="field-label">Campus</label><select id="cat-campus">${state.campuses.map((x) => `<option value="${x.id}" ${x.id === catCampus ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <button class="btn-ghost btn-sm cat-tab ${catOnglet === "offres" ? "btn-primary" : ""}" data-t="offres">Catalogue (${c.total})</button>
+      <button class="btn-ghost btn-sm cat-tab ${catOnglet === "devis" ? "btn-primary" : ""}" data-t="devis">Devis (${p.total})</button>
+    </div>
+    ${catOnglet === "offres" ? `
+      <div class="kpis" style="margin-bottom:12px;">${fkpi(c.publiees, "publiées")}
+        ${fkpi(c.invalides.length, "publiées à tort", c.invalides.length ? "bad" : "good")}
+        ${fkpi(c.sansDelaiAcces, "sans délai d'accès", c.sansDelaiAcces ? "bad" : "good")}</div>
+      ${c.invalides.map((i) => `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid #8A4B4B;">
+        <b>${esc(i.intitule)}</b><ul style="margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:13px;">${i.erreurs.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`).join("")}
+      <div class="card" style="overflow-x:auto;"><table class="net-table">
+        <thead><tr><th>Offre</th><th>Nature</th><th>Durée</th><th>Tarif affiché</th><th>État</th><th></th></tr></thead><tbody>
+        ${c.offres.length ? c.offres.map((o) => `<tr>
+          <td><b>${esc(o.intitule || "—")}</b>${o.codeRncp ? `<br><span class="muted" style="font-size:12px;">RNCP ${esc(o.codeRncp)}</span>` : ""}</td>
+          <td>${esc(c.natures[o.nature]?.label || o.nature)}</td>
+          <td>${o.dureeHeures ?? "—"} h</td>
+          <td>${esc(o.tarifLibelle.texte)}</td>
+          <td>${o.publiee ? (o.validation.ok ? '<span class="pill p-good">publiée</span>' : '<span class="pill p-bad">publiée, incomplète</span>') : '<span class="pill">brouillon</span>'}</td>
+          <td><button class="btn-ghost btn-sm cat-pub" data-id="${o.id}">${o.publiee ? "Retirer" : "Publier"}</button>
+            <button class="btn-ghost btn-sm cat-vue" data-id="${o.id}">Vue publique</button></td>
+        </tr>`).join("") : '<tr><td colspan="6" class="muted">Aucune offre. L\'information du public sur les prestations est l\'indicateur 1 du référentiel.</td></tr>'}
+        </tbody></table></div>
+      <p class="hint muted">${esc(c.reserve)}</p>
+    ` : `
+      <div class="kpis" style="margin-bottom:12px;">${fkpi(p.enCours, "en cours")}
+        ${fkpi(p.montantEnCours.toLocaleString("fr-FR") + " €", "encours")}
+        ${fkpi(p.montantGagne.toLocaleString("fr-FR") + " €", "gagné", "good")}
+        ${p.tauxTransformation != null ? fkpi(p.tauxTransformation + " %", "transformation") : ""}
+        ${fkpi(p.bloquants, "acceptés sans acte", p.bloquants ? "bad" : "good")}</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+        ${p.parEtape.filter((e) => e.n).map((e) => `<span class="pill">${esc(e.label)} : ${e.n} · ${e.montant.toLocaleString("fr-FR")} €</span>`).join("")}
+      </div>
+      <div class="card" style="overflow-x:auto;"><table class="net-table">
+        <thead><tr><th>Client</th><th>Objet</th><th>Montant</th><th>Validité</th><th>Étape</th><th>Alertes</th><th></th></tr></thead><tbody>
+        ${p.lignes.length ? p.lignes.map((l) => `<tr>
+          <td><b>${esc(l.client)}</b></td><td>${esc(l.intitule || "—")}</td>
+          <td>${l.montant.toLocaleString("fr-FR")} €</td>
+          <td>${esc(l.dateValidite || "—")}</td>
+          <td><span class="pill ${l.etape === "expire" ? "p-bad" : l.ouvert ? "p-warn" : "p-good"}">${esc(l.etapeLabel)}</span></td>
+          <td>${l.alertes.map((a) => `<div style="color:${GRAV[a.gravite]};font-size:12.5px;">${esc(a.message)}</div>`).join("") || '<span class="muted">—</span>'}</td>
+          <td>${!l.acteId && l.etape === "accepte" ? `<button class="btn-primary btn-sm dv-tr" data-id="${l.id}">Transformer</button>`
+            : l.ouvert ? `<button class="btn-ghost btn-sm dv-etape" data-id="${l.id}">Étape</button>` : ""}</td>
+        </tr>`).join("") : '<tr><td colspan="7" class="muted">Aucun devis.</td></tr>'}
+        </tbody></table></div>
+      <p class="hint muted">${esc(p.reserve)}</p>`}`;
+
+  $("#cat-campus").onchange = (e) => { catCampus = e.target.value; renderCatalogue(); };
+  $$(".cat-tab").forEach((b) => { b.onclick = () => { catOnglet = b.dataset.t; renderCatalogue(); }; });
+  if ($("#cat-new")) $("#cat-new").onclick = () => openOffreForm(c);
+  if ($("#dv-new")) $("#dv-new").onclick = () => openDevisForm(c);
+
+  $$(".cat-pub").forEach((b) => { b.onclick = async () => {
+    const o = c.offres.find((x) => x.id === b.dataset.id);
+    const r = await api.patch(`/api/offres/${o.id}`, { publiee: !o.publiee });
+    // Publier une offre incomplète est refusé : c'est le moment où l'exigence mord.
+    if (r?.error) { alert(`Publication impossible :\n\n${r.error}`); return; }
+    renderCatalogue();
+  }; });
+  $$(".cat-vue").forEach((b) => { b.onclick = async () => {
+    const v = await api.get(`/api/offres/${b.dataset.id}/public`);
+    openModal(`Vue publique — ${v.intitule}`, `
+      <p class="muted" style="font-size:13.5px;">Exactement ce que verrait un candidat. Rien d'interne ne traverse cette vue.</p>
+      <div class="card" style="overflow-x:auto;margin-top:10px;"><table class="net-table"><tbody>
+        ${[["Nature", v.natureLabel], ["Objectifs", v.objectifs], ["Prérequis", v.prerequis], ["Public visé", v.publicVise],
+           ["Durée", `${v.dureeHeures ?? "—"} h`], ["Modalités", v.modalitesLabel], ["Délai d'accès", v.delaiAcces],
+           ["Évaluation", v.evaluation], ["Accessibilité", v.accessibilite], ["Débouchés", v.debouches],
+           ["Tarif", v.tarif], ["Contact", v.contact]]
+          .map(([k, val]) => `<tr><td class="muted" style="width:32%;">${esc(k)}</td><td>${esc(val || "—")}</td></tr>`).join("")}
+      </tbody></table></div>
+      ${v.resultats ? `<div class="section-title">Résultats</div>
+        <div class="card" style="overflow-x:auto;"><table class="net-table"><tbody>
+        ${v.resultats.lignes.map((l) => `<tr><td class="muted" style="width:50%;">${esc(l.label)}</td>
+          <td>${l.publiable ? `<b>${l.valeur} %</b> <span class="muted">(${l.effectif})</span>` : `<span class="muted">${esc(l.motif)}</span>`}</td></tr>`).join("")}
+        </tbody></table></div>
+        <p class="hint muted">${esc(v.resultats.reserve)}</p>` : ""}`);
+  }; });
+
+  $$(".dv-tr").forEach((b) => { b.onclick = () => openTransformation(b.dataset.id); });
+  $$(".dv-etape").forEach((b) => { b.onclick = async () => {
+    const etape = prompt("Étape (envoye, relance, accepte, refuse) :", "accepte");
+    if (!etape) return;
+    const r = await api.patch(`/api/devis/${b.dataset.id}`, { etape, dateEnvoi: etape === "envoye" ? new Date().toISOString().slice(0, 10) : undefined });
+    if (r?.error) { alert(r.error); return; }
+    renderCatalogue();
+  }; });
+}
+
+function openOffreForm(c) {
+  const champ = (m) => `<div style="grid-column:1/-1;"><label class="field-label">${esc(m.label)} <span class="muted" style="font-weight:400;">${esc(m.base)}</span>${m.oubliee ? ' <span class="pill p-warn">souvent oubliée</span>' : ""}</label>
+    <input class="txt of" data-f="${m.cle}" ${m.cle === "dureeHeures" ? 'type="number" min="1"' : ""}></div>`;
+  openModal("Nouvelle offre", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Nature</label><select class="txt" id="of-nature">${Object.entries(c.natures).map(([k, n]) => `<option value="${k}">${esc(n.label)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Modalités</label><select class="txt of" data-f="modalites">${Object.entries(c.modalites).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;" id="of-tarif"></div>
+      ${c.mentions.filter((m) => !["modalites", "tarif"].includes(m.cle)).map(champ).join("")}
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="of-save">Créer en brouillon</button></div>`);
+
+  // LE POINT DE DROIT, dit à l'endroit où l'on serait tenté de taper un prix.
+  const maj = () => {
+    const n = c.natures[$("#of-nature").value];
+    $("#of-tarif").innerHTML = n.gratuitePourBeneficiaire
+      ? `<div class="item" style="border-left:3px solid var(--accent);"><div class="grow">
+          <b>Aucun tarif à saisir.</b> La formation est gratuite pour l'apprenti et son représentant légal (${esc(n.base)}). ${esc(n.financement)}.
+          <br><span class="muted" style="font-size:13px;">Afficher un montant laisserait croire à une famille qu'elle doit payer — et le coût réel n'est pas un prix de vente.</span></div></div>`
+      : `<label class="field-label">Tarif (€)</label><input class="txt of" data-f="tarifMontant" type="number" min="0">
+         <p class="hint muted" style="margin-top:4px;">Laisser vide pour saisir un libellé libre dans « Tarif ou conditions de financement ».</p>`;
+  };
+  $("#of-nature").onchange = maj; maj();
+
+  $("#of-save").onclick = async () => {
+    const body = { campusId: catCampus, nature: $("#of-nature").value, publiee: false };
+    $$(".of").forEach((i) => { if (i.value !== "") body[i.dataset.f] = ["dureeHeures", "tarifMontant"].includes(i.dataset.f) ? +i.value : i.value; });
+    const r = await api.post("/api/offres", body);
+    if (r?.error) { alert(r.error); return; }
+    if (r.warnings?.length) alert("Créée en brouillon. À compléter avant publication :\n" + r.warnings.join("\n"));
+    closeModals(); renderCatalogue();
+  };
+}
+
+function openDevisForm(c) {
+  openModal("Nouveau devis", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div><label class="field-label">Client</label><input class="txt dvf" data-f="client"></div>
+      <div><label class="field-label">Offre du catalogue</label><select class="txt dvf" data-f="offreId"><option value="">— hors catalogue —</option>${c.offres.map((o) => `<option value="${o.id}">${esc(o.intitule)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Objet</label><input class="txt dvf" data-f="intitule"></div>
+      <div><label class="field-label">Effectif</label><input class="txt dvf" data-f="effectif" type="number" min="1" value="1"></div>
+      <div><label class="field-label">Début</label><input class="txt dvf" data-f="dateDebut" type="date"></div>
+      <div><label class="field-label">Fin</label><input class="txt dvf" data-f="dateFin" type="date"></div>
+      <div><label class="field-label">Prix unitaire (€)</label><input class="txt" id="dv-pu" type="number" min="0"></div>
+      <div><label class="field-label">Validité</label><input class="txt dvf" data-f="dateValidite" type="date">
+        <p class="hint muted" style="margin-top:4px;">Par défaut ${c.validiteDefaut ?? 30} jours. Un devis sans terme engage indéfiniment aux conditions affichées.</p></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="dv-save">Créer</button></div>`);
+
+  $("#dv-save").onclick = async () => {
+    const body = { campusId: catCampus };
+    $$(".dvf").forEach((i) => { if (i.value !== "") body[i.dataset.f] = i.dataset.f === "effectif" ? +i.value : i.value; });
+    const pu = $("#dv-pu").value;
+    if (pu !== "") body.lignes = [{ libelle: body.intitule || "Prestation", quantite: body.effectif || 1, prixUnitaire: +pu }];
+    const r = await api.post("/api/devis", body);
+    if (r?.error) { alert(r.error); return; }
+    closeModals(); catOnglet = "devis"; renderCatalogue();
+  };
+}
+
+async function openTransformation(devisId) {
+  const [d, classes] = await Promise.all([api.get(`/api/devis/${devisId}`), api.get("/api/classes")]);
+  const mines = classes.filter((k) => k.campusId === catCampus);
+  openModal("Transformer en convention ou contrat", `
+    <p class="muted" style="font-size:13.5px;"><b>Un devis accepté n'est pas une convention.</b> Le devis est une offre commerciale ; la convention de formation est le document que le code du travail exige (art. L. 6353-2). Démarrer sur un devis signé, c'est exécuter sans le document requis.</p>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Qui finance ?</label>
+        <select class="txt" id="tr-payeur"><option value="entreprise">Entreprise ou personne morale</option><option value="opco">OPCO ou financeur public</option><option value="particulier">Le bénéficiaire lui-même, à ses frais</option></select></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Classe (pour rattacher le programme préétabli)</label>
+        <select class="txt" id="tr-classe"><option value="">—</option>${mines.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="tr-go">Transformer</button></div>`);
+
+  const lancer = async (confirmer) => {
+    const r = await api.post(`/api/devis/${devisId}/transformer`, {
+      payeur: $("#tr-payeur").value, classId: $("#tr-classe").value || null, confirmer,
+    });
+    if (r?.forcable && !confirmer) {
+      if (confirm(`${r.error}\n\nTransformer malgré tout ?`)) return lancer(true);
+      return;
+    }
+    if (r?.error) { alert(r.error); return; }
+    alert(r.aCompleter.length
+      ? `Acte créé en brouillon. À compléter avant signature :\n\n${r.aCompleter.join("\n")}`
+      : "Acte créé en brouillon, complet. Il reste à le signer depuis Documents obligatoires.");
+    closeModals(); renderCatalogue();
+  };
+  $("#tr-go").onclick = () => lancer(false);
+}
+
 // --- Contrats des intervenants ---
 // L'écran ne classe pas par date mais par RISQUE : ce qui expose à une
 // requalification passe devant, parce que c'est ce qui ne se rattrape pas.
@@ -2525,6 +2725,14 @@ async function renderChantier() {
       return `<div style="margin-top:10px;">
         ${c.aRefaire != null ? `<div class="kpis">${fkpi(c.aRefaire, "indicateurs à reprendre", "bad")}${fkpi(c.nouveaux.length, "sans équivalent", "bad")}${c.jours != null ? fkpi(c.jours + " j", "avant échéance", c.jours <= 60 ? "bad" : "") : ""}</div>` : ""}
         ${c.nouveaux.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;">Exigences nouvelles : n° ${c.nouveaux.join(", ")}.</p>` : ""}</div>`;
+    }
+    if (c.cle === "commerce") {
+      return `<div style="margin-top:10px;">
+        <div class="kpis">${fkpi(`${c.publiees}/${c.offres}`, "offres publiées")}
+          ${fkpi(c.invalides, "publiées à tort", c.invalides ? "bad" : "good")}
+          ${fkpi(c.devisEnCours, "devis en cours")}
+          ${fkpi(c.devisBloquants, "acceptés sans acte", c.devisBloquants ? "bad" : "good")}</div>
+        ${c.sansDelaiAcces ? `<p class="muted" style="margin:8px 0 0;font-size:12.5px;">${c.sansDelaiAcces} offre(s) sans délai d'accès — c'est l'écart le plus fréquemment relevé.</p>` : ""}</div>`;
     }
     if (c.cle === "contrats") {
       if (c.sansObjet) return "";

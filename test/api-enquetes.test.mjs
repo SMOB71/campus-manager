@@ -220,7 +220,7 @@ test("répondre exige un jeton : la route publique n'accepte rien sans lui", asy
 test("le chantier liste tous les dispositifs et compte ce qui reste", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce"]);
   assert.equal(d.bascule, "2026-11-01");
   // Chaque ligne dit la CONSÉQUENCE, pas seulement un compteur : « 0/3 »
   // n'appelle aucune action.
@@ -411,7 +411,7 @@ test("une action sans résultat est acceptée mais signalée, et ne couvre rien 
 test("chaque dispositif du chantier dit une conséquence, pas un compteur", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
   // Le dispositif à distance est SANS OBJET tant qu'aucune séance n'est à
   // distance — et à ce stade du scénario il n'y en a aucune. Reprocher un
@@ -1008,9 +1008,157 @@ test("poser une séance hors couverture contractuelle est signalé au planning",
   assert.equal(couvert.conflicts.some((x) => x.code === "contrat"), false);
 });
 
-test("le chantier compte maintenant huit dispositifs", async () => {
+// --- Catalogue et chaîne commerciale (lot 3) ---
+let offreId = null, devisId = null;
+
+test("UN TARIF SUR UNE OFFRE D'APPRENTISSAGE EST REFUSÉ PAR L'API", async () => {
+  const base = {
+    campusId, intitule: "BTS Opticien-Lunetier", objectifs: "Préparer au diplôme",
+    prerequis: "Baccalauréat", publicVise: "Jeunes de 16 à 29 ans", dureeHeures: 1350,
+    modalites: "presentiel", delaiAcces: "Jusqu'à trois mois après la signature du contrat",
+    evaluation: "Contrôle continu et épreuves ponctuelles",
+    accessibilite: "Locaux accessibles, référent handicap joignable",
+    debouches: "Opticien-lunetier, responsable de magasin", contact: "admissions@campus.fr",
+    tarif: "—",
+  };
+  const faux = await post("/api/offres", { ...base, nature: "apprentissage", tarifMontant: 9000 });
+  assert.equal(faux.status, 400);
+  assert.match((await faux.json()).error, /L\. 6211-1/);
+
+  const ok = await (await post("/api/offres", { ...base, nature: "apprentissage" })).json();
+  offreId = ok.id;
+  // Le libellé de tarif se rédige tout seul, et il ne porte aucun montant.
+  const vue = await jget(`/api/offres/${offreId}/public`);
+  assert.match(vue.tarif, /gratuite pour l'apprenti/);
+  assert.doesNotMatch(vue.tarif, /9000|9 000/);
+});
+
+test("publier une offre incomplète est refusé ; la publier complète passe", async () => {
+  const brouillon = await (await post("/api/offres", {
+    campusId, nature: "continue", intitule: "Atelier réfraction", objectifs: "Perfectionner",
+    dureeHeures: 21, modalites: "presentiel", tarif: "900 €",
+  })).json();
+  // En brouillon, l'incomplétude n'est qu'un avertissement.
+  assert.ok(brouillon.warnings.length >= 3);
+
+  const pub = await req(`/api/offres/${brouillon.id}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { publiee: true },
+  });
+  assert.equal(pub.status, 400, "l'exigence mord à la publication");
+  assert.match((await pub.json()).error, /indicateur 1/);
+
+  // L'offre d'apprentissage, elle, est complète : elle se publie.
+  assert.equal((await req(`/api/offres/${offreId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { publiee: true },
+  })).status, 200);
+  const c = await jget(`/api/offres?campusId=${campusId}`);
+  assert.equal(c.publiees, 1);
+  assert.equal(c.conforme, true);
+});
+
+test("la vue publique ne laisse filtrer aucune donnée interne", async () => {
+  await req(`/api/offres/${offreId}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { coutRevient: 4200, notesInternes: "marge faible, ne pas négocier" },
+  });
+  const vue = JSON.stringify(await jget(`/api/offres/${offreId}/public`));
+  assert.equal(vue.includes("4200"), false);
+  assert.equal(vue.includes("négocier"), false);
+});
+
+test("ON NE DEVISE PAS UNE FORMATION GRATUITE", async () => {
+  // L'offre publiée est en apprentissage : un devis n'a pas d'objet, et la
+  // relation ne se noue pas avec la famille mais avec l'employeur et l'OPCO.
+  const r = await post("/api/devis", { campusId, offreId, client: "Famille Dupont", effectif: 1 });
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).error, /L\. 6211-1/);
+});
+
+test("un devis reprend l'offre SANS RESSAISIE", async () => {
+  const o = await (await post("/api/offres", {
+    campusId, nature: "continue", intitule: "Perfectionnement contactologie",
+    objectifs: "Maîtriser l'adaptation", prerequis: "Diplôme d'opticien",
+    publicVise: "Opticiens en poste", dureeHeures: 35, modalites: "presentiel",
+    delaiAcces: "Un mois", tarif: "1 750 €", tarifMontant: 1750,
+    evaluation: "Mise en situation", accessibilite: "Locaux accessibles",
+    debouches: "Spécialisation", contact: "formation@campus.fr",
+  })).json();
+
+  const d = await (await post("/api/devis", {
+    campusId, offreId: o.id, client: "Optic Sud SARL", effectif: 3,
+    dateDebut: "2027-01-05", dateFin: "2027-06-30",
+  })).json();
+  devisId = d.id;
+  // Intitulé, objectifs, durée ET tarif viennent de l'offre : c'est la
+  // ressaisie qui fabrique les écarts entre le tarif publié et la facture.
+  assert.equal(d.intitule, "Perfectionnement contactologie");
+  assert.match(d.objectifs, /adaptation/);
+  assert.equal(d.dureeHeures, 35);
+  assert.equal(d.lignes[0].prixUnitaire, 1750);
+  assert.equal(d.lignes[0].quantite, 3);
+  assert.equal(d.totaux.ht, 5250);
+  // Validité posée par défaut plutôt que laissée vide.
+  assert.ok(d.dateValidite > d.dateEmission);
+});
+
+// LA GARDE CENTRALE, BOUT EN BOUT.
+test("UN DEVIS ACCEPTÉ SANS ACTE EST BLOQUANT, ET SEUL UN DEVIS ACCEPTÉ SE TRANSFORME", async () => {
+  // Un devis chiffré, pour pouvoir transformer.
+  const d = await (await post("/api/devis", {
+    campusId, client: "Optic Nord", intitule: "Atelier réfraction",
+    dureeHeures: 21, effectif: 4, dateDebut: "2027-02-01", dateFin: "2027-02-28",
+    lignes: [{ libelle: "Atelier 21 h", quantite: 4, prixUnitaire: 900 }],
+  })).json();
+  assert.equal(d.totaux.ht, 3600);
+  assert.equal(d.totaux.taux, 0, "la TVA est déclarée, pas présumée à 20 %");
+
+  // Tant qu'il n'est pas accepté, il ne se transforme pas.
+  assert.equal((await post(`/api/devis/${d.id}/transformer`, { payeur: "entreprise" })).status, 409);
+
+  await req(`/api/devis/${d.id}`, { method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { etape: "accepte" } });
+  let p = await jget(`/api/devis?campusId=${campusId}`);
+  assert.equal(p.bloquants, 1, "accepté sans acte : la formation démarrerait sans le document requis");
+  assert.match(JSON.stringify(p.lignes), /L\. 6353-2/);
+
+  // La transformation crée un ACTE, elle ne promeut pas le devis.
+  const t = await (await post(`/api/devis/${d.id}/transformer`, { payeur: "entreprise", classId })).json();
+  assert.equal(t.acte.type, "convention");
+  assert.equal(t.acte.statut, "brouillon");
+  assert.equal(t.acte.devisId, d.id);
+  assert.ok(t.acte.programme, "le programme préétabli est rattaché à la transformation");
+  // Ce qui manquait au devis n'est PAS inventé : les mentions absentes
+  // (moyens, évaluation, conditions de résiliation) remontent en avertissement
+  // plutôt que d'être pré-remplies d'un « à compléter » qui les masquerait.
+  assert.ok(t.warnings.length >= 1);
+  assert.match(t.warnings.join(" "), /résiliation|Moyens|évaluation/i);
+  assert.equal(t.acte.resiliation, "");
+
+  p = await jget(`/api/devis?campusId=${campusId}`);
+  assert.equal(p.bloquants, 0);
+  assert.equal(p.lignes.find((l) => l.id === d.id).etape, "transforme");
+  // Et le devis transformé ne se modifie plus.
+  assert.equal((await req(`/api/devis/${d.id}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { client: "Autre" },
+  })).status, 409);
+});
+
+test("le payeur décide du type d'acte, jusque dans la transformation", async () => {
+  const d = await (await post("/api/devis", {
+    campusId, client: "Léa Dupont", intitule: "Atelier réfraction", dureeHeures: 21,
+    lignes: [{ libelle: "Atelier", quantite: 1, prixUnitaire: 900 }],
+  })).json();
+  await req(`/api/devis/${d.id}`, { method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { etape: "accepte" } });
+  const t = await (await post(`/api/devis/${d.id}/transformer`, { payeur: "particulier", classId })).json();
+  assert.equal(t.acte.type, "contrat");
+  assert.equal(t.acte.beneficiaire, "Léa Dupont");
+  assert.equal(t.acte.acheteur, "");
+  // Un payeur inconnu est refusé.
+  assert.equal((await post(`/api/devis/${devisId}/transformer`, { payeur: "martien" })).status, 400);
+});
+
+test("le chantier compte maintenant neuf dispositifs", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
 });
