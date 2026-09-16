@@ -395,6 +395,9 @@ const NAV = [
   { id: "ressources", label: "Ressources pédagogiques", icon: I.note, group: "LMS" },
   { id: "suivi-distance", label: "Suivi à distance", icon: I.chart, group: "LMS" },
   { id: "dispositif-foad", label: "Dispositif à distance", icon: I.shield, group: "LMS" },
+  // Documents obligatoires de l'OF : leur absence est relevable en contrôle,
+  // ils ne relèvent pas du confort.
+  { id: "documents-of", label: "Documents obligatoires", icon: I.journal, group: "Conformité" },
   { id: "certification", label: "Présentation à la certification", icon: I.note, group: "Conformité" },
   { id: "insertion-actions", label: "Insertion & poursuite d'études", icon: I.heart, group: "Conformité" },
   { id: "declarations", label: "Déclarations (SIFA, BPF)", icon: I.journal, admin: true, group: "Conformité" },
@@ -496,7 +499,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1766,6 +1769,166 @@ async function openCampus360(id) {
 }
 
 // ---------- Vue : Qualiopi ----------
+// --- Documents obligatoires de l'organisme de formation ---
+// Le point que l'écran doit rendre évident : le choix entre convention et
+// contrat n'en est pas un, il se déduit de qui paie.
+let dofCampus = "", dofRef = null;
+
+async function renderDocumentsOf() {
+  if (!dofCampus) dofCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/documents-of?campusId=${dofCampus}`);
+  if (d?.error) { $("#view").innerHTML = `<p class="neg">${esc(d.error)}</p>`; return; }
+  dofRef = d;
+  const GRAV = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" };
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="do-new">+ Convention / contrat</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="do-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === dofCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(d.actes.length, "actes")}${fkpi(d.bloquants, "points bloquants", d.bloquants ? "bad" : "good")}
+        ${d.remises.taux != null ? fkpi(d.remises.taux + " %", "règlement remis", d.remises.complet ? "good" : "bad") : ""}</div>
+    </div>
+    ${d.points.map((p) => `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid ${GRAV[p.gravite]};">
+      <b>${esc(p.label)}</b><p class="muted" style="margin:6px 0 0;font-size:13.5px;">${esc(p.message)}</p></div>`).join("")}
+
+    <div class="section-title">Règlement intérieur</div>
+    <div class="card card-pad" style="margin-bottom:14px;">
+      <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;">
+        <span class="grow">${d.reglement.version ? `Version <b>${esc(d.reglement.version)}</b>, applicable au ${esc(d.reglement.dateApplication || "—")}` : '<span class="muted">Aucun règlement établi</span>'}</span>
+        ${d.reglement.version ? `<button class="btn-ghost btn-sm" id="do-ri-print">Imprimer</button>
+          <button class="btn-ghost btn-sm" id="do-ri-remise">Enregistrer la remise à tous les inscrits</button>` : ""}
+        <button class="btn-ghost btn-sm" id="do-ri-edit">${d.reglement.version ? "Modifier" : "Établir"}</button>
+      </div>
+      ${d.dureeMaxHeures > 500 ? `<p class="hint muted" style="margin-top:8px;">Formation la plus longue du campus : <b>${d.dureeMaxHeures} h</b>. Au-delà de 500 h, l'élection de délégués des stagiaires doit être organisée et décrite dans le règlement (R. 6352-9).</p>` : ""}
+      ${d.remises.version ? `<p class="hint muted" style="margin-top:6px;">Remise enregistrée pour ${d.remises.remis}/${d.remises.inscrits} inscrit(s). Une remise de l'ancienne version ne vaut pas pour la nouvelle.</p>` : ""}
+    </div>
+
+    <div class="section-title">Conventions et contrats</div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Acte</th><th>Type</th><th>Financement</th><th>Période</th><th>Prix</th><th>État</th><th></th></tr></thead><tbody>
+      ${d.actes.length ? d.actes.map((a) => `<tr>
+        <td><b>${esc(a.intitule || "—")}</b>${a.aProgramme ? "" : ' <span class="pill p-bad">sans programme</span>'}</td>
+        <td>${esc(d.types[a.type]?.label || a.type)}</td>
+        <td>${esc(d.payeurs[a.payeur]?.label || a.payeur || "—")}</td>
+        <td>${esc(a.dateDebut || "—")} → ${esc(a.dateFin || "—")}</td>
+        <td>${a.prix != null ? `${a.prix} €` : "—"}</td>
+        <td>${a.statut === "signe" ? '<span class="pill p-good">signé</span>'
+          : a.validation.ok ? '<span class="pill p-warn">à signer</span>' : `<span class="pill p-bad">${a.validation.errors.length} manque(s)</span>`}</td>
+        <td><button class="btn-ghost btn-sm do-print" data-id="${a.id}">Éditer</button>
+          ${a.statut !== "signe" && a.validation.ok ? `<button class="btn-ghost btn-sm do-sign" data-id="${a.id}">Signer</button>` : ""}</td>
+      </tr>`).join("") : '<tr><td colspan="7" class="muted">Aucun acte. Une formation qui démarre sans convention ni contrat signé s\'exécute sans base contractuelle.</td></tr>'}
+      </tbody></table></div>
+    <p class="hint muted">${esc(d.reserve)}</p>`;
+
+  $("#do-campus").onchange = (e) => { dofCampus = e.target.value; renderDocumentsOf(); };
+  $("#do-new").onclick = () => openActeForm(d);
+  $("#do-ri-edit").onclick = () => openReglementForm(d);
+  if ($("#do-ri-print")) $("#do-ri-print").onclick = () => window.open(`/api/documents-of/reglement/print?campusId=${dofCampus}`, "_blank");
+  if ($("#do-ri-remise")) $("#do-ri-remise").onclick = async () => {
+    const r = await api.post("/api/documents-of/remise", { campusId: dofCampus });
+    if (r?.error) { alert(r.error); return; }
+    alert(`Remise enregistrée pour ${r.enregistrees} inscrit(s) — version ${r.version}.`);
+    renderDocumentsOf();
+  };
+  $$(".do-print").forEach((b) => { b.onclick = () => window.open(`/api/actes/${b.dataset.id}/print`, "_blank"); });
+  $$(".do-sign").forEach((b) => { b.onclick = async () => {
+    if (!confirm("Signer cet acte ? Il ne pourra plus être modifié — seulement avenanté.")) return;
+    const r = await api.post(`/api/actes/${b.dataset.id}/signer`, {});
+    if (r?.error) { alert(r.error); return; }
+    renderDocumentsOf();
+  }; });
+}
+
+function openReglementForm(d) {
+  const r = d.reglement || {};
+  const champ = (m) => `<div style="grid-column:1/-1;"><label class="field-label">${esc(m.label)} <span class="muted" style="font-weight:400;">${esc(m.base)}</span></label>
+    <textarea class="txt ri" data-f="${m.cle}" rows="3">${esc(r[m.cle] || "")}</textarea></div>`;
+  openModal("Règlement intérieur", `
+    <p class="muted" style="font-size:13.5px;">Obligatoire pour tout organisme de formation (art. L. 6352-3). Son contenu est fixé par les textes : ce ne sont pas des rubriques libres.</p>
+    ${d.dureeMaxHeures > 500 ? `<div class="item" style="border-left:3px solid #8A7A4B;margin-top:10px;"><div class="grow">La formation la plus longue du campus dure <b>${d.dureeMaxHeures} h</b>. Au-delà de 500 h, l'élection de délégués des stagiaires est obligatoire : la rubrique « Représentation » doit la décrire.</div></div>` : ""}
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+      <div><label class="field-label">Version</label><input class="txt ri" data-f="version" value="${esc(r.version || "")}" placeholder="2026-1"></div>
+      <div><label class="field-label">Applicable au</label><input class="txt ri" data-f="dateApplication" type="date" value="${esc(r.dateApplication || "")}"></div>
+      ${d.mentions.reglement.map(champ).join("")}
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="ri-save">Enregistrer</button></div>`);
+
+  $("#ri-save").onclick = async () => {
+    const body = {};
+    $$(".ri").forEach((i) => (body[i.dataset.f] = i.value));
+    const res = await api.patch("/api/documents-of/reglement", { campusId: dofCampus, reglement: body });
+    if (res?.error) { alert(res.error); return; }
+    closeModals(); renderDocumentsOf();
+  };
+}
+
+async function openActeForm(d) {
+  const classes = (await api.get("/api/classes")).filter((k) => k.campusId === dofCampus);
+  openModal("Convention ou contrat de formation", `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Qui finance ?</label>
+        <select class="txt" id="ac-payeur">${Object.entries(d.payeurs).map(([k, p]) => `<option value="${k}">${esc(p.label)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;" id="ac-deduit"></div>
+      <div style="grid-column:1/-1;"><label class="field-label">Classe (pour le programme)</label>
+        <select class="txt" id="ac-classe"><option value="">—</option>${classes.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join("")}</select></div>
+      <div style="grid-column:1/-1;" id="ac-mentions"></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="ac-save">Créer le brouillon</button></div>`);
+
+  // LE POINT CENTRAL DE L'ÉCRAN : le type n'est pas proposé, il est DÉDUIT, et
+  // l'interface dit pourquoi. Laisser choisir, c'est laisser se tromper.
+  const maj = () => {
+    const payeur = $("#ac-payeur").value;
+    const type = d.payeurs[payeur].acte;
+    const t = d.types[type];
+    $("#ac-deduit").innerHTML = `<div class="item" style="border-left:3px solid var(--accent);"><div class="grow">
+      <b>${esc(t.label)}</b> <span class="muted">${esc(t.base)}</span>
+      <br><span class="muted" style="font-size:13px;">${payeur === "particulier"
+        ? "Le bénéficiaire finance lui-même : il bénéficie d'un délai de rétractation de 10 jours, d'un premier versement plafonné à 30 % et d'un remboursement au prorata. Une convention ne porte aucune de ces protections."
+        : "L'achat est fait par un tiers : la relation se noue avec l'acheteur."}</span></div></div>`;
+    $("#ac-mentions").innerHTML = d.mentions[type].map((m) => `
+      <div style="margin-top:8px;"><label class="field-label">${esc(m.label)}${m.protege ? ' <span class="pill p-warn">protège le bénéficiaire</span>' : ""} <span class="muted" style="font-weight:400;">${esc(m.base)}</span></label>
+      <input class="txt acm" data-f="${m.cle}" ${["dureeHeures", "effectif", "prix"].includes(m.cle) ? 'type="number" min="0"' : ""}></div>`).join("")
+      + `<div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+        <div><label class="field-label">Début</label><input class="txt acm" data-f="dateDebut" type="date"></div>
+        <div><label class="field-label">Fin</label><input class="txt acm" data-f="dateFin" type="date"></div>
+        ${type === "contrat" ? '<div><label class="field-label">Date de signature</label><input class="txt acm" data-f="dateSignature" type="date"></div>' : ""}
+      </div>
+      ${type === "contrat" ? '<div class="actions" style="margin-top:8px;"><button class="btn-ghost btn-sm" id="ac-ech">Proposer un échéancier conforme</button></div><div id="ac-ech-out"></div>' : ""}`;
+    if ($("#ac-ech")) $("#ac-ech").onclick = proposerEcheancier;
+  };
+  $("#ac-payeur").onchange = maj; maj();
+
+  let echeances = [];
+  async function proposerEcheancier() {
+    const prix = $(".acm[data-f='prix']")?.value, sig = $(".acm[data-f='dateSignature']")?.value;
+    if (!prix || !sig) { alert("Prix et date de signature requis pour calculer le délai de rétractation."); return; }
+    const e = await api.get(`/api/actes/echeancier?prix=${prix}&dateSignature=${sig}&nbEcheances=3`);
+    if (e?.error) { alert(e.error); return; }
+    echeances = e.lignes;
+    $("#ac-ech-out").innerHTML = `<div class="card" style="overflow-x:auto;margin-top:8px;"><table class="net-table">
+      <thead><tr><th>Rang</th><th>Exigible</th><th>Montant</th><th>Pourquoi</th></tr></thead><tbody>
+      ${e.lignes.map((l) => `<tr><td>${l.rang}</td><td>${esc(l.date || "au fil de la formation")}</td><td>${l.montant} €</td><td class="muted" style="font-size:12px;">${esc(l.motif)}</td></tr>`).join("")}
+      </tbody></table></div>`;
+  }
+
+  $("#ac-save").onclick = async () => {
+    const payeur = $("#ac-payeur").value, type = d.payeurs[payeur].acte;
+    const body = { campusId: dofCampus, type, payeur, echeances };
+    $$(".acm").forEach((i) => { if (i.value !== "") body[i.dataset.f] = ["dureeHeures", "effectif", "prix"].includes(i.dataset.f) ? +i.value : i.value; });
+    const classId = $("#ac-classe").value;
+    if (classId) {
+      const p = await api.get(`/api/documents-of/programme?classId=${classId}`);
+      if (!p?.error) { body.programme = p.programme; body.classId = classId; }
+    }
+    const r = await api.post("/api/actes", body);
+    if (r?.error) { alert(r.error); return; }
+    if (r.warnings?.length) alert("Enregistré. À compléter :\n" + r.warnings.join("\n"));
+    closeModals(); renderDocumentsOf();
+  };
+}
+
 // --- Dossiers RH des intervenants ---
 // L'écran ne demande pas « remplissez la fiche » : il dit, champ par champ, ce
 // que le manque EMPÊCHE. Une liste de cases à cocher sans conséquence ne se
@@ -2242,6 +2405,14 @@ async function renderChantier() {
       return `<div style="margin-top:10px;">
         ${c.aRefaire != null ? `<div class="kpis">${fkpi(c.aRefaire, "indicateurs à reprendre", "bad")}${fkpi(c.nouveaux.length, "sans équivalent", "bad")}${c.jours != null ? fkpi(c.jours + " j", "avant échéance", c.jours <= 60 ? "bad" : "") : ""}</div>` : ""}
         ${c.nouveaux.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;">Exigences nouvelles : n° ${c.nouveaux.join(", ")}.</p>` : ""}</div>`;
+    }
+    if (c.cle === "documents") {
+      return `<div style="margin-top:10px;">
+        <div class="kpis">${fkpi(c.reglement ? "oui" : "non", "règlement établi", c.reglement ? "good" : "bad")}
+          ${c.remisesTaux != null ? fkpi(c.remisesTaux + " %", "remis aux inscrits", c.remisesTaux === 100 ? "good" : "bad") : ""}
+          ${fkpi(`${c.signes}/${c.actes}`, "actes signés", c.actes && c.signes === c.actes ? "good" : "bad")}</div>
+        ${c.points.length ? `<div style="margin-top:8px;">${c.points.map((p) => `<div class="row" style="gap:8px;padding:4px 0;border-top:1px solid var(--border);">
+          <span class="grow">${esc(p.label)}</span><span class="pill ${p.gravite === "bloquant" ? "p-bad" : "p-warn"}">${esc(p.gravite)}</span></div>`).join("")}</div>` : ""}</div>`;
     }
     if (c.cle === "distance") {
       if (c.sansObjet) return "";

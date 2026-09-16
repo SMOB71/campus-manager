@@ -220,7 +220,7 @@ test("répondre exige un jeton : la route publique n'accepte rien sans lui", asy
 test("le chantier liste tous les dispositifs et compte ce qui reste", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents"]);
   assert.equal(d.bascule, "2026-11-01");
   // Chaque ligne dit la CONSÉQUENCE, pas seulement un compteur : « 0/3 »
   // n'appelle aucune action.
@@ -411,7 +411,7 @@ test("une action sans résultat est acceptée mais signalée, et ne couvre rien 
 test("chaque dispositif du chantier dit une conséquence, pas un compteur", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
   // Le dispositif à distance est SANS OBJET tant qu'aucune séance n'est à
   // distance — et à ce stade du scénario il n'y en a aucune. Reprocher un
@@ -718,4 +718,189 @@ test("un prestataire ne génère pas de charges patronales", async () => {
   // Et son dossier ne réclame ni matricule ni règle de paie.
   assert.equal(f.dossier.lignes.some((l) => l.cle === "matricule"), false);
   assert.match(JSON.stringify(f.dossier.aTransmettre), /URSSAF/);
+});
+
+// --- Documents obligatoires de l'organisme (lot 1) ---
+test("sans règlement intérieur, l'organisme est en défaut et le chantier le dit", async () => {
+  const d = await jget(`/api/documents-of?campusId=${campusId}`);
+  assert.equal(d.conforme, false);
+  assert.match(JSON.stringify(d.points), /L\. 6352-3/);
+  // La durée la plus longue du campus est calculée depuis les référentiels et
+  // le rythme réel de chaque classe — c'est elle qui déclenche (ou non) le seuil.
+  assert.ok(d.dureeMaxHeures > 0, `durée max ${d.dureeMaxHeures}`);
+
+  const ch = (await jget(`/api/chantier?campusId=${campusId}`)).chantiers.find((c) => c.cle === "documents");
+  assert.equal(ch.fait, false);
+  assert.equal(ch.reglement, false);
+  assert.match(ch.enjeu, /L\. 6352-3/);
+});
+
+// LE SEUIL DES 500 HEURES — le seuil est réel, il dépend de la durée enseignée.
+const REGLEMENT_BASE = {
+  version: "2026-1", dateApplication: "2026-09-01",
+  hygieneSecurite: "Consignes incendie et premiers secours", disciplinaire: "Assiduité, ponctualité",
+  sanctions: "Avertissement, blâme, exclusion", procedure: "Convocation, entretien, assistance, notification motivée",
+};
+const majReglement = (reglement) => req("/api/documents-of/reglement", {
+  method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { campusId, reglement },
+});
+
+test("sous 500 h, la représentation des stagiaires n'est pas exigée", async () => {
+  const d = await jget(`/api/documents-of?campusId=${campusId}`);
+  assert.ok(d.dureeMaxHeures <= 500, `ce test suppose un campus sous le seuil (${d.dureeMaxHeures} h)`);
+  const r = await majReglement({ ...REGLEMENT_BASE, representation: "" });
+  assert.equal(r.status, 200, "l'obligation ne s'applique pas en deçà du seuil");
+});
+
+test("AU-DELÀ DE 500 H, UN RÈGLEMENT SANS REPRÉSENTATION DES STAGIAIRES EST REFUSÉ", async () => {
+  // Une classe longue fait franchir le seuil au campus : 30 h/sem. sur 36
+  // semaines, soit 1 080 h — un BTS typique.
+  const cur = await (await post("/api/curricula", {
+    name: "BTS long", modules: [{ code: "L1", label: "Enseignement long", heuresSemaine: 30 }],
+  })).json();
+  await post("/api/classes", { campusId, curriculumId: cur.id, name: "Classe longue" });
+
+  const d = await jget(`/api/documents-of?campusId=${campusId}`);
+  assert.ok(d.dureeMaxHeures > 500, `durée max ${d.dureeMaxHeures}`);
+
+  const sans = await majReglement({ ...REGLEMENT_BASE, representation: "" });
+  assert.equal(sans.status, 400);
+  assert.match((await sans.json()).error, /R\. 6352-9/);
+
+  const avec = await majReglement({ ...REGLEMENT_BASE, representation: "Élection d'un délégué titulaire et d'un suppléant" });
+  assert.equal(avec.status, 200);
+  assert.equal((await avec.json()).version, "2026-1");
+});
+
+test("LE RÈGLEMENT NE VAUT QUE PORTÉ À CONNAISSANCE, et la remise se compte par version", async () => {
+  let d = await jget(`/api/documents-of?campusId=${campusId}`);
+  assert.equal(d.remises.remis, 0);
+  assert.match(d.remises.alerte.message, /pas opposable/);
+
+  const r = await (await post("/api/documents-of/remise", { campusId })).json();
+  assert.equal(r.enregistrees, 8);
+  d = await jget(`/api/documents-of?campusId=${campusId}`);
+  assert.equal(d.remises.complet, true);
+  assert.equal(d.remises.taux, 100);
+
+  // Rejouer la remise ne double pas les compteurs.
+  await post("/api/documents-of/remise", { campusId });
+  assert.equal((await jget(`/api/documents-of?campusId=${campusId}`)).remises.remis, 8);
+
+  // Une NOUVELLE version repart de zéro : l'ancienne remise ne vaut pas pour elle.
+  await req("/api/documents-of/reglement", {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { campusId, reglement: { ...d.reglement, version: "2026-2" } },
+  });
+  const apres = await jget(`/api/documents-of?campusId=${campusId}`);
+  assert.equal(apres.remises.version, "2026-2");
+  assert.equal(apres.remises.remis, 0);
+});
+
+test("le programme se construit depuis le référentiel de la classe", async () => {
+  const p = await jget(`/api/documents-of/programme?classId=${classId}`);
+  assert.ok(p.programme.contenu.length >= 1);
+  assert.equal(p.programme.organisme, "CFA Enquête");
+  // Sans objectifs saisis au référentiel, il n'est pas encore valide — et on
+  // le dit plutôt que de servir un document incomplet.
+  assert.equal(p.validation.ok, false);
+  assert.match(p.validation.errors.join(" "), /Objectifs/);
+});
+
+// LA GARDE CENTRALE.
+test("UNE CONVENTION SERVIE À UN PARTICULIER EST REFUSÉE PAR L'API", async () => {
+  const prog = (await jget(`/api/documents-of/programme?classId=${classId}`)).programme;
+  const commun = {
+    campusId, intitule: "BTS OL", objectifs: "Préparer au diplôme", nature: "apprentissage",
+    dureeHeures: 1350, dates: "2026-09 → 2027-06", dateDebut: "2026-09-01", dateFin: "2027-06-30",
+    effectif: 8, prix: 9000, moyens: "Plateau technique", evaluation: "Contrôle continu",
+    programme: prog,
+  };
+  const faux = await post("/api/actes", {
+    ...commun, type: "convention", payeur: "particulier", acheteur: "Léa Dupont", resiliation: "—",
+    echeances: [{ montant: 9000, date: "2026-10-01" }],
+  });
+  assert.equal(faux.status, 400);
+  assert.match((await faux.json()).error, /incompatible avec ce financement/);
+
+  // La convention à une entreprise passe.
+  const ok = await post("/api/actes", {
+    ...commun, type: "convention", payeur: "entreprise", acheteur: "OPCO EP", resiliation: "Dédit 30 %",
+    echeances: [{ montant: 9000, date: "2026-10-01" }],
+  });
+  assert.equal(ok.status, 200);
+});
+
+// LE PIÈGE DE L'ÉCHÉANCIER.
+test("UN CONTRAT QUI ENCAISSE PENDANT LE DÉLAI DE RÉTRACTATION EST REFUSÉ", async () => {
+  const prog = (await jget(`/api/documents-of/programme?classId=${classId}`)).programme;
+  const base = {
+    campusId, type: "contrat", payeur: "particulier",
+    intitule: "BTS OL", objectifs: "Préparer au diplôme", nature: "formation",
+    dureeHeures: 1350, dates: "2026-09 → 2027-06", dateDebut: "2026-10-01", dateFin: "2027-06-30",
+    effectif: 1, prix: 3000, moyens: "Plateau technique", evaluation: "Contrôle continu",
+    sanction: "BTS", beneficiaire: "Léa Dupont", retractation: "10 jours à compter de la signature",
+    dedit: "Remboursement au prorata", dateSignature: "2026-09-01", programme: prog,
+  };
+  // « 50 % à la signature » : la faute qu'un ERP fabrique en trois clics.
+  const illicite = await post("/api/actes", { ...base, echeances: [
+    { montant: 1500, date: "2026-09-01" }, { montant: 1500, date: "2026-12-01" },
+  ] });
+  assert.equal(illicite.status, 400);
+  assert.match((await illicite.json()).error, /L\. 6353-5/);
+
+  // L'échéancier proposé par l'API est conforme par construction.
+  const e = await jget("/api/actes/echeancier?prix=3000&dateSignature=2026-09-01&nbEcheances=3");
+  assert.equal(e.finRetractation, "2026-09-11");
+  assert.equal(e.lignes[0].montant, 900);
+
+  const bon = await post("/api/actes", { ...base, echeances: e.lignes });
+  assert.equal(bon.status, 200);
+  const acte = await bon.json();
+
+  // Un acte signé ne se modifie plus.
+  assert.equal((await post(`/api/actes/${acte.id}/signer`, {})).status, 200);
+  const fige = await req(`/api/actes/${acte.id}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { prix: 5000 },
+  });
+  assert.equal(fige.status, 409);
+  assert.match((await fige.json()).error, /avenant/);
+});
+
+test("l'édition imprimable porte les mentions, leur base, et l'avertissement de rétractation", async () => {
+  const actes = (await jget(`/api/documents-of?campusId=${campusId}`)).actes;
+  const contrat = actes.find((a) => a.type === "contrat");
+  const html = await (await get(`/api/actes/${contrat.id}/print`)).text();
+  assert.match(html, /Contrat de formation professionnelle/);
+  assert.match(html, /L\. 6353-5/);
+  assert.match(html, /L\. 6353-6/);
+  assert.match(html, /Programme de formation \(préétabli/);
+  assert.match(html, /rédaction reste à valider/);
+
+  // La convention, elle, ne porte PAS l'avertissement de rétractation : il ne
+  // s'applique pas, et l'afficher induirait l'acheteur en erreur.
+  const conv = actes.find((a) => a.type === "convention");
+  const htmlConv = await (await get(`/api/actes/${conv.id}/print`)).text();
+  assert.doesNotMatch(htmlConv, /Délai de rétractation/);
+
+  // Et le règlement intérieur s'imprime avec ses bases.
+  const ri = await (await get(`/api/documents-of/reglement/print?campusId=${campusId}`)).text();
+  assert.match(ri, /R\. 6352-9/);
+  assert.match(ri, /remis à chaque bénéficiaire/);
+});
+
+test("un acte sans programme est refusé, et une action commencée sans signature remonte", async () => {
+  const sans = await post("/api/actes", {
+    campusId, type: "convention", payeur: "entreprise", intitule: "Sans programme",
+    objectifs: "x", nature: "formation", dureeHeures: 10, dates: "x", effectif: 1,
+    prix: 100, moyens: "x", evaluation: "x", resiliation: "x", acheteur: "x",
+    echeances: [{ montant: 100, date: "2026-10-01" }],
+  });
+  assert.equal(sans.status, 400);
+  assert.match((await sans.json()).error, /programme préétabli/);
+
+  // La convention entreprise créée plus haut démarre au 2026-09-01 et n'est pas
+  // signée : la formation s'exécute sans base contractuelle.
+  const d = await jget(`/api/documents-of?campusId=${campusId}`);
+  assert.match(JSON.stringify(d.points), /sans base contractuelle/);
 });

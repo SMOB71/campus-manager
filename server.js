@@ -43,6 +43,7 @@ import * as certif from "./lib/certification.js";
 import * as ins from "./lib/insertion.js";
 import * as lms from "./lib/lms.js";
 import * as interv from "./lib/intervenants.js";
+import * as doc from "./lib/documents.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -1122,6 +1123,232 @@ function destinatairesEnquete(e) {
   return out;
 }
 
+// --- Documents obligatoires de l'organisme de formation ---
+// Règlement intérieur, programme préétabli, convention ou contrat de formation.
+// Ce ne sont pas des pièces de confort : leur absence est relevable en contrôle.
+
+// Durée la plus longue enseignée sur le campus : c'est elle qui déclenche
+// l'obligation d'organiser l'élection de délégués des stagiaires (R. 6352-9).
+function dureeMaxCampus(campusId) {
+  const classes = store.listClasses({ campusId });
+  let max = 0;
+  for (const k of classes) {
+    const cur = k.curriculumId ? store.getCurriculum(k.curriculumId) : null;
+    if (!cur) continue;
+    const weeks = k.weeksAtSchool || (k.modalite === "alternance" ? 18 : 36);
+    max = Math.max(max, store.curriculumHours(cur, weeks) || cur.dureeHeures || 0);
+  }
+  return max || null;
+}
+
+app.get("/api/documents-of", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  if (!campus) return res.status(404).json({ error: "campus introuvable" });
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const reglement = campus.reglement || {};
+  const inscrits = store.listEnrollments({ campusId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId);
+  const remises = doc.etatRemises(reglement, store.listRemisesReglement({ campusId }), inscrits);
+  const actes = store.listActes({ campusId });
+
+  res.json({
+    campusId, campus: campus.name,
+    reglement, livret: campus.livret || {},
+    dureeMaxHeures: dureeMaxCampus(campusId),
+    validationReglement: doc.validateReglement(reglement, { dureeMaxHeures: dureeMaxCampus(campusId) }),
+    remises,
+    actes: actes.map((a) => ({
+      id: a.id, type: a.type, payeur: a.payeur, intitule: a.intitule,
+      statut: a.statut || "brouillon", prix: a.prix ?? null,
+      dateDebut: a.dateDebut || null, dateFin: a.dateFin || null,
+      dateSignature: a.dateSignature || null,
+      aProgramme: !!a.programme,
+      validation: doc.validateActe(a),
+    })),
+    ...doc.etatDocumentaire({ reglement, livret: campus.livret, actes, remises, aujourdhui }),
+    types: doc.TYPES, payeurs: doc.PAYEURS, mentions: doc.MENTIONS,
+    retractationJours: doc.RETRACTATION_JOURS, premierVersementMax: doc.PREMIER_VERSEMENT_MAX,
+  });
+});
+
+app.patch("/api/documents-of/reglement", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const v = doc.validateReglement(req.body?.reglement || {}, { dureeMaxHeures: dureeMaxCampus(campusId) });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  const c = store.updateCampus(campusId, { reglement: req.body.reglement });
+  if (!c) return res.status(404).json({ error: "campus introuvable" });
+  logAudit(req, "update", "campus", `règlement intérieur version ${req.body.reglement.version}`);
+  res.json({ ...c.reglement, warnings: v.warnings });
+});
+
+app.patch("/api/documents-of/livret", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const c = store.updateCampus(campusId, { livret: { contenu: req.body?.contenu || "" } });
+  if (!c) return res.status(404).json({ error: "campus introuvable" });
+  res.json(c.livret || {});
+});
+
+// Remise du règlement. Ce n'est pas le document qui s'audite, c'est la preuve
+// qu'il a été porté à connaissance — et elle est datée, par version.
+app.post("/api/documents-of/remise", requireAuth, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  const version = campus?.reglement?.version;
+  if (!version) return res.status(409).json({ error: "aucun règlement intérieur établi : il n'y a rien à remettre" });
+  const ids = Array.isArray(req.body?.learnerIds) ? req.body.learnerIds
+    : store.listEnrollments({ campusId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId);
+  const faites = ids.map((learnerId) => store.addRemiseReglement({
+    campusId, learnerId, version, canal: req.body?.canal || "portail",
+  }));
+  logAudit(req, "create", "reglement", `remise version ${version} à ${faites.length} inscrit(s)`);
+  res.json({ version, enregistrees: faites.length });
+});
+
+// Programme de formation : CONSTRUIT depuis le référentiel, jamais depuis le
+// planning réalisé — « préétabli » est le mot de l'article L. 6353-1.
+app.get("/api/documents-of/programme", requireAuth, (req, res) => {
+  const k = store.getClass(req.query.classId);
+  if (!k) return res.status(404).json({ error: "classe introuvable" });
+  if (!requireCampus(req, res, k.campusId)) return;
+  const cur = k.curriculumId ? store.getCurriculum(k.curriculumId) : null;
+  if (!cur) return res.status(400).json({ error: "aucun référentiel rattaché à cette classe" });
+  const campus = store.listCampuses().find((c) => c.id === k.campusId);
+  const p = doc.construireProgramme({
+    curriculum: cur, campus, annee: k.year ?? null,
+    prerequis: req.query.prerequis || cur.prerequis || "",
+    evaluation: req.query.evaluation || cur.evaluation || "",
+    moyens: req.query.moyens || "",
+  });
+  res.json({ programme: p, validation: doc.validateProgramme(p), classe: k.name });
+});
+
+// --- Actes : convention ou contrat -------------------------------------------
+app.post("/api/actes", requireAuth, requireAdmin, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const v = doc.validateActe(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors, warnings: v.warnings });
+  const made = store.addActe({ ...req.body, statut: "brouillon" });
+  logAudit(req, "create", "acte", `${doc.TYPES[made.type]?.label} — ${made.intitule || ""}`);
+  res.json({ ...made, warnings: v.warnings });
+});
+
+app.patch("/api/actes/:id", requireAuth, requireAdmin, (req, res) => {
+  const a = store.getActe(req.params.id);
+  if (!a) return res.status(404).json({ error: "acte introuvable" });
+  if (!requireCampus(req, res, a.campusId)) return;
+  // Un acte signé ne se modifie plus : sinon le document remis au bénéficiaire
+  // et celui conservé divergent sans que rien ne le montre.
+  const m = doc.peutModifier(a);
+  if (!m.autorise) return res.status(409).json({ error: m.motif });
+  const fusion = { ...a, ...req.body };
+  const v = doc.validateActe(fusion);
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json({ ...store.updateActe(a.id, req.body || {}), warnings: v.warnings });
+});
+
+// Échéancier conforme proposé : on ne laisse pas l'utilisateur le deviner.
+app.get("/api/actes/echeancier", requireAuth, (req, res) => {
+  const e = doc.echeancierLegal({
+    prix: req.query.prix, dateSignature: req.query.dateSignature,
+    nbEcheances: req.query.nbEcheances,
+  });
+  if (!e) return res.status(400).json({ error: "prix et date de signature requis" });
+  res.json(e);
+});
+
+app.post("/api/actes/:id/signer", requireAuth, requireAdmin, (req, res) => {
+  const a = store.getActe(req.params.id);
+  if (!a) return res.status(404).json({ error: "acte introuvable" });
+  if (!requireCampus(req, res, a.campusId)) return;
+  if (a.statut === "signe") return res.status(409).json({ error: "acte déjà signé" });
+  const v = doc.validateActe(a);
+  if (!v.ok) return res.status(400).json({ error: `acte incomplet : ${v.errors.join(" ; ")}` });
+  const out = store.updateActe(a.id, {
+    statut: "signe", dateSignature: req.body?.date || a.dateSignature || new Date().toISOString().slice(0, 10),
+  });
+  logAudit(req, "update", "acte", `signature — ${a.intitule || a.id}`);
+  res.json(out);
+});
+
+// Édition imprimable. Le document porte ses mentions obligatoires ET leur base :
+// un acte qu'on ne peut pas rattacher à un texte ne se défend pas.
+app.get("/api/actes/:id/print", requireAuth, (req, res) => {
+  const a = store.getActe(req.params.id);
+  if (!a) return res.status(404).send("Acte introuvable");
+  if (!canCampus(req, a.campusId)) return res.status(403).send("Hors périmètre");
+  const campus = store.listCampuses().find((c) => c.id === a.campusId) || {};
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const t = doc.TYPES[a.type] || {};
+  const mentions = (doc.MENTIONS[a.type] || []).map((m) => `<tr><th>${esc(m.label)}</th><td>${esc(
+    Array.isArray(a[m.cle]) ? a[m.cle].join(", ") : a[m.cle] ?? "—")}</td><td class="base">${esc(m.base)}</td></tr>`).join("");
+  const ech = (a.echeances || []).map((e, i) => `<tr><td>${i + 1}</td><td>${esc(e.date || "au fur et à mesure")}</td><td class="num">${esc(e.montant)} €</td></tr>`).join("");
+  const p = a.programme || null;
+
+  res.type("html").send(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<title>${esc(t.label)} — ${esc(a.intitule || "")}</title>
+<style>
+ body{font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;color:#12343B;max-width:800px;margin:0 auto;padding:32px 24px;}
+ h1{font-size:22px;margin:0 0 4px;} h2{font-size:16px;margin:26px 0 8px;border-bottom:1px solid #E2DACD;padding-bottom:5px;}
+ .ref{color:#5A6672;font-size:12.5px;margin:0 0 20px;}
+ table{width:100%;border-collapse:collapse;margin-bottom:10px;}
+ th,td{text-align:left;padding:7px 9px;border-bottom:1px solid #E2DACD;vertical-align:top;}
+ th{width:32%;font-weight:600;} td.base{width:18%;color:#5A6672;font-size:11.5px;font-family:ui-monospace,monospace;}
+ td.num{text-align:right;font-variant-numeric:tabular-nums;}
+ .avert{background:#F5E9D0;border:1px solid #D8C08A;border-radius:6px;padding:12px 14px;margin:16px 0;font-size:13px;}
+ .sign{margin-top:36px;display:flex;gap:40px;} .sign div{flex:1;border-top:1px solid #12343B;padding-top:6px;font-size:12.5px;}
+ .pied{margin-top:30px;color:#5A6672;font-size:11.5px;border-top:1px solid #E2DACD;padding-top:10px;}
+ @media print{body{padding:0;}}
+</style></head><body>
+<h1>${esc(t.label)}</h1>
+<p class="ref">${esc(t.base)} — ${esc(campus.name || "")}${campus.numeroDeclaration ? ` · déclaration d'activité n° ${esc(campus.numeroDeclaration)}` : ""}${campus.siret ? ` · SIRET ${esc(campus.siret)}` : ""}</p>
+<h2>Mentions</h2><table><tbody>${mentions}</tbody></table>
+${a.type === "contrat" ? `<div class="avert"><b>Délai de rétractation.</b> Le bénéficiaire dispose de ${doc.RETRACTATION_JOURS} jours à compter de la signature pour se rétracter, par lettre recommandée avec avis de réception, sans pénalité (art. L. 6353-5). Aucune somme ne peut être exigée avant l'expiration de ce délai, et il ne peut ensuite être encaissé plus de ${doc.PREMIER_VERSEMENT_MAX * 100} % du prix, le solde étant échelonné au fur et à mesure du déroulement (art. L. 6353-6).</div>` : ""}
+${ech ? `<h2>Échéancier</h2><table><thead><tr><th>Rang</th><th>Exigible</th><th class="num">Montant</th></tr></thead><tbody>${ech}</tbody></table>` : ""}
+${p ? `<h2>Programme de formation (préétabli, art. L. 6353-1)</h2>
+<table><tbody>
+<tr><th>Objectifs</th><td colspan="2">${esc(p.objectifs || "—")}</td></tr>
+<tr><th>Prérequis</th><td colspan="2">${esc(p.prerequis || "—")}</td></tr>
+<tr><th>Moyens</th><td colspan="2">${esc(p.moyens || "—")}</td></tr>
+<tr><th>Évaluation</th><td colspan="2">${esc(p.evaluation || "—")}</td></tr>
+<tr><th>Durée</th><td colspan="2">${esc(p.dureeHeures ?? "—")} heures</td></tr>
+</tbody></table>
+${(p.contenu || []).length ? `<table><thead><tr><th>Enseignement</th><th class="num">Heures</th><th></th></tr></thead><tbody>${p.contenu.map((m) => `<tr><td>${esc(m.code ? m.code + " — " : "")}${esc(m.label)}</td><td class="num">${esc(m.heures ?? "—")}</td><td></td></tr>`).join("")}</tbody></table>` : ""}` : ""}
+<div class="sign"><div>L'organisme de formation<br>Date et signature</div><div>${a.type === "contrat" ? "Le bénéficiaire" : "L'acheteur"}<br>Date et signature</div></div>
+<p class="pied">Édité le ${new Date().toLocaleDateString("fr-FR")}. Document préparé par l'application : sa rédaction reste à valider. La conformité s'apprécie au regard des textes en vigueur et des usages du financeur.</p>
+</body></html>`);
+});
+
+// Règlement intérieur imprimable.
+app.get("/api/documents-of/reglement/print", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!canCampus(req, campusId)) return res.status(403).send("Hors périmètre");
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  if (!campus?.reglement?.version) return res.status(404).send("Aucun règlement intérieur établi");
+  const r = campus.reglement;
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const bloc = (m) => `<h2>${esc(m.label)} <span class="base">${esc(m.base)}</span></h2><p>${esc(r[m.cle] || "—").replace(/\n/g, "<br>")}</p>`;
+  res.type("html").send(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<title>Règlement intérieur — ${esc(campus.name)}</title>
+<style>
+ body{font:14px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;color:#12343B;max-width:780px;margin:0 auto;padding:32px 24px;}
+ h1{font-size:22px;margin:0 0 4px;} h2{font-size:15px;margin:24px 0 6px;}
+ .base{font:400 11px ui-monospace,monospace;color:#5A6672;}
+ .ref{color:#5A6672;font-size:12.5px;margin:0 0 22px;}
+ .pied{margin-top:30px;color:#5A6672;font-size:11.5px;border-top:1px solid #E2DACD;padding-top:10px;}
+ @media print{body{padding:0;}}
+</style></head><body>
+<h1>Règlement intérieur</h1>
+<p class="ref">${esc(campus.name)} — version ${esc(r.version)}, applicable au ${esc(r.dateApplication || "—")} · art. L. 6352-3 et R. 6352-1 et suivants</p>
+${doc.MENTIONS.reglement.map(bloc).join("")}
+<p class="pied">Ce règlement est remis à chaque bénéficiaire avant son entrée en formation. Édité le ${new Date().toLocaleDateString("fr-FR")}.</p>
+</body></html>`);
+});
+
 // --- Dossiers RH des intervenants et masse horaire ---
 // Le volume horaire n'est pas saisi : il est LU dans les séances réellement
 // affectées. C'est ce qui garantit que le contrat rédigé par la RH et le
@@ -1563,7 +1790,26 @@ app.get("/api/chantier", requireAuth, (req, res) => {
         : heures.risque || "Toutes les participations à distance portent un élément probant.",
   };
 
-  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance];
+  // 7. Documents obligatoires de l'organisme (lot 1).
+  const regl = campus?.reglement || {};
+  const inscritsCampus = campusId ? store.listEnrollments({ campusId, statut: store.ENROLLMENT_ACTIFS }).map((e) => e.learnerId) : [];
+  const rem = doc.etatRemises(regl, store.listRemisesReglement({ campusId }), inscritsCampus);
+  const lesActes = store.listActes({ campusId });
+  const etatDoc = doc.etatDocumentaire({ reglement: regl, livret: campus?.livret, actes: lesActes, remises: rem, aujourdhui });
+  const documents = {
+    cle: "documents", titre: "Documents obligatoires", ecran: "documents-of",
+    reglement: !!regl.version, remisesTaux: rem.taux, actes: lesActes.length,
+    signes: lesActes.filter((a) => a.statut === "signe").length,
+    points: etatDoc.points.map((p) => ({ label: p.label, gravite: p.gravite })),
+    fait: etatDoc.conforme, sansObjet: false,
+    enjeu: !regl.version
+      ? "Aucun règlement intérieur établi : l'obligation ne dépend ni de la taille ni de l'activité (art. L. 6352-3), et son absence est relevable en contrôle."
+      : etatDoc.conforme
+        ? "Règlement établi et remis, actes signés, programmes rattachés."
+        : etatDoc.points.map((p) => p.message).join(" "),
+  };
+
+  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance, documents];
   const restants = chantiers.filter((c) => !c.fait && !c.sansObjet);
   res.json({
     campusId: campusId || null, campus: campus?.name || null,
