@@ -185,3 +185,40 @@ test("validateBody : les champs ambigus ne sont bornés que sur leurs routes num
   assert.equal(validateBody({ occupancy: 150 }, "/api/actions").ok, false);
   assert.equal(validateBody({ occupancy: 80 }, "/api/actions").ok, true);
 });
+
+// --- Intégrité du modèle type d'ouverture ---
+// Une dépendance qui pointe vers une clef inexistante ne casse rien à
+// l'exécution : elle est simplement ignorée, et l'enchaînement qu'on croyait
+// avoir posé n'existe pas. C'est le genre de défaut qu'on ne voit jamais.
+test("le modèle d'ouverture n'a ni clef en double ni dépendance orpheline", async () => {
+  const { OPENING_TEMPLATE, OPENING_LOTS } = await import("../lib/calc.js");
+  const cles = OPENING_TEMPLATE.filter((t) => t.key).map((t) => t.key);
+  assert.equal(new Set(cles).size, cles.length, "deux tâches ne peuvent pas partager une clef");
+
+  const orphelines = [...new Set(OPENING_TEMPLATE.flatMap((t) => t.after || []))]
+    .filter((a) => !cles.includes(a));
+  assert.deepEqual(orphelines, [], "une dépendance vers une clef inexistante est ignorée en silence");
+
+  // Chaque tâche appartient à un lot déclaré, sinon elle disparaît de l'écran.
+  const lots = new Set(OPENING_LOTS.map((l) => l.k));
+  for (const t of OPENING_TEMPLATE) {
+    assert.ok(lots.has(t.lot), `lot inconnu « ${t.lot} » sur « ${t.title} »`);
+    assert.ok(String(t.title || "").trim(), "tâche sans intitulé");
+    assert.equal(typeof t.m, "number", `échéance manquante sur « ${t.title} »`);
+  }
+});
+
+// Les exigences reglementaires outillees dans l'application doivent exister
+// dans le modele : sinon l'ouverture se prepare sans elles.
+test("le modèle porte les échéances réglementaires qui ne se rattrapent pas", async () => {
+  const { OPENING_TEMPLATE } = await import("../lib/calc.js");
+  const titres = OPENING_TEMPLATE.map((t) => t.title).join(" | ").toLowerCase();
+  for (const attendu of ["soltéa", "opérateur de compétences", "sifa", "préétabli", "délégués", "enquête"]) {
+    assert.ok(titres.includes(attendu.toLowerCase()), `« ${attendu} » absent du modèle d'ouverture`);
+  }
+  // Le guichet de la taxe ferme quatre mois avant la campagne : la tâche doit
+  // être posée tôt, pas au printemps.
+  const taxe = OPENING_TEMPLATE.find((t) => t.key === "taxe-hab");
+  assert.ok(taxe.m >= 8, `habilitation taxe posée à M-${taxe.m} : trop tard, le guichet aura fermé`);
+  assert.equal(taxe.critical, true);
+});
