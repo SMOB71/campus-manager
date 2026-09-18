@@ -330,3 +330,28 @@ test("les champs de campus contrôlés au démarrage sont réellement enregistra
     assert.equal(restants.includes(cle), false, `« ${cle} » reproché alors que le champ est renseigné`);
   }
 });
+
+// UN CHAMP LU PAR DEUX MODULES ET ÉCRIT PAR AUCUN.
+//
+// `valideJusquau` était lu par lib/demarrage.js et lib/cpf.js sans exister dans
+// la liste blanche : l'alerte « certification expirée » ne se déclenchait
+// jamais, et côté financement individuel AUCUNE offre n'était jamais éligible.
+// Il est désormais DÉRIVÉ — un certificat vaut trois ans à compter de l'audit.
+test("la validité de la certification qualité est dérivée, pas à ressaisir", () => {
+  const c = store.addCampus({ name: "Qualité" });
+  assert.equal(store.getQualiopi(c.id).valideJusquau, null, "sans audit, la validité est inconnue et le reste");
+
+  store.updateQualiopi(c.id, { lastAudit: "2025-06-01" });
+  assert.equal(store.getQualiopi(c.id).valideJusquau, "2028-06-01", "trois ans après l'audit");
+
+  // Une date de renouvellement saisie l'emporte sur le calcul.
+  store.updateQualiopi(c.id, { renewalDate: "2028-09-15" });
+  assert.equal(store.getQualiopi(c.id).valideJusquau, "2028-09-15");
+
+  // Et le contrôle de démarrage voit enfin l'expiration.
+  const expire = demarrage.controler({
+    campus: { name: "X" }, qualiopi: { valideJusquau: "2026-01-01" }, aujourdhui: "2026-09-18",
+  }).points.find((p) => p.cle === "qualiopi_expire");
+  assert.ok(expire, "une certification expirée doit être signalée");
+  assert.equal(expire.niveau, "bloquant");
+});

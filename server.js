@@ -1263,7 +1263,7 @@ function contexteCpf(campusId, offre) {
     return cur && offre?.codeCertification && cur.codeRncp === offre.codeCertification;
   });
   const etat = liee ? certif.etatHabilitation(liee.habilitation || {}, new Date().toISOString().slice(0, 10)) : null;
-  return { qualiopi: campus?.qualiopi || null, certification: etat };
+  return { qualiopi: campus?.qualiopi ? store.getQualiopi(campusId) : null, certification: etat };
 }
 
 app.get("/api/cpf", requireAuth, (req, res) => {
@@ -6816,7 +6816,9 @@ app.get("/api/demarrage", requireAuth, (req, res) => {
     users: userstore.listUsers(),
     licence: licenceState(licenceEffective()),
     taxe: etatTaxe,
-    qualiopi: campus.qualiopi || null,
+    // getQualiopi() DERIVE `valideJusquau` ; lire campus.qualiopi directement
+    // rendait l'alerte « certification expirée » muette, faute de ce champ.
+    qualiopi: campus.qualiopi ? store.getQualiopi(campusId) : null,
     reclamationsOuvertes: store.listReclamations({ campusId }).length,
     sauvegardeLe: derniere,
     aujourdhui: jour,

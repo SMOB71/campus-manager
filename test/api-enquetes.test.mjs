@@ -1356,9 +1356,8 @@ test("une offre certifiante devient éligible une fois la qualité renseignée",
   await req(`/api/campuses/${campusId}/qualiopi`, {
     method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { renewalDate: "2028-06-01" },
   });
-  const camp = (await jget("/api/campuses")).find((c) => c.id === campusId);
-  // Le module lit `valideJusquau` : s'il n'existe pas, l'offre reste bloquée et
-  // c'est cohérent — on ne présume pas une certification qu'on ne voit pas.
+  // `valideJusquau` est DÉRIVÉ de la date de renouvellement : l'offre devient
+  // réellement éligible, au lieu de rester bloquée par un champ fantôme.
   const o = await (await post("/api/offres", {
     campusId, nature: "continue", intitule: "Titre professionnel opticien",
     repertoire: "rncp", codeCertification: "35338",
@@ -1374,7 +1373,9 @@ test("une offre certifiante devient éligible une fois la qualité renseignée",
   // L'exigence « certification professionnelle » est levée ; il peut rester
   // celle de la qualité, qui dépend du champ de validité.
   assert.equal(JSON.stringify(l.manques).includes("ne se vend pas sur ce dispositif"), false);
-  assert.ok(camp);
+  assert.equal(JSON.stringify(l.manques).includes("financement mutualisé"), false,
+    "la certification qualité est renseignée : elle ne doit plus être reprochée");
+  assert.equal(l.eligible, true);
 });
 
 // LE PIÈGE DE CALENDRIER.
@@ -1411,17 +1412,28 @@ test("AUCUNE ROUTE N'ACCEPTE UN NOMBRE D'HEURES SAISI", async () => {
   })).json();
   dossierCpf = d.id;
 
+  // Un dossier encore à l'état de demande ne se déclare pas : la garde d'état
+  // passe avant celle des feuilles, et c'est le bon ordre.
+  const tropTot = await jget(`/api/cpf/dossiers/${dossierCpf}/service-fait`);
+  assert.equal(tropTot.declaration.autorise, false);
+  assert.match(tropTot.declaration.motif, /seul un dossier en formation/);
+
+  await req(`/api/cpf/dossiers/${dossierCpf}`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { etat: "en_formation" },
+  });
   const s = await jget(`/api/cpf/dossiers/${dossierCpf}/service-fait`);
   assert.equal(typeof s.heuresRealisees, "number");
   assert.match(s.reserve, /ne se saisissent pas/);
 
-  // Sans feuille close sur la période, rien ne se déclare.
-  if (!s.feuillesRetenues) {
-    assert.equal(s.declaration.autorise, false);
-    assert.match(s.declaration.motif, /rien ne prouve que la formation a eu lieu/);
-    const refus = await post(`/api/cpf/dossiers/${dossierCpf}/service-fait`, { heures: 999 });
-    assert.equal(refus.status, 409, "un nombre d'heures envoyé ne force rien");
-  }
+  // Aucune feuille close sur la période de cette session : rien ne se déclare,
+  // et un nombre d'heures envoyé dans le corps ne force rien.
+  assert.equal(s.feuillesRetenues, 0);
+  assert.equal(s.declaration.autorise, false);
+  assert.match(s.declaration.motif, /rien ne prouve que la formation a eu lieu/);
+  const refus = await post(`/api/cpf/dossiers/${dossierCpf}/service-fait`, { heures: 999, heuresRealisees: 999 });
+  assert.equal(refus.status, 409, "un nombre d'heures envoyé ne force rien");
+  const relu = (await jget(`/api/cpf?campusId=${campusId}`)).lignes.find((l) => l.id === dossierCpf);
+  assert.equal(relu.serviceFaitHeures, undefined, "aucune heure n'a été enregistrée");
 });
 
 test("le chantier compte maintenant dix dispositifs", async () => {
