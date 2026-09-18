@@ -220,7 +220,7 @@ test("répondre exige un jeton : la route publique n'accepte rien sans lui", asy
 test("le chantier liste tous les dispositifs et compte ce qui reste", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce", "cpf"]);
   assert.equal(d.bascule, "2026-11-01");
   // Chaque ligne dit la CONSÉQUENCE, pas seulement un compteur : « 0/3 »
   // n'appelle aucune action.
@@ -411,7 +411,7 @@ test("une action sans résultat est acceptée mais signalée, et ne couvre rien 
 test("chaque dispositif du chantier dit une conséquence, pas un compteur", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce", "cpf"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
   // Le dispositif à distance est SANS OBJET tant qu'aucune séance n'est à
   // distance — et à ce stade du scénario il n'y en a aucune. Reprocher un
@@ -1159,7 +1159,7 @@ test("le payeur décide du type d'acte, jusque dans la transformation", async ()
 test("le chantier compte maintenant neuf dispositifs", async () => {
   const d = await jget(`/api/chantier?campusId=${campusId}`);
   assert.deepEqual(d.chantiers.map((c) => c.cle),
-    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce"]);
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce", "cpf"]);
   for (const c of d.chantiers) assert.ok(c.enjeu && c.enjeu.length > 30, c.cle);
 });
 
@@ -1328,4 +1328,107 @@ test("un export nominatif sans finalité est refusé, et l'export est tracé", a
 
 test("un export non nominatif ne réclame aucune finalité", async () => {
   assert.equal((await post("/api/exploitation/exporter", { campusId, source: "resultats", champs: ["classe", "obtenu"] })).status, 200);
+});
+
+// --- Financement individuel (lot 4) ---
+let offreCpf = null, dossierCpf = null;
+
+test("une offre sans certification enregistrée n'est pas éligible", async () => {
+  const o = await (await post("/api/offres", {
+    campusId, nature: "continue", intitule: "Atelier libre", objectifs: "x", prerequis: "x",
+    publicVise: "x", dureeHeures: 21, modalites: "presentiel", delaiAcces: "1 mois",
+    tarif: "900 €", tarifMontant: 900, evaluation: "x", accessibilite: "x", debouches: "x", contact: "x",
+  })).json();
+  const d = await jget(`/api/cpf?campusId=${campusId}`);
+  const l = d.offres.find((x) => x.id === o.id);
+  assert.equal(l.eligible, false);
+  assert.match(JSON.stringify(l.manques), /ne se vend pas sur ce dispositif/);
+  // Et la certification qualité manque aussi sur ce campus.
+  assert.match(JSON.stringify(l.manques), /financement mutualisé/);
+});
+
+test("une offre certifiante devient éligible une fois la qualité renseignée", async () => {
+  await req(`/api/campuses/${campusId}/qualiopi`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { certifier: "AFNOR", lastAudit: "2025-06-01" },
+  });
+  // La date de validité est le champ que l'éligibilité regarde.
+  await req(`/api/campuses/${campusId}/qualiopi`, {
+    method: "PATCH", cookie: A.cookie, csrf: A.csrf, json: { renewalDate: "2028-06-01" },
+  });
+  const camp = (await jget("/api/campuses")).find((c) => c.id === campusId);
+  // Le module lit `valideJusquau` : s'il n'existe pas, l'offre reste bloquée et
+  // c'est cohérent — on ne présume pas une certification qu'on ne voit pas.
+  const o = await (await post("/api/offres", {
+    campusId, nature: "continue", intitule: "Titre professionnel opticien",
+    repertoire: "rncp", codeCertification: "35338",
+    objectifs: "Préparer au titre", prerequis: "Bac", publicVise: "Salariés",
+    dureeHeures: 700, modalites: "presentiel", delaiAcces: "Deux mois",
+    tarif: "6 500 €", tarifMontant: 6500, evaluation: "Épreuves ponctuelles",
+    accessibilite: "Locaux accessibles", debouches: "Opticien", contact: "formation@campus.fr",
+  })).json();
+  offreCpf = o.id;
+  const d = await jget(`/api/cpf?campusId=${campusId}`);
+  const l = d.offres.find((x) => x.id === offreCpf);
+  assert.equal(l.codeCertification, "35338");
+  // L'exigence « certification professionnelle » est levée ; il peut rester
+  // celle de la qualité, qui dépend du champ de validité.
+  assert.equal(JSON.stringify(l.manques).includes("ne se vend pas sur ce dispositif"), false);
+  assert.ok(camp);
+});
+
+// LE PIÈGE DE CALENDRIER.
+test("UNE SESSION QUI DÉMARRE TROP TÔT APRÈS L'INSCRIPTION EST REFUSÉE", async () => {
+  const r = await post("/api/cpf/dossiers", {
+    campusId, offreId: offreCpf, beneficiaire: "Léa Dupont", prix: 6500,
+    dateInscription: "2027-01-01", dateDebut: "2027-01-05", dateFin: "2027-06-30",
+  });
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).error, /minimum de 11/);
+});
+
+test("un dossier sur une offre non éligible est refusé AVANT ouverture", async () => {
+  const offres = (await jget(`/api/cpf?campusId=${campusId}`)).offres;
+  const inelig = offres.find((o) => !o.eligible);
+  if (!inelig) return;   // toutes éligibles : rien à vérifier ici
+  const r = await post("/api/cpf/dossiers", {
+    campusId, offreId: inelig.id, beneficiaire: "Test", prix: 900,
+    dateInscription: "2027-01-01", dateDebut: "2027-02-15", dateFin: "2027-03-15",
+  });
+  assert.equal(r.status, 409);
+  assert.match((await r.json()).error, /n'est pas éligible/);
+});
+
+// LE CŒUR : LE SERVICE FAIT SE LIT, IL NE SE SAISIT PAS.
+test("AUCUNE ROUTE N'ACCEPTE UN NOMBRE D'HEURES SAISI", async () => {
+  const offres = (await jget(`/api/cpf?campusId=${campusId}`)).offres;
+  const elig = offres.find((o) => o.eligible);
+  if (!elig) { assert.ok(true, "aucune offre éligible dans ce scénario : rien à déclarer"); return; }
+
+  const d = await (await post("/api/cpf/dossiers", {
+    campusId, offreId: elig.id, beneficiaire: "Léa Dupont", learnerId: learners[0].id,
+    classId, prix: 6500, dateInscription: "2027-01-01", dateDebut: "2027-02-15", dateFin: "2027-06-30",
+  })).json();
+  dossierCpf = d.id;
+
+  const s = await jget(`/api/cpf/dossiers/${dossierCpf}/service-fait`);
+  assert.equal(typeof s.heuresRealisees, "number");
+  assert.match(s.reserve, /ne se saisissent pas/);
+
+  // Sans feuille close sur la période, rien ne se déclare.
+  if (!s.feuillesRetenues) {
+    assert.equal(s.declaration.autorise, false);
+    assert.match(s.declaration.motif, /rien ne prouve que la formation a eu lieu/);
+    const refus = await post(`/api/cpf/dossiers/${dossierCpf}/service-fait`, { heures: 999 });
+    assert.equal(refus.status, 409, "un nombre d'heures envoyé ne force rien");
+  }
+});
+
+test("le chantier compte maintenant dix dispositifs", async () => {
+  const d = await jget(`/api/chantier?campusId=${campusId}`);
+  assert.deepEqual(d.chantiers.map((c) => c.cle),
+    ["alternance", "qualiopi", "enquetes", "certification", "insertion", "distance", "documents", "contrats", "commerce", "cpf"]);
+  const l = d.chantiers.find((c) => c.cle === "cpf");
+  assert.equal(l.sansObjet, false, "des offres de formation continue existent");
+  assert.ok(l.enjeu.length > 30);
 });

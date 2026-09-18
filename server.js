@@ -49,6 +49,7 @@ import * as cat from "./lib/catalogue.js";
 import * as dv from "./lib/devis.js";
 import * as expl from "./lib/exploitation.js";
 import * as real from "./lib/realisation.js";
+import * as cpf from "./lib/cpf.js";
 import * as demarrage from "./lib/demarrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
@@ -1248,6 +1249,116 @@ app.get("/api/exploitation/journal", requireAuth, (req, res) => {
   });
 });
 
+// --- Financement individuel (CPF) ---
+// Le service fait conditionne le paiement, et il se LIT dans l'émargement
+// scellé. Aucune route de ce bloc n'accepte un nombre d'heures saisi.
+function contexteCpf(campusId, offre) {
+  const campus = store.listCampuses().find((c) => c.id === campusId);
+  const certifs = store.listCertifications({ campusId });
+  const curricula = new Map(store.listCurricula().map((c) => [c.id, c]));
+  // On rapproche l'offre de l'habilitation par le code de certification :
+  // c'est lui qui fait le lien, pas l'intitulé.
+  const liee = certifs.find((c) => {
+    const cur = curricula.get(c.curriculumId);
+    return cur && offre?.codeCertification && cur.codeRncp === offre.codeCertification;
+  });
+  const etat = liee ? certif.etatHabilitation(liee.habilitation || {}, new Date().toISOString().slice(0, 10)) : null;
+  return { qualiopi: campus?.qualiopi || null, certification: etat };
+}
+
+app.get("/api/cpf", requireAuth, (req, res) => {
+  const campusId = req.query.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const offres = store.listOffres({ campusId }).filter((o) => o.nature === "continue");
+  res.json({
+    ...cpf.tableauDeBord(store.listDossiersCpf({ campusId }), { aujourdhui }),
+    // L'éligibilité se juge OFFRE PAR OFFRE : une seule offre certifiante ne
+    // rend pas tout le catalogue finançable.
+    offres: offres.map((o) => ({
+      id: o.id, intitule: o.intitule, publiee: !!o.publiee,
+      repertoire: o.repertoire || null, codeCertification: o.codeCertification || null,
+      ...cpf.verifierEligibilite({ ...contexteCpf(campusId, o), offre: o, aujourdhui }),
+    })),
+    etats: cpf.ETATS, repertoires: cpf.REPERTOIRES, exonerations: cpf.EXONERATIONS,
+    delaiEntree: cpf.DELAI_ENTREE_JOURS, participation: cpf.PARTICIPATION_DEFAUT,
+  });
+});
+
+app.post("/api/cpf/dossiers", requireAuth, (req, res) => {
+  const campusId = req.body?.campusId;
+  if (!requireCampus(req, res, campusId)) return;
+  const v = cpf.validateDossier(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+
+  // On refuse d'ouvrir un dossier sur une offre non éligible : le découvrir au
+  // moment du paiement, c'est le découvrir quand l'argent manque.
+  const offre = store.getOffre(req.body.offreId);
+  if (!offre || offre.campusId !== campusId) return res.status(404).json({ error: "offre introuvable" });
+  const el = cpf.verifierEligibilite({ ...contexteCpf(campusId, offre), offre, aujourdhui: new Date().toISOString().slice(0, 10) });
+  if (!el.eligible) {
+    return res.status(409).json({
+      error: `« ${offre.intitule} » n'est pas éligible : ${el.manques.filter((m) => m.gravite === "bloquant").map((m) => m.message).join(" ")}`,
+      manques: el.manques,
+    });
+  }
+  const made = store.addDossierCpf({ ...req.body, etat: req.body.etat || "demande" });
+  logAudit(req, "create", "dossier-cpf", `${made.beneficiaire} — ${offre.intitule}`);
+  res.json({ ...made, warnings: v.warnings });
+});
+
+app.patch("/api/cpf/dossiers/:id", requireAuth, (req, res) => {
+  const d = store.getDossierCpf(req.params.id);
+  if (!d) return res.status(404).json({ error: "dossier introuvable" });
+  if (!requireCampus(req, res, d.campusId)) return;
+  const v = cpf.validateDossier({ ...d, ...req.body });
+  if (!v.ok) return res.status(400).json({ error: v.errors.join(" ; "), errors: v.errors });
+  res.json(store.updateDossierCpf(d.id, req.body || {}));
+});
+
+// LE SERVICE FAIT. Il n'accepte AUCUN nombre d'heures : il lit les feuilles
+// closes de l'apprenant et rend ce qu'elles disent.
+app.get("/api/cpf/dossiers/:id/service-fait", requireAuth, (req, res) => {
+  const d = store.getDossierCpf(req.params.id);
+  if (!d) return res.status(404).json({ error: "dossier introuvable" });
+  if (!requireCampus(req, res, d.campusId)) return;
+  const feuilles = attendancestore.listSheets({
+    campusId: d.campusId, classId: d.classId || undefined,
+    from: d.dateDebut || undefined, to: d.dateFin || undefined,
+  });
+  const service = cpf.serviceFait({ dossier: d, feuilles, stats: sheetStats });
+  res.json({ ...service, declaration: cpf.peutDeclarerServiceFait(d, service) });
+});
+
+app.post("/api/cpf/dossiers/:id/service-fait", requireAuth, (req, res) => {
+  const d = store.getDossierCpf(req.params.id);
+  if (!d) return res.status(404).json({ error: "dossier introuvable" });
+  if (!requireCampus(req, res, d.campusId)) return;
+  const feuilles = attendancestore.listSheets({
+    campusId: d.campusId, classId: d.classId || undefined,
+    from: d.dateDebut || undefined, to: d.dateFin || undefined,
+  });
+  const service = cpf.serviceFait({ dossier: d, feuilles, stats: sheetStats });
+  const p = cpf.peutDeclarerServiceFait(d, service);
+  if (!p.autorise) return res.status(409).json({ error: p.motif });
+  const out = store.updateDossierCpf(d.id, {
+    etat: "service_fait", serviceFaitLe: new Date().toISOString().slice(0, 10),
+    // On fige CE QUI A ÉTÉ LU, pas ce qui a été demandé : la trace doit dire
+    // sur quoi la déclaration reposait le jour où elle a été faite.
+    serviceFaitHeures: service.heuresRealisees, serviceFaitTaux: service.taux,
+    serviceFaitFeuilles: service.feuillesRetenues,
+  });
+  logAudit(req, "update", "dossier-cpf", `service fait — ${d.beneficiaire} : ${service.heuresRealisees} h (${service.taux} %)`);
+  res.json({ ...out, service, partiel: !!p.partiel, motif: p.motif || null });
+});
+
+app.get("/api/cpf/reste-a-charge", requireAuth, (req, res) => {
+  res.json(cpf.resteACharge({
+    prix: req.query.prix, droitsDisponibles: req.query.droits,
+    exoneration: req.query.exoneration || "aucune",
+  }));
+});
+
 // --- Catalogue de formation ---
 // Ce qui est publié engage l'organisme : c'est l'indicateur 1 du référentiel.
 app.get("/api/offres", requireAuth, (req, res) => {
@@ -2196,7 +2307,28 @@ app.get("/api/chantier", requireAuth, (req, res) => {
           : "Catalogue complet, chaîne commerciale sans rupture.",
   };
 
-  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance, documents, contratsProfs, commerce];
+  // 10. Financement individuel (lot 4). Sans objet si l'organisme ne vend pas
+  // de formation continue : lui reprocher l'absence de dossiers serait du bruit.
+  const offresContinue = store.listOffres({ campusId }).filter((o) => o.nature === "continue");
+  const dossiers = store.listDossiersCpf({ campusId });
+  const elig = offresContinue.map((o) => cpf.verifierEligibilite({
+    ...contexteCpf(campusId, o), offre: o, aujourdhui,
+  }));
+  const bloquees = elig.filter((e) => !e.eligible).length;
+  const cpfLigne = {
+    cle: "cpf", titre: "Financement individuel", ecran: "cpf",
+    offres: offresContinue.length, eligibles: elig.filter((e) => e.eligible).length,
+    dossiers: dossiers.length, aDeclarer: dossiers.filter((d) => d.etat === "en_formation").length,
+    fait: offresContinue.length > 0 && bloquees === 0,
+    sansObjet: offresContinue.length === 0,
+    enjeu: offresContinue.length === 0
+      ? "Aucune offre de formation continue : le financement individuel est sans objet."
+      : bloquees
+        ? `${bloquees} offre(s) non éligibles : sans certification qualité ou sans certification professionnelle enregistrée, aucun dossier ne sera payé.`
+        : "Offres éligibles. Le service fait se lira dans l'émargement scellé, il ne se saisit pas.",
+  };
+
+  const chantiers = [alternance, qualiopi, enquetes, certification, insertion, distance, documents, contratsProfs, commerce, cpfLigne];
   const restants = chantiers.filter((c) => !c.fait && !c.sansObjet);
   res.json({
     campusId: campusId || null, campus: campus?.name || null,

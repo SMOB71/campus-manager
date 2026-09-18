@@ -388,6 +388,7 @@ const NAV = [
   // Chaîne commerciale : offre → devis → convention. Le pipeline EST la liste
   // des devis, il n'y a pas d'entité « opportunité » à tenir synchronisée.
   { id: "catalogue", label: "Catalogue & devis", icon: I.brief, group: "Performance" },
+  { id: "cpf", label: "Financement individuel (CPF)", icon: I.euro, group: "Performance" },
   { id: "entreprises", label: "Entreprises & alternance", icon: I.brief, group: "Performance" },
   { id: "qualiopi", label: "Qualiopi", icon: I.shield, group: "Conformité" },
   { id: "enquetes", label: "Enquêtes", icon: I.shield, group: "Conformité" },
@@ -507,7 +508,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, catalogue: renderCatalogue, repertoire: renderRepertoire, exploitation: renderExploitation, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, catalogue: renderCatalogue, cpf: renderCpf, repertoire: renderRepertoire, exploitation: renderExploitation, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -1970,6 +1971,106 @@ async function renderExploitation() {
   };
 }
 
+// --- Financement individuel (CPF) ---
+// L'écran ne propose nulle part de saisir des heures réalisées : le service
+// fait se lit dans l'émargement scellé, et c'est tout l'objet du module.
+let cpfCampus = "";
+
+async function renderCpf() {
+  if (!cpfCampus) cpfCampus = state.campuses[0]?.id || "";
+  const d = await api.get(`/api/cpf?campusId=${cpfCampus}`);
+  if (d?.error) { $("#view").innerHTML = `<p class="neg">${esc(d.error)}</p>`; return; }
+  const GRAV = { bloquant: "#8A4B4B", important: "#8A7A4B", conseille: "var(--border)" };
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="cp-new">+ Dossier</button>`;
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:center;">
+      <div><label class="field-label">Campus</label><select id="cpf-campus">${state.campuses.map((c) => `<option value="${c.id}" ${c.id === cpfCampus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <span style="flex:1"></span>
+      <div class="kpis">${fkpi(d.ouverts, "dossiers ouverts")}${fkpi(d.aDeclarer, "à déclarer", d.aDeclarer ? "bad" : "")}
+        ${fkpi(d.montantOuvert.toLocaleString("fr-FR") + " €", "encours")}</div>
+    </div>
+
+    <div class="section-title" style="margin-top:0;">Éligibilité des offres</div>
+    <p class="hint muted" style="margin-top:0;">L'éligibilité se juge offre par offre. Une seule offre certifiante ne rend pas tout le catalogue finançable.</p>
+    ${d.offres.length ? d.offres.map((o) => `<div class="card card-pad" style="margin-bottom:10px;border-left:4px solid ${o.eligible ? "#4B7A5A" : "#8A4B4B"};">
+      <div class="row" style="gap:8px;align-items:center;">
+        <b class="grow">${esc(o.intitule)}</b>
+        ${o.codeCertification ? `<span class="pill">${esc(d.repertoires[o.repertoire] ? o.repertoire.toUpperCase() : "?")} ${esc(o.codeCertification)}</span>` : ""}
+        <span class="pill ${o.eligible ? "p-good" : "p-bad"}">${o.eligible ? "éligible" : "non éligible"}</span>
+      </div>
+      ${o.manques.map((m) => `<div class="item" style="border-left:3px solid ${GRAV[m.gravite]};margin-top:8px;"><div class="grow">${esc(m.message)}</div></div>`).join("")}
+    </div>`).join("") : '<div class="card card-pad"><p class="muted">Aucune offre de formation continue au catalogue.</p></div>'}
+
+    <div class="section-title">Dossiers</div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Bénéficiaire</th><th>Inscription</th><th>Session</th><th>Prix</th><th>État</th><th>Service fait</th><th></th></tr></thead><tbody>
+      ${d.lignes.length ? d.lignes.map((l) => `<tr>
+        <td><b>${esc(l.beneficiaire || "—")}</b></td>
+        <td>${esc(l.dateInscription || "—")}</td>
+        <td>${esc(l.dateDebut || "—")}</td>
+        <td>${l.prix != null ? `${l.prix} €` : "—"}</td>
+        <td><span class="pill ${l.ouvert ? "p-warn" : "p-good"}">${esc(l.etatLabel)}</span>
+          ${l.alertes.map((a) => `<br><span style="color:${GRAV.bloquant};font-size:12px;">${esc(a.message)}</span>`).join("")}</td>
+        <td>${l.serviceFaitHeures != null ? `<b>${l.serviceFaitHeures} h</b> <span class="muted">(${l.serviceFaitTaux} %)</span>` : '<span class="muted">—</span>'}</td>
+        <td>${l.etat === "en_formation" ? `<button class="btn-ghost btn-sm cp-sf" data-id="${l.id}">Service fait</button>` : ""}</td>
+      </tr>`).join("") : '<tr><td colspan="7" class="muted">Aucun dossier.</td></tr>'}
+      </tbody></table></div>
+    <p class="hint muted">${esc(d.reserve)}</p>`;
+
+  $("#cpf-campus").onchange = (e) => { cpfCampus = e.target.value; renderCpf(); };
+  $("#cp-new").onclick = () => openDossierCpfForm(d);
+  $$(".cp-sf").forEach((b) => { b.onclick = () => openServiceFait(b.dataset.id); });
+}
+
+function openDossierCpfForm(d) {
+  const eligibles = d.offres.filter((o) => o.eligible);
+  openModal("Nouveau dossier", `
+    ${eligibles.length ? "" : '<div class="item" style="border-left:3px solid #8A4B4B;"><div class="grow">Aucune offre éligible : ouvrir un dossier maintenant, c\'est le découvrir au moment du paiement.</div></div>'}
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+      <div style="grid-column:1/-1;"><label class="field-label">Offre</label>
+        <select class="txt cpf" data-f="offreId">${eligibles.map((o) => `<option value="${o.id}">${esc(o.intitule)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Bénéficiaire</label><input class="txt cpf" data-f="beneficiaire"></div>
+      <div><label class="field-label">Prix (€)</label><input class="txt cpf" data-f="prix" type="number" min="0"></div>
+      <div><label class="field-label">Date d'inscription</label><input class="txt cpf" data-f="dateInscription" type="date"></div>
+      <div><label class="field-label">Début de session</label><input class="txt cpf" data-f="dateDebut" type="date">
+        <p class="hint muted" style="margin-top:4px;">Au moins ${d.delaiEntree} jours après l'inscription, sinon la session n'est pas finançable.</p></div>
+      <div><label class="field-label">Fin de session</label><input class="txt cpf" data-f="dateFin" type="date"></div>
+      <div><label class="field-label">Exonération de participation</label>
+        <select class="txt cpf" data-f="exoneration">${Object.entries(d.exonerations).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join("")}</select></div>
+    </div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="cpf-save" ${eligibles.length ? "" : "disabled"}>Créer</button></div>`);
+
+  $("#cpf-save").onclick = async () => {
+    const body = { campusId: cpfCampus };
+    $$(".cpf").forEach((i) => { if (i.value !== "") body[i.dataset.f] = i.dataset.f === "prix" ? +i.value : i.value; });
+    const r = await api.post("/api/cpf/dossiers", body);
+    if (r?.error) { alert(r.error); return; }
+    closeModals(); renderCpf();
+  };
+}
+
+async function openServiceFait(id) {
+  const s = await api.get(`/api/cpf/dossiers/${id}/service-fait`);
+  if (s?.error) { alert(s.error); return; }
+  openModal("Déclaration du service fait", `
+    <p class="muted" style="font-size:13.5px;"><b>Ces heures ne se saisissent pas.</b> Elles sont lues dans les feuilles d'émargement closes — celles de la chaîne scellée. Un service fait déclaré à la main déclare ce qu'on souhaite, pas ce qui s'est passé.</p>
+    <div class="kpis" style="margin-top:12px;">${fkpi(s.heuresPrevues + " h", "prévues")}${fkpi(s.heuresRealisees + " h", "réalisées")}
+      ${s.taux != null ? fkpi(s.taux + " %", "assiduité", s.taux === 100 ? "good" : "bad") : ""}
+      ${fkpi(s.feuillesRetenues, "feuilles closes")}</div>
+    ${s.alerte ? `<div class="item" style="border-left:3px solid #8A7A4B;margin-top:10px;"><div class="grow">${esc(s.alerte.message)}</div></div>` : ""}
+    ${s.declaration.motif ? `<div class="item" style="border-left:3px solid ${s.declaration.autorise ? "#8A7A4B" : "#8A4B4B"};margin-top:10px;"><div class="grow">${esc(s.declaration.motif)}</div></div>` : ""}
+    <p class="hint muted">${esc(s.reserve)}</p>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="sf-go" ${s.declaration.autorise ? "" : "disabled"}>Déclarer ${s.heuresRealisees} h</button></div>`);
+
+  $("#sf-go").onclick = async () => {
+    const r = await api.post(`/api/cpf/dossiers/${id}/service-fait`, {});
+    if (r?.error) { alert(r.error); return; }
+    if (r.partiel) alert(r.motif);
+    closeModals(); renderCpf();
+  };
+}
+
 // --- Catalogue et devis ---
 // Un seul écran pour la chaîne : offre → devis → convention. Les séparer
 // laisserait croire que ce sont trois sujets.
@@ -2922,6 +3023,12 @@ async function renderChantier() {
       return `<div style="margin-top:10px;">
         ${c.aRefaire != null ? `<div class="kpis">${fkpi(c.aRefaire, "indicateurs à reprendre", "bad")}${fkpi(c.nouveaux.length, "sans équivalent", "bad")}${c.jours != null ? fkpi(c.jours + " j", "avant échéance", c.jours <= 60 ? "bad" : "") : ""}</div>` : ""}
         ${c.nouveaux.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;">Exigences nouvelles : n° ${c.nouveaux.join(", ")}.</p>` : ""}</div>`;
+    }
+    if (c.cle === "cpf") {
+      if (c.sansObjet) return "";
+      return `<div style="margin-top:10px;"><div class="kpis">
+        ${fkpi(`${c.eligibles}/${c.offres}`, "offres éligibles", c.eligibles === c.offres ? "good" : "bad")}
+        ${fkpi(c.dossiers, "dossiers")}${fkpi(c.aDeclarer, "à déclarer", c.aDeclarer ? "bad" : "")}</div></div>`;
     }
     if (c.cle === "commerce") {
       return `<div style="margin-top:10px;">
