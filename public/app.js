@@ -1592,6 +1592,19 @@ async function renderCampus() {
         <div><label class="field-label">Email</label><input class="txt cf" data-f="email" value="${esc(c.email || "")}" placeholder="contact@campus.fr"></div>
         <div><label class="field-label">Téléphone</label><input class="txt cf" data-f="phone" value="${esc(c.phone || "")}" placeholder="01 23 45 67 89"></div>
       </div>
+      <!-- Identité réglementaire : ces champs étaient CONTRÔLÉS par l'écran
+           « Prêt à exploiter ? » sans être saisissables nulle part. Les points
+           bloquants qu'ils déclenchent ne pouvaient donc jamais être levés. -->
+      <div class="section-title" style="margin:16px 0 8px;">Identité réglementaire</div>
+      <p class="hint muted" style="margin-top:0;">Sans ces informations, ni le bilan pédagogique et financier ni le certificat de réalisation ne sont délivrables, et le Cerfa d'apprentissage reste incomplet.</p>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+        <div><label class="field-label">SIRET</label><input class="txt cf" data-f="siret" value="${esc(c.siret || "")}" placeholder="14 chiffres"></div>
+        <div><label class="field-label">N° de déclaration d'activité</label><input class="txt cf" data-f="numeroDeclaration" value="${esc(c.numeroDeclaration || "")}" placeholder="11 93 00000 93"></div>
+        <div><label class="field-label">Code UAI</label><input class="txt cf" data-f="uai" value="${esc(c.uai || "")}" placeholder="identifie l'établissement sur SOLTéA"></div>
+        <div><label class="field-label">Représentant légal</label><input class="txt cf" data-f="dirigeant" value="${esc(c.dirigeant || "")}"></div>
+        <div><label class="field-label">Référent handicap</label><input class="txt cf" data-f="referentHandicap" value="${esc(c.referentHandicap || "")}"></div>
+        <div><label class="field-label">Référent mobilité</label><input class="txt cf" data-f="referentMobilite" value="${esc(c.referentMobilite || "")}"></div>
+      </div>
       <div style="margin-top:10px;"><button class="btn-ghost btn-sm save-campus" data-id="${c.id}">Enregistrer la fiche</button> <span class="status save-msg" data-id="${c.id}"></span></div>
 
       <div class="section-title" style="margin:16px 0 8px;">Objectifs & budget (cibles)</div>
@@ -5311,6 +5324,8 @@ function openOuvertureForm(o) {
       <div><label class="field-label">Région</label><input class="txt ouf" data-f="region" value="${esc(e.region || "")}"></div>
       <div><label class="field-label">Date de rentrée (cible)</label><input class="txt ouf" data-f="targetDate" type="date" value="${esc(e.targetDate || "")}"></div>
       <div><label class="field-label">Budget d'ouverture (€)</label><input class="txt ouf" data-f="budget" type="number" value="${e.budget ?? ""}"></div>
+      <div><label class="field-label">Durée du projet (mois avant la rentrée)</label><input class="txt ouf" data-f="dureeMois" type="number" min="12" max="24" step="0.5" value="${e.dureeMois ?? ""}" placeholder="15 (modèle)">
+        <p class="hint muted" style="margin-top:4px;">Raccourcir ne comprime que l'amont — étude, décision, recherche du local. Les délais subis (opposition du recteur, instruction ERP, chantier, fournisseurs, commission de sécurité) gardent leur date.</p></div>
       ${o ? `<div><label class="field-label">Statut</label><select class="txt ouf" data-f="status">${Object.entries(OUV_STATUS).map(([k, l]) => `<option value="${k}" ${e.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : ""}
       <div style="grid-column:1/-1;"><label class="field-label">Notes</label><input class="txt ouf" data-f="notes" value="${esc(e.notes || "")}"></div>
     </div>

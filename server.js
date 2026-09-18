@@ -69,7 +69,10 @@ import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, QUALIOPI_VERS
 import { analyseChain, planRebase, applyRebase } from "./lib/chain.js";
 import * as backup from "./lib/backup.js";
 import { sendSessionMail, convocationHtml, compteRenduHtml, destinataires, runSessionReminders } from "./lib/copil.js";
-import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours, buildOpeningTasks, buildOpeningBudget } from "./lib/calc.js";
+import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours, buildOpeningTasks, buildOpeningBudget, OPENING_DUREE_REF, OPENING_DUREE_MIN } from "./lib/calc.js";
+// Duree visee d'un projet : celle du projet si elle est saisie, sinon celle du modele.
+// Bornee au plancher tenable — en dessous, la chaine reglementaire ne rentre plus.
+const dureeDe = (o) => (Number(o?.dureeMois) > 0 ? Math.max(OPENING_DUREE_MIN, Number(o.dureeMois)) : OPENING_DUREE_REF);
 import { validateBody } from "./lib/validators.js";
 import { testConnection as siTestConnection, syncCampus as siSyncCampus, parseFrDate } from "./lib/si.js";
 import { testConnection as sfTestConnection, fetchCandidates as sfFetchCandidates } from "./lib/salesforce.js";
@@ -3492,7 +3495,7 @@ app.post("/api/openings/:id/apply-settings", requireAuth, requireAdmin, (req, re
   const o = store.getOpening(req.params.id);
   if (!o) return res.status(404).json({ error: "introuvable" });
   if (!o.targetDate) return res.status(400).json({ error: "renseigne d'abord la date de rentrée" });
-  const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings());
+  const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings(), dureeDe(o));
   const avant = o.tasks || [];
   // Appariement par CLEF de modèle, avec repli sur le titre pour les rétroplannings
   // générés avant l'existence de la clef. Apparier au titre seul perdait la tâche dès
@@ -3531,7 +3534,7 @@ app.get("/api/openings/:id", requireAuth, requireAdmin, (req, res) => { const o 
 app.post("/api/openings", requireAuth, requireAdmin, (req, res) => {
   if (!req.body?.name || !String(req.body.name).trim()) return res.status(400).json({ error: "nom requis" });
   const o = store.addOpening(req.body);
-  if (req.body.seed !== false && o.targetDate) store.setOpeningTasks(o.id, buildOpeningTasks(o.targetDate, store.getOpeningSettings()));
+  if (req.body.seed !== false && o.targetDate) store.setOpeningTasks(o.id, buildOpeningTasks(o.targetDate, store.getOpeningSettings(), dureeDe(o)));
   logAudit(req, "create", "opening", o.name);
   res.json(store.getOpening(o.id));
 });
@@ -3572,7 +3575,7 @@ app.post("/api/openings/:id/seed", requireAuth, requireAdmin, (req, res) => {
   if (!o) return res.status(404).json({ error: "introuvable" });
   if (!o.targetDate) return res.status(400).json({ error: "renseigne d'abord la date de rentrée" });
   const merge = req.body?.merge === true;
-  const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings());
+  const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings(), dureeDe(o));
   store.setOpeningTasks(o.id, merge ? [...(o.tasks || []), ...seeded] : seeded);
   logAudit(req, "seed", "opening", `${o.name} — rétroplanning type`);
   res.json(store.getOpening(o.id));

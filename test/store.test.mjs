@@ -9,6 +9,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "cmtest-"));
 process.env.DATA_KEY = "test-key-abc123";
 const store = await import("../lib/store.js");
 const { buildOpeningTasks, buildOpeningBudget } = await import("../lib/calc.js");
+const demarrage = await import("../lib/demarrage.js");
 
 test("campus : create + list", () => {
   const c = store.addCampus({ name: "Test Nantes", city: "Nantes" });
@@ -298,5 +299,34 @@ test("sauvegarde fichier : refusée en base, jamais silencieuse", async () => {
     assert.deepEqual(enBase.listBackupsMeta(), [], "ne présente pas des copies périmées comme l'état sauvegardé");
   } finally {
     delete process.env.DATABASE_URL;
+  }
+});
+
+// TOUT CE QUE LE CONTRÔLE DE MISE EN SERVICE VÉRIFIE DOIT ÊTRE ENREGISTRABLE.
+//
+// `referentHandicap` était contrôlé par lib/demarrage.js sans figurer dans la
+// liste blanche du store : le point ne pouvait être levé sur aucun campus,
+// jamais. Une alerte permanente qu'on ne peut pas éteindre n'alerte plus —
+// elle apprend à ignorer l'écran qui la porte.
+test("les champs de campus contrôlés au démarrage sont réellement enregistrables", () => {
+  const c = store.addCampus({
+    name: "Contrôle", siret: "12345678900012", numeroDeclaration: "11930000000",
+    dirigeant: "S. Francese", referentHandicap: "C. Martin", referentMobilite: "P. Sivan",
+    uai: "0931234X", address: "1 rue du Test",
+  });
+  for (const f of ["siret", "numeroDeclaration", "dirigeant", "referentHandicap", "referentMobilite", "uai", "address"]) {
+    assert.ok(c[f], `${f} perdu à la création`);
+  }
+  // Et modifiables ensuite : un champ qu'on ne peut poser qu'à la création se
+  // retrouve bloqué sur tous les campus déjà existants.
+  const maj = store.updateCampus(c.id, { referentHandicap: "A. Nouveau", numeroDeclaration: "11930000099" });
+  assert.equal(maj.referentHandicap, "A. Nouveau");
+  assert.equal(maj.numeroDeclaration, "11930000099");
+
+  // Le contrôle ne doit plus rien reprocher sur ces points.
+  const restants = demarrage.controler({ campus: maj, curricula: [{ modules: [{}] }], classes: [{}], teachers: [{}] })
+    .points.map((p) => p.cle);
+  for (const cle of ["siret", "nda", "dirigeant", "referent_handicap", "adresse", "nom"]) {
+    assert.equal(restants.includes(cle), false, `« ${cle} » reproché alors que le champ est renseigné`);
   }
 });
