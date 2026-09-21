@@ -4,7 +4,11 @@ import { controler, parEcran, NIVEAUX } from "../lib/demarrage.js";
 
 const complet = {
   campus: { name: "CFA Lumière", siret: "73282932000074", numeroDeclaration: "11 75 12345 75",
-    dirigeant: "Mme Martin", address: "1 rue X", referentHandicap: "M. Dupont", hours: { lun: [["08:00", "18:00"]] } },
+    dirigeant: "Mme Martin", address: "1 rue X", referentHandicap: "M. Dupont",
+    // `openingHours` et non `hours` : le contrôle regarde ce qui a été DÉCLARÉ.
+    // Le champ `hours` était la sortie d'un lecteur qui retombe toujours sur un
+    // défaut — s'y fier rendait l'alerte impossible à déclencher.
+    openingHours: { lun: [["08:00", "18:00"]] } },
   settings: { planComptable: { client: "411000" }, rgpd: { register: [{ data: "Identité" }] } },
   curricula: [{ id: "c1", name: "BTS", blocks: [{ id: "b1" }] }],
   classes: [{ id: "k1" }],
@@ -121,4 +125,26 @@ test("les points sont triés par gravité et regroupés par écran — c'est ain
   assert.ok(groupes[0].points.every((p) => p.ou === groupes[0].ecran));
   // Le groupe le plus grave passe en premier.
   assert.equal(groupes[0].points[0].niveau, "bloquant");
+});
+
+// UN CONTRÔLE QUI NE PEUT JAMAIS SE DÉCLENCHER NE CONTRÔLE RIEN.
+//
+// Celui-ci lisait la sortie de getCampusHours(), qui retombe TOUJOURS sur
+// 08 h–18 h. La condition ne pouvait donc jamais être vraie : l'alerte n'est
+// jamais apparue, et un campus restait sur des horaires par défaut sans que
+// personne ne le sache. C'est le symétrique du champ lu mais jamais écrit.
+test("les horaires se contrôlent sur ce qui est DÉCLARÉ, pas sur ce que le lecteur renvoie", () => {
+  const base = { campus: { name: "X" }, curricula: [{ modules: [{}] }], classes: [{}], teachers: [{}] };
+
+  // Rien de déclaré : l'alerte doit partir, même si un lecteur renverrait un défaut.
+  const sans = controler({ ...base, settings: { hours: { lun: [["08:00", "18:00"]] } } });
+  assert.ok(sans.points.find((p) => p.cle === "horaires"), "un défaut servi par le lecteur ne vaut pas déclaration");
+
+  // Des horaires réellement déclarés : plus d'alerte.
+  const avec = controler({ ...base, settings: { openingHours: { lun: [["09:00", "17:00"]] } } });
+  assert.equal(avec.points.some((p) => p.cle === "horaires"), false);
+
+  // Déclarés sur le campus lui-même : même résultat.
+  const surCampus = controler({ ...base, campus: { name: "X", openingHours: { mar: [["09:00", "17:00"]] } } });
+  assert.equal(surCampus.points.some((p) => p.cle === "horaires"), false);
 });

@@ -6809,7 +6809,14 @@ app.get("/api/demarrage", requireAuth, (req, res) => {
 
   res.json(demarrage.controler({
     campus,
-    settings: { ...settings, hours: store.getCampusHours ? store.getCampusHours(campusId) : null },
+    // `hours` reste servi pour l'affichage, mais le contrôle regarde
+    // `openingHours` BRUT : getCampusHours() retombant toujours sur 08 h–18 h,
+    // lui passer sa sortie rendait l'alerte impossible à déclencher.
+    settings: {
+      ...settings,
+      hours: store.getCampusHours ? store.getCampusHours(campusId) : null,
+      openingHours: campus?.openingHours || null,
+    },
     curricula: store.listCurricula(),
     classes: store.listClasses({ campusId }),
     teachers: store.listTeachers({ campusId }),
