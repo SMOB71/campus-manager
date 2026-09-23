@@ -52,6 +52,7 @@ import * as real from "./lib/realisation.js";
 import * as cpf from "./lib/cpf.js";
 import * as demarrage from "./lib/demarrage.js";
 import * as proj from "./lib/projets.js";
+import * as copilproj from "./lib/copilprojet.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -73,7 +74,7 @@ import { planOuverture } from "./lib/pack/ouverture.js";
 import { piece as piecePack, zipper as zipperPack, nomZip as nomZipPack, inventaire as inventairePack } from "./lib/pack/index.js";
 import * as backup from "./lib/backup.js";
 import { sendSessionMail, convocationHtml, compteRenduHtml, destinataires, runSessionReminders } from "./lib/copil.js";
-import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours, buildOpeningTasks, buildOpeningBudget, OPENING_DUREE_REF, OPENING_DUREE_MIN } from "./lib/calc.js";
+import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_DEPTS, OPENING_SOURCES, OPENING_FAMILIES, deptOf, loiDe, dateMoinsJours, buildOpeningTasks, buildOpeningBudget, OPENING_DUREE_REF, OPENING_DUREE_MIN } from "./lib/calc.js";
 // Duree visee d'un projet : celle du projet si elle est saisie, sinon celle du modele.
 // Bornee au plancher tenable — en dessous, la chaine reglementaire ne rentre plus.
 const dureeDe = (o) => (Number(o?.dureeMois) > 0 ? Math.max(OPENING_DUREE_MIN, Number(o.dureeMois)) : OPENING_DUREE_REF);
@@ -1858,6 +1859,165 @@ app.get("/api/projets/:id/export", requireAuth, (req, res) => {
     "Budget prévu €": t.budgetPrevu || "", "Budget dépensé €": t.budgetDepense || "",
   }));
   sendXlsx(res, "Planning", lignes, `projet-${String(p.nom || "").replace(/[^\w-]+/g, "-").toLowerCase()}.xlsx`);
+});
+
+// --- Comité de pilotage d'un projet ------------------------------------------
+// L'ordre du jour ne se prépare plus : il se DÉDUIT du plan. Trois pièces, et
+// elles ne valent que montées ensemble :
+//   1. une règle de récurrence qui fait exister les séances d'avance ;
+//   2. un ordre du jour reconstruit depuis le planning avant chaque séance ;
+//   3. un drapeau qui fait taire le remplissage dès qu'un humain a repris la main.
+// Sans la 1, « chaque semaine » dépend de quelqu'un qui y pense. Sans la 3,
+// l'automatisme écrase les ajouts et se fait couper au bout d'un mois.
+
+function contexteProjetPour(projetId) {
+  const p = store.getProjet(projetId);
+  if (!p) return null;
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const plan = planDe(p, taches);
+  return {
+    projet: p, plan,
+    charge: plan.ok ? proj.charge(plan) : null,
+    derive: plan.ok && p.reference ? proj.derive(plan, p.reference) : null,
+    journal: store.listProjetJournal({ projetId: p.id, max: 200 }),
+  };
+}
+
+// L'ordre du jour d'UNE séance : la séance précédente est celle qui la précède
+// vraiment, pas la dernière du comité — préparer une séance décalée ne doit pas
+// remonter les décisions d'une séance qui n'a pas encore eu lieu.
+function odjDeSeance(committee, session) {
+  if (committee?.scope !== "projet" || !committee.scopeId) return null;
+  const ctx = contexteProjetPour(committee.scopeId);
+  if (!ctx) return null;
+  const avant = (committee.sessions || [])
+    .filter((x) => x.date && x.id !== session?.id && (!session?.date || x.date < session.date))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return {
+    ...ctx,
+    odj: copilproj.ordreDuJour({
+      projet: ctx.projet, plan: ctx.plan, charge: ctx.charge, derive: ctx.derive,
+      journal: ctx.journal, seancePrecedente: avant[avant.length - 1] || null,
+      aujourdhui: aujourdhuiISO(),
+    }),
+  };
+}
+
+// Entretien quotidien : crée les séances à venir, puis remplit les ordres du
+// jour qui doivent l'être. Idempotent de bout en bout — il tourne tous les
+// jours et ne doit produire un effet que lorsqu'il manque quelque chose.
+function entretenirComitesProjet(aujourdhui = aujourdhuiISO()) {
+  const out = { seances: 0, odj: 0, comites: 0, erreurs: [] };
+  for (const c of store.listCommittees()) {
+    try {
+      if (c.cadenceRegle) {
+        const aCreer = copilproj.prochainesSeances(c.cadenceRegle, { aujourdhui, existantes: c.sessions || [] });
+        for (const s of aCreer) { store.addSession(c.id, s); out.seances++; }
+        if (aCreer.length) out.comites++;
+      }
+      if (c.scope !== "projet" || !c.scopeId) continue;
+      const regle = copilproj.normaliserRegle(c.cadenceRegle) || { odjAuto: true, odjAvantJours: 10 };
+      if (!regle.odjAuto) continue;
+      const frais = store.getCommittee(c.id);      // relecture : les séances viennent d'être créées
+      for (const s of frais?.sessions || []) {
+        if (!s.date || s.status === "held" || s.agendaAuto === false) continue;
+        const dans = Math.round((new Date(s.date) - new Date(aujourdhui)) / 86400000);
+        if (dans < 0 || dans > regle.odjAvantJours) continue;
+        const r = odjDeSeance(frais, s);
+        if (!r?.odj) continue;
+        const items = copilproj.versAgendaItems(r.odj);
+        // On n'écrit que si le contenu a changé : réécrire à l'identique tous
+        // les jours ferait tourner la détection de modification du magasin pour
+        // rien, et brouillerait l'horodatage qui dit quand l'ordre du jour a
+        // réellement bougé.
+        const avant = JSON.stringify((s.agendaItems || []).map((x) => x.text));
+        if (avant === JSON.stringify(items.map((x) => x.text))) continue;
+        store.updateSession(c.id, s.id, { agendaItems: items }, { auto: true });
+        out.odj++;
+      }
+    } catch (e) { out.erreurs.push(`${c.name} : ${e?.message || e}`); }
+  }
+  return out;
+}
+
+// Mise en place depuis la fiche projet : un bouton, et le comité existe avec
+// ses dix prochaines séances déjà datées et leur ordre du jour rempli.
+app.post("/api/projets/:id/copil", requireAuth, requireAdmin, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const deja = store.listCommittees({ scope: "projet", scopeId: p.id })[0];
+  if (deja) return res.status(409).json({ error: `« ${deja.name} » pilote déjà ce projet`, committeeId: deja.id });
+
+  const regle = copilproj.normaliserRegle({ type: "hebdo", jourSemaine: 2, heure: "09:00", ...(req.body?.cadenceRegle || {}) });
+  if (!regle) return res.status(400).json({ error: `cadence inconnue (${Object.keys(copilproj.CADENCES).join(", ")})` });
+  const membres = Array.isArray(req.body?.members) && req.body.members.length
+    ? req.body.members
+    : (p.pilote ? [{ name: p.pilote, role: "pilote du projet" }] : []);
+
+  const c = store.addCommittee({
+    scope: "projet", scopeId: p.id,
+    name: req.body?.name || `COPIL — ${p.nom}`,
+    cadence: copilproj.libelleRegle(regle),
+    cadenceRegle: regle,
+    members: membres,
+  });
+  const bilan = entretenirComitesProjet();
+  logAudit(req, "create", "copil-projet", `${c.name} (${copilproj.libelleRegle(regle)})`);
+  res.json({ committee: store.getCommittee(c.id), ...bilan });
+});
+
+// État du comité vu depuis le projet : la prochaine séance et son ordre du jour.
+app.get("/api/projets/:id/copil", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const c = store.listCommittees({ scope: "projet", scopeId: p.id })[0] || null;
+  if (!c) return res.json({ committee: null, cadences: copilproj.CADENCES });
+  const auj = aujourdhuiISO();
+  const aVenir = (c.sessions || []).filter((s) => s.date && s.date >= auj && s.status !== "held").sort((a, b) => a.date.localeCompare(b.date));
+  const prochaine = aVenir[0] || null;
+  const r = prochaine ? odjDeSeance(c, prochaine) : null;
+  res.json({
+    committee: { id: c.id, name: c.name, cadence: c.cadence, cadenceRegle: c.cadenceRegle, members: c.members },
+    cadences: copilproj.CADENCES,
+    prochaine, aVenir: aVenir.slice(0, 12).map((s) => ({ id: s.id, date: s.date, time: s.time, agendaAuto: s.agendaAuto, points: (s.agendaItems || []).length })),
+    odj: r?.odj || null,
+    markdown: r?.odj ? copilproj.versMarkdown(r.odj, { projet: p, seance: prochaine }) : "",
+  });
+});
+
+// Aperçu, sans écrire : ce que l'ordre du jour dirait s'il était rempli maintenant.
+app.get("/api/committees/:id/sessions/:sid/agenda-projet", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCommittee(req.params.id);
+  if (!c) return res.status(404).json({ error: "comité introuvable" });
+  const s = (c.sessions || []).find((x) => x.id === req.params.sid);
+  if (!s) return res.status(404).json({ error: "séance introuvable" });
+  const r = odjDeSeance(c, s);
+  if (!r) return res.status(400).json({ error: "ce comité n'est pas rattaché à un projet" });
+  res.json({ odj: r.odj, markdown: copilproj.versMarkdown(r.odj, { projet: r.projet, seance: s }), items: copilproj.versAgendaItems(r.odj) });
+});
+
+// Remplissage à la demande. `reprendre` force la reprise en main automatique
+// d'une séance qu'un humain avait éditée — il faut le demander explicitement,
+// parce que cela écrase sa saisie.
+app.post("/api/committees/:id/sessions/:sid/agenda-auto", requireAuth, requireAdmin, (req, res) => {
+  const c = store.getCommittee(req.params.id);
+  if (!c) return res.status(404).json({ error: "comité introuvable" });
+  const s = (c.sessions || []).find((x) => x.id === req.params.sid);
+  if (!s) return res.status(404).json({ error: "séance introuvable" });
+  const r = odjDeSeance(c, s);
+  if (!r) return res.status(400).json({ error: "ce comité n'est pas rattaché à un projet" });
+  if (s.agendaAuto === false && !req.body?.reprendre) {
+    return res.status(409).json({
+      error: "cet ordre du jour a été repris à la main : le remplissage automatique s'est retiré de cette séance. Confirmer écrasera la saisie.",
+      forcable: true,
+    });
+  }
+  if (s.agendaAuto === false) store.updateSession(c.id, s.id, { agendaAuto: true });
+  const out = store.updateSession(c.id, s.id, { agendaItems: copilproj.versAgendaItems(r.odj) }, { auto: true });
+  logAudit(req, "update", "copil-projet", `ordre du jour rempli depuis le plan — ${c.name}`);
+  res.json({ session: out, odj: r.odj });
 });
 
 // --- Contrats des intervenants ---
@@ -3939,7 +4099,7 @@ app.delete("/api/scenarios/:id", requireAuth, requireAdmin, (req, res) => {
 });
 
 // ===== Ouvertures de campus (rétroplanning) — modèle/logique dans lib/calc.js =====
-app.get("/api/openings/meta", requireAuth, (req, res) => res.json({ lots: OPENING_LOTS, families: OPENING_FAMILIES }));
+app.get("/api/openings/meta", requireAuth, (req, res) => res.json({ lots: OPENING_LOTS, depts: OPENING_DEPTS, families: OPENING_FAMILIES }));
 
 // Paramètres d'ouverture au niveau RÉSEAU : jalons de convention, seuils de validation
 // budgétaire, délais fournisseurs réels. Lecture ouverte aux authentifiés (le front en a
@@ -4375,20 +4535,22 @@ app.post("/api/committees/:id/sessions/:sid/agenda-draft", requireAuth, requireA
 });
 
 const OPENING_STATUS_LBL = { todo: "À faire", doing: "En cours", done: "Fait", blocked: "Bloqué" };
-function buildOpeningHtml(o) {
+// `dept` restreint la feuille à une direction : c'est CE document qu'on imprime
+// vraiment — celui qu'un directeur relit, annote et signe. Le rétroplanning
+// complet, lui, se consulte à l'écran ; sur papier il fait cinquante pages que
+// personne ne lit.
+function buildOpeningHtml(o, dept = "") {
   const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const tasks = (o.tasks || []).slice();
-  const done = tasks.filter((t) => t.status === "done").length;
-  const pct = tasks.length ? Math.round(done / tasks.length * 100) : 0;
-  const critLeft = tasks.filter((t) => t.critical && t.status !== "done").length;
   const today = new Date().toISOString().slice(0, 10);
-  const late = tasks.filter((t) => t.status !== "done" && t.dueDate && t.dueDate < today).length;
   let daysToOpen = null;
   if (o.targetDate) { const d = Math.round((new Date(o.targetDate) - new Date()) / 864e5); daysToOpen = d; }
   const badge = (s) => `<span class="badge ${s === "done" ? "b-good" : s === "blocked" ? "b-bad" : s === "doing" ? "b-warn" : "b-todo"}">${OPENING_STATUS_LBL[s] || s}</span>`;
   const kpi = (v, l, tone) => `<div class="k${tone ? " k-" + tone : ""}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  const dir = OPENING_DEPTS.find((d) => d.k === dept) || null;
+  const miennes = dir ? tasks.filter((t) => deptOf(t) === dir.k) : tasks;
   const lotSections = OPENING_LOTS.map((lot) => {
-    const items = tasks.filter((t) => t.lot === lot.k).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+    const items = miennes.filter((t) => t.lot === lot.k).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
     if (!items.length) return "";
     const dn = items.filter((t) => t.status === "done").length;
     return `<h2>${esc(lot.l)} <span class="muted" style="font-family:inherit;font-size:12px;font-weight:400;">— ${dn}/${items.length}</span></h2>
@@ -4397,6 +4559,43 @@ function buildOpeningHtml(o) {
       return `<tr><td>${esc(t.title)}</td><td class="c${lateT ? " neg" : ""}">${t.dueDate ? (lateT ? "⏰ " : "") + esc(t.dueDate) : "—"}</td><td>${esc(t.owner || "—")}</td><td class="c">${badge(t.status)}</td><td class="c">${t.critical ? "●" : ""}</td></tr>`;
     }).join("")}</tbody></table>`;
   }).join("");
+  const done = miennes.filter((t) => t.status === "done").length;
+  const pct = miennes.length ? Math.round(done / miennes.length * 100) : 0;
+  const critLeft = miennes.filter((t) => t.critical && t.status !== "done").length;
+  const late = miennes.filter((t) => t.status !== "done" && t.dueDate && t.dueDate < today).length;
+
+  // Les échéances que cette direction ne peut pas rediscuter. Sans elles, un
+  // directeur conteste une date posée par une mairie et le comité perd une séance.
+  const imposees = miennes.map((t) => ({ ...t, loi: loiDe(t) })).filter((t) => t.loi);
+  const sourcesVues = [...new Set(imposees.map((t) => t.loi))];
+  const blocLegal = imposees.length ? `<h2>Échéances imposées — non négociables</h2>
+    <p class="sub">Ces dates sont posées par un texte ou par le calendrier d'un tiers. Vous pouvez contester le porteur, pas la date.</p>
+    ${sourcesVues.map((k) => {
+      const src = OPENING_SOURCES[k];
+      return `<p style="margin:14px 0 4px;"><b>${esc(src.texte)}</b></p>
+      <p class="sub" style="margin:0 0 6px;">${esc(src.regle)}</p>
+      <table><tbody>${imposees.filter((t) => t.loi === k).map((t) =>
+        `<tr><td class="c" style="width:110px;font-weight:600;">${esc(t.dueDate || "—")}</td><td>${esc(t.title)}</td></tr>`).join("")}</tbody></table>
+      <p class="sub" style="font-size:10.5px;margin:4px 0 0;">Source : ${esc(src.url)}</p>`;
+    }).join("")}` : "";
+
+  // Bloc de signature : une feuille qu'on imprime pour la faire valider doit
+  // porter l'endroit où on la valide.
+  const blocSignature = dir ? `<h2>Validation</h2>
+    <p class="sub">Je confirme que les actions ci-dessus relèvent de ma direction, et je m'engage sur leurs échéances.</p>
+    <table><thead><tr><th>Direction</th><th>Nom</th><th>Date</th><th>Signature</th></tr></thead>
+    <tbody><tr><td>${esc(dir.l)}</td><td style="height:44px;"></td><td></td><td></td></tr></tbody></table>
+    <p class="sub" style="margin-top:10px;">Points contestés, à reprendre en comité :</p>
+    <table><tbody><tr><td style="height:70px;"></td></tr></tbody></table>` : "";
+
+  // Depuis la feuille complète, un lien vers chaque direction : c'est là qu'on
+  // cherche à imprimer, pas dans un menu de l'application.
+  const parDirection = dir ? "" : `<div class="toolbar" style="justify-content:flex-start;gap:8px;flex-wrap:wrap;padding-top:0;">
+    <span class="sub" style="margin:0 4px 0 0;align-self:center;">Imprimer une direction :</span>
+    ${OPENING_DEPTS.filter((d) => tasks.some((t) => deptOf(t) === d.k)).map((d) =>
+      `<a href="?format=print&amp;dept=${d.k}" style="font-size:12.5px;color:var(--teal);font-weight:600;align-self:center;">${esc(d.l)}</a>`).join(" · ")}
+  </div>`;
+
   const now = new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
   const meta = [o.city, o.targetDate ? "Rentrée " + o.targetDate : null, o.status].filter(Boolean).join(" · ");
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Rétroplanning — ${esc(o.name)}</title>
@@ -4433,23 +4632,26 @@ function buildOpeningHtml(o) {
   @media print{body{background:#fff;} .toolbar{display:none;} .sheet{box-shadow:none;max-width:none;margin:0;padding:0;} h2,tr{break-inside:avoid;} thead{display:table-header-group;}}
 </style></head><body>
   <div class="toolbar"><button onclick="window.print()">Imprimer / Enregistrer en PDF</button></div>
+  ${parDirection}
   <div class="sheet">
     <div class="letterhead">
       <div class="brand"><svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="26" height="26" rx="7" fill="#0D1B2A"/><rect x="36" y="2" width="26" height="26" rx="7" fill="#0B6E5F"/><rect x="2" y="36" width="26" height="26" rx="7" fill="#0B6E5F"/><circle cx="49" cy="49" r="13" fill="#FF6A4D"/></svg><div class="wm"><b>Campus Manager</b><span>Pilotage réseau</span></div></div>
-      <div class="doctype">Ouverture · Rétroplanning</div>
+      <div class="doctype">${dir ? "Ouverture · Feuille de direction" : "Ouverture · Rétroplanning"}</div>
     </div>
     <hr class="rule">
-    <div class="eyebrow">Rétroplanning d'ouverture</div>
+    <div class="eyebrow">${dir ? esc(dir.l) : "Rétroplanning d'ouverture"}</div>
     <h1>${esc(o.name)}</h1>
-    <div class="sub">${esc(meta)}</div>
+    <div class="sub">${esc(meta)}${dir ? ` · ${miennes.length} action${miennes.length > 1 ? "s" : ""} portée${miennes.length > 1 ? "s" : ""} par cette direction` : ""}</div>
     <div class="kpis">
       ${kpi(pct + " %", "Avancement", pct >= 66 ? "good" : "")}
-      ${kpi(done + "/" + tasks.length, "Tâches faites")}
+      ${kpi(done + "/" + miennes.length, "Tâches faites")}
       ${kpi(critLeft, "Critiques restantes", critLeft ? "bad" : "good")}
       ${kpi(late, "En retard", late ? "bad" : "good")}
     </div>
     ${daysToOpen != null ? `<div class="sub">${daysToOpen >= 0 ? "J−" + daysToOpen + " avant la rentrée" : "Rentrée passée depuis " + (-daysToOpen) + " j"}</div>` : ""}
     ${lotSections || '<p class="muted">Aucune tâche.</p>'}
+    ${blocLegal}
+    ${blocSignature}
     <div class="foot"><span>Campus Manager — document confidentiel · ● = chemin critique</span><span>Généré le ${now}</span></div>
   </div>
 </body></html>`;
@@ -4516,7 +4718,7 @@ app.get("/api/openings/:id/export", requireAuth, requireAdmin, (req, res) => {
   if (!o) return res.status(404).json({ error: "introuvable" });
   if (req.query.format === "print") {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    return res.send(buildOpeningHtml(o));
+    return res.send(buildOpeningHtml(o, String(req.query.dept || "")));
   }
   const rows = (o.tasks || []).slice().sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")).map((t) => ({
     Lot: OPENING_LOTS.find((l) => l.k === t.lot)?.l || t.lot, "Tâche": t.title, "Échéance": t.dueDate || "", Responsable: t.owner || "", Statut: OPENING_STATUS_LBL[t.status] || t.status, "Chemin critique": t.critical ? "Oui" : "",
@@ -5408,6 +5610,22 @@ if (alertCfg.to && mailConfigured && process.env.WEEKLY_DIGEST !== "off" && cron
       .catch((e) => console.error("[weekly] echec :", e?.message || e));
   }, { timezone: "Europe/Paris" });
   console.log(`[weekly] digest reseau planifie (${weeklyCron}, Europe/Paris) -> ${alertCfg.to}`);
+}
+
+// Entretien des comités de projet (tous les jours 6h). VOLONTAIREMENT SÉPARÉ des
+// rappels ci-dessous : ceux-là ne tournent que si la messagerie est configurée,
+// alors que créer les séances et remplir les ordres du jour n'envoie rien et
+// doit fonctionner sur une instance sans courriel.
+const copilEntretienCron = process.env.COPIL_ENTRETIEN_CRON || "0 6 * * *";
+if (process.env.COPIL_ENTRETIEN !== "off" && cron.validate(copilEntretienCron)) {
+  cron.schedule(copilEntretienCron, () => {
+    try {
+      const r = entretenirComitesProjet();
+      if (r.seances || r.odj) console.log(`[copil-projet] ${r.seances} seance(s) creee(s), ${r.odj} ordre(s) du jour rempli(s)`);
+      if (r.erreurs.length) console.error("[copil-projet] echecs :", r.erreurs.join(" | "));
+    } catch (e) { console.error("[copil-projet] echec :", e?.message || e); }
+  }, { timezone: "Europe/Paris" });
+  console.log(`[copil-projet] entretien planifie (${copilEntretienCron}, Europe/Paris)`);
 }
 
 // Rappels de comité (tous les jours 7h30) : convocation à J-7, rappel à J-1, relance du

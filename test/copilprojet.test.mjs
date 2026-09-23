@@ -75,7 +75,9 @@ test("ODJ — les trois chiffres, toujours les mêmes, toujours en tête", () =>
 });
 
 test("ODJ — il SE TAIT quand rien ne cloche, au lieu de meubler", () => {
-  const p = plan([t("a", { dureeJours: 5 })]);
+  // Une tâche qui commence aujourd'hui commence À L'HEURE, et quelqu'un est
+  // nommé dessus : il n'y a rien à trancher.
+  const p = plan([t("a", { dureeJours: 5, responsable: "Marc" })]);
   const odj = ordreDuJour({ projet: PROJET, plan: p, aujourdhui: LUNDI });
   assert.equal(odj.vide, true);
   assert.match(odj.note, /Rien ne bloque/);
@@ -92,7 +94,7 @@ test("ODJ — une échéance franchie fait un point par échéance, avec l'arbit
   const pt = odj.points.find((x) => x.cle.startsWith("echeance-"));
   assert.ok(pt, "un point par échéance dépassée");
   assert.equal(pt.gravite, "bloquant");
-  assert.match(pt.titre, /dépasse son échéance de 5 jour/);
+  assert.match(pt.titre, /dépasse son échéance de 6 jour/);  // le jalon tombe le 19, pas le 16
   assert.match(pt.decision, /réduire le contenu|acter la nouvelle date/);
   assert.equal(odj.vide, false);
 });
@@ -143,17 +145,41 @@ test("ODJ — reprend les décisions du comité précédent arrivées à terme",
   assert.match(pt.decision, /soldée, ou nouvelle échéance/);
 });
 
-test("ODJ — tâche critique qui devrait être lancée et ne l'est pas", () => {
-  const p = plan([
+test("ODJ — « à lancer » n'est pas « en retard » : on ne crie qu'à bon escient", () => {
+  const taches = [
     t("a", { titre: "Reprise des données", dureeJours: 10, responsable: "Marc" }),
     t("b", { dureeJours: 5, liens: [{ deId: "a", type: "FD" }] }),
-  ], PROJET, "2026-01-12");
-  const odj = ordreDuJour({ projet: PROJET, plan: p, aujourdhui: "2026-01-12" });
+  ];
+  // Départ aujourd'hui, responsable nommé : simple confirmation, pas d'alerte.
+  const odj = ordreDuJour({ projet: PROJET, plan: plan(taches, PROJET, "2026-01-12"), aujourdhui: "2026-01-12" });
   const pt = odj.points.find((x) => x.cle === "a-lancer");
-  assert.ok(pt);
-  assert.equal(pt.gravite, "bloquant");
-  assert.match(pt.decision, /qui lance quoi/);
+  assert.equal(pt.gravite, "info");
+  assert.match(pt.titre, /à lancer d'ici le prochain comité/);
   assert.equal(pt.porteur, "Marc");
+
+  // Personne de nommé : là, le comité a quelque chose à trancher.
+  const orpheline = ordreDuJour({ projet: PROJET, plan: plan([t("z", { dureeJours: 4 })], PROJET, "2026-01-12"), aujourdhui: "2026-01-12" });
+  const po = orpheline.points.find((x) => x.cle === "a-lancer");
+  assert.equal(po.gravite, "important");
+  assert.match(po.decision, /nommer un responsable/);
+});
+
+test("ODJ — LE RETARD DE LANCEMENT ne se voit que contre une référence figée", () => {
+  // Le plan recalculé replace toujours une tâche non commencée à aujourd'hui :
+  // sans référence, le retard de démarrage a disparu du planning lui-même.
+  const taches = [t("a", { titre: "Reprise des données", dureeJours: 10, responsable: "Marc" })];
+  const ref = prendreReference(plan(taches));
+  const tard = plan(taches, PROJET, "2026-01-19");
+  const odj = ordreDuJour({ projet: PROJET, plan: tard, derive: derive(tard, ref), aujourdhui: "2026-01-19" });
+  const pt = odj.points.find((x) => x.cle === "retard-lancement");
+  assert.ok(pt, "un retard de lancement est attendu");
+  assert.equal(pt.gravite, "bloquant");
+  assert.match(pt.detail, /prévue le 05\/01/);
+  assert.match(pt.decision, /la référence n'est plus tenable/);
+
+  // Sans référence, le module ne l'invente pas.
+  const sansRef = ordreDuJour({ projet: PROJET, plan: tard, aujourdhui: "2026-01-19" });
+  assert.equal(sansRef.points.find((x) => x.cle === "retard-lancement"), undefined);
 });
 
 test("ODJ — la surcharge remonte avec son arbitrage chiffrable", () => {

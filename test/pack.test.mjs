@@ -155,3 +155,46 @@ test("une ouverture inexistante ne produit pas d'archive vide", async () => {
   const r = await get("/api/openings/pas-un-id/pack");
   assert.equal(r.status, 404);
 });
+
+// ── Feuille d'impression par direction ──────────────────────────────────────
+// C'est le document qu'on imprime vraiment : celui qu'un directeur relit,
+// annote et signe. Le rétroplanning complet fait une cinquantaine de pages.
+test("la feuille d'une direction ne porte QUE ses actions, et ses compteurs suivent", async () => {
+  const dirs = (await (await get("/api/openings/meta")).json()).depts;
+  assert.ok(dirs?.length >= 6, "les directions sont servies par le modèle, pas recopiées côté client");
+
+  const complet = await (await get(`/api/openings/${ouvertureId}/export?format=print`)).text();
+  for (const d of dirs) {
+    assert.ok(complet.includes(`dept=${d.k}`), `la feuille complète n'offre pas d'imprimer ${d.l}`);
+  }
+
+  const o = await (await get(`/api/openings/${ouvertureId}`)).json();
+  let cumul = 0;
+  for (const d of dirs) {
+    const h = await (await get(`/api/openings/${ouvertureId}/export?format=print&dept=${d.k}`)).text();
+    const m = h.match(/(\d+) actions? portées? par cette direction/);
+    assert.ok(m, `${d.l} : l'en-tête n'annonce pas le volume`);
+    const n = Number(m[1]);
+    cumul += n;
+    // Le bandeau annonçait le total du PROJET sur la feuille d'une direction :
+    // « 0/198 tâches faites » pour seize actions portées.
+    assert.match(h, new RegExp(`>0/${n}<`), `${d.l} : compteur non borné au périmètre imprimé`);
+    assert.ok(h.includes("Validation"), `${d.l} : feuille sans bloc de signature`);
+    // Une feuille de direction ne propose pas de s'imprimer elle-même : la
+    // barre de navigation n'a de sens que sur la feuille complète.
+    assert.ok(!h.includes("Imprimer une direction"), `${d.l} : la barre de navigation revient sur la feuille`);
+  }
+  assert.equal(cumul, o.tasks.length, "la somme des feuilles ne couvre pas le plan, ou compte deux fois");
+});
+
+test("la feuille cite les échéances imposées, même après passage par le magasin", async () => {
+  // Le magasin ne conserve que `tplKey` : la base légale se résout depuis le
+  // modèle. Sans ça, un plan enregistré perdait ses références en silence.
+  const h = await (await get(`/api/openings/${ouvertureId}/export?format=print&dept=finance`)).text();
+  assert.match(h, /Échéances imposées/);
+  assert.match(h, /L242-1/);
+  assert.match(h, /legifrance/);
+  // Et la feuille d'une direction sans échéance imposée ne fabrique pas de section vide.
+  const mk = await (await get(`/api/openings/${ouvertureId}/export?format=print&dept=com`)).text();
+  assert.ok(!/Échéances imposées/.test(mk), "section légale affichée sans aucune échéance à citer");
+});

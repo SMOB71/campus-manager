@@ -5642,6 +5642,10 @@ function ouvChainHtml(ch, tasks) {
 
 let ouvView = "lot";
 let ouvFamilies = null;
+// Les directions viennent du serveur, jamais recopiées ici : une liste locale
+// aurait dérivé du modèle au premier ajout, et la feuille d'impression d'une
+// direction absente serait revenue vide sans rien dire.
+let ouvDepts = null;
 async function openOuvertureDetail(oid) {
   const o = await api.get(`/api/openings/${oid}`);
   if (!o || o.error) return;
@@ -5652,6 +5656,7 @@ async function openOuvertureDetail(oid) {
   // de tâche, pas seulement dans son onglet. Une requête, réutilisée par toutes les vues.
   ouvChain = ouvView === "params" ? null : await api.get(`/api/openings/${oid}/chain`);
   let opCfg = null;
+  if (!ouvDepts) ouvDepts = ((await api.get("/api/openings/meta")) || {}).depts || [];
   if (ouvView === "params") {
     opCfg = (await api.get("/api/opening-settings")) || { milestones: [], thresholds: [], leadTimes: [] };
     // Les familles sont déduites du modèle côté serveur : on les charge une fois par
@@ -5681,7 +5686,8 @@ async function openOuvertureDetail(oid) {
       <button class="btn-ghost btn-sm" id="ouv-addtask">+ Tâche</button>
       <button class="btn-ghost btn-sm" id="ouv-reseed">Régénérer le type</button>
       <button class="btn-ghost btn-sm" id="ouv-xlsx">Excel</button>
-      <button class="btn-ghost btn-sm" id="ouv-print">Imprimer</button>
+      <button class="btn-ghost btn-sm" id="ouv-print">Imprimer le plan</button>
+      <select class="txt" id="ouv-print-dir" style="width:auto;padding:4px 8px;font-size:13px;"><option value="">Imprimer une direction…</option>${ouvDepts.map((d) => `<option value="${d.k}">${esc(d.l)}</option>`).join("")}</select>
       <button class="btn-sm" id="ouv-pack">Pack documentaire</button>
       ${o.campusId ? `<button class="btn-ghost btn-sm" disabled>Fiche campus créée ✓</button>` : `<button class="btn-ghost btn-sm" id="ouv-convert">Convertir en campus</button>`}
       <button class="btn-ghost btn-sm" id="ouv-edit">Modifier</button>
@@ -5694,7 +5700,16 @@ async function openOuvertureDetail(oid) {
   $("#ouv-addtask").onclick = () => openTaskForm(oid);
   $("#ouv-reseed").onclick = async () => { if (!confirm("Régénérer le rétroplanning type ? Cela remplace les tâches actuelles.")) return; const r = await api.post(`/api/openings/${oid}/seed`, {}); if (r?.error) { alert(r.error); return; } closeModals(); openOuvertureDetail(oid); };
   $("#ouv-xlsx").onclick = () => { location.href = `/api/openings/${oid}/export`; };
+  // Deux impressions distinctes : le rétroplanning complet (consultation) et la
+  // feuille d'une direction (relecture et signature). C'est la seconde qu'on
+  // imprime en pratique — la première fait une cinquantaine de pages.
   $("#ouv-print").onclick = () => window.open(`/api/openings/${oid}/export?format=print`, "_blank");
+  $("#ouv-print-dir") && ($("#ouv-print-dir").onclick = () => {
+    const d = $("#ouv-print-dir").value;
+    if (!d) return;
+    window.open(`/api/openings/${oid}/export?format=print&dept=${encodeURIComponent(d)}`, "_blank");
+    $("#ouv-print-dir").value = "";
+  });
   $("#ouv-pack").onclick = () => openPackForm(oid);
   $("#ouv-convert") && ($("#ouv-convert").onclick = async () => { if (!confirm("Convertir ce projet en fiche campus (le projet passe « Ouvert ») ?")) return; const r = await api.post(`/api/openings/${oid}/convert`, {}); if (r?.ok) { alert(r.already ? "Ce projet est déjà lié à une fiche campus." : "Fiche campus créée ✓ (onglet Campus)"); closeModals(); openOuvertureDetail(oid); } });
   $$("#ouv-mode .chip").forEach((c) => c.addEventListener("click", () => { ouvView = c.dataset.m; closeModals(); openOuvertureDetail(oid); }));
@@ -9143,7 +9158,7 @@ async function renderFicheProjet() {
 
   const surcharge = (d.charge?.ressources || []).reduce((s, x) => s + x.nbJoursSurcharge, 0);
   const onglets = [["planning", "Planning"], ["taches", `Tâches (${d.taches.filter((t) => !t.synthese).length})`],
-    ["charge", `Charge${surcharge ? " ⚠" : ""}`], ["journal", `Journal (${d.journal.length})`]];
+    ["charge", `Charge${surcharge ? " ⚠" : ""}`], ["copil", "COPIL"], ["journal", `Journal (${d.journal.length})`]];
 
   $("#view").innerHTML = `${entete}
     <div class="kpis" style="margin-bottom:12px;">
@@ -9163,6 +9178,7 @@ async function renderFicheProjet() {
   $("#pj-contenu").innerHTML = PJ.onglet === "planning" ? pjGantt(d)
     : PJ.onglet === "taches" ? pjTableTaches(d)
     : PJ.onglet === "charge" ? pjCharge(d)
+    : PJ.onglet === "copil" ? '<p class="muted">Chargement…</p>'
     : pjJournal(d);
 
   pjBrancherEntete(d);
@@ -9170,6 +9186,7 @@ async function renderFicheProjet() {
   if (PJ.onglet === "planning") pjBrancherGantt(d);
   if (PJ.onglet === "taches") pjBrancherTable(d);
   if (PJ.onglet === "charge") pjBrancherCharge(d);
+  if (PJ.onglet === "copil") pjRendreCopil(d);
 }
 
 function pjBandeaux(d) {
@@ -9789,5 +9806,197 @@ async function openModeleProjet(d) {
     if (r?.error) return alert(r.error);
     closeModals();
     alert(`Modèle « ${r.modele.nom} » enregistré (${r.modele.taches.length} tâches). Il apparaît dans le portefeuille.`);
+  });
+}
+
+
+// ---------- Onglet COPIL du projet ----------
+// Le comité ne se prépare plus : il se tient. Cet écran montre ce que l'ordre
+// du jour de la prochaine séance dit AUJOURD'HUI, et il se remplit tout seul
+// avant chaque séance — jusqu'à ce que quelqu'un y touche, auquel cas il se
+// retire définitivement de cette séance-là.
+const PJ_GRAVITE = { bloquant: "var(--danger)", important: "var(--warn)", info: "var(--line)" };
+
+async function pjRendreCopil(d) {
+  const hote = $("#pj-contenu");
+  const r = await api.get(`/api/projets/${d.projet.id}/copil`);
+  if (r?.error) { hote.innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+
+  if (!r.committee) {
+    hote.innerHTML = `<div class="card card-pad">
+      <b>Aucun comité de pilotage sur ce projet.</b>
+      <p class="sub muted">En mettre un en place crée les séances des dix prochaines semaines et remplit leur ordre du jour depuis ce planning : ce qui a bougé et pourquoi, les échéances franchies, les tâches critiques sans responsable, les surcharges. Vous n'aurez plus à le préparer — seulement à le relire.</p>
+      <div class="actions"><button class="btn-primary" id="pj-copil-new">Mettre en place le comité</button></div>
+    </div>`;
+    $("#pj-copil-new").onclick = () => openCopilForm(d, r.cadences);
+    return;
+  }
+
+  const o = r.odj;
+  const seance = r.prochaine;
+  hote.innerHTML = `
+    <div class="card card-pad" style="margin-bottom:12px;">
+      <div class="row pj-actions" style="align-items:center;gap:10px;">
+        <div style="flex:1;min-width:200px;">
+          <b>${esc(r.committee.name)}</b>
+          <div class="muted" style="font-size:13px;">${esc(r.committee.cadence || "")} · ${(r.committee.members || []).length} membre(s)${(r.committee.members || []).some((m) => !m.email) ? ` · <span class="neg">${(r.committee.members || []).filter((m) => !m.email).length} sans adresse : ils ne recevront rien</span>` : ""}</div>
+        </div>
+        <button class="btn-ghost btn-sm" id="pj-copil-membres">Membres</button>
+        <button class="btn-ghost btn-sm" id="pj-copil-refill">Remplir maintenant</button>
+        ${seance ? '<button class="btn-primary btn-sm" id="pj-copil-conv">Convoquer maintenant</button>' : ""}
+      </div>
+    </div>
+
+    ${seance ? `
+      <div class="section-title" style="margin-top:0;">Prochaine séance — ${pjDate(seance.date)}${seance.time ? ` à ${esc(seance.time)}` : ""}</div>
+      <p class="muted" style="font-size:13px;margin:-6px 0 10px;">
+        ${seance.agendaAuto === false
+          ? "Ordre du jour repris à la main : le remplissage automatique s'est retiré de cette séance."
+          : `Ordre du jour rempli automatiquement avant la séance. Convocation envoyée à J-7, rappel à J-1.`}
+      </p>
+      ${o ? `<div class="card" style="overflow:hidden;">
+        ${o.note ? `<div style="padding:10px 14px;border-bottom:1px solid var(--line);" class="muted">${esc(o.note)}</div>` : ""}
+        ${o.points.map((pt, i) => `<div style="padding:11px 14px;border-bottom:1px solid var(--line-2);border-left:4px solid ${PJ_GRAVITE[pt.gravite] || "var(--line)"};">
+          <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">
+            <b style="font-size:14px;">${i + 1}. ${esc(pt.titre)}</b>
+            <span class="muted" style="font-size:12px;">${pt.minutes} min${pt.porteur ? ` · ${esc(pt.porteur)}` : ""}</span>
+          </div>
+          ${pt.detail ? `<div class="muted" style="font-size:13px;margin-top:3px;">${esc(pt.detail)}</div>` : ""}
+          ${pt.decision ? `<div style="font-size:13px;margin-top:4px;"><span class="muted">Décision attendue :</span> ${esc(pt.decision)}</div>` : ""}
+        </div>`).join("")}
+        <div style="padding:9px 14px;" class="muted">Total ${o.total} min · établi depuis le planning, sans reformulation.</div>
+      </div>` : '<p class="muted">Ordre du jour indisponible : le planning n\'est pas calculable.</p>'}
+    ` : '<p class="muted">Aucune séance à venir. L\'entretien quotidien en recréera à l\'horizon de la cadence.</p>'}
+
+    ${r.aVenir.length > 1 ? `<div class="section-title">Séances programmées</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;">${r.aVenir.map((s2) => `<button class="pill ${s2.agendaAuto === false ? "doing" : "done"} pj-seance" data-s="${s2.id}" style="flex:0 0 auto;cursor:pointer;border:0;">${pjDate(s2.date)}${s2.points ? ` · ${s2.points} points` : ""}</button>`).join("")}</div>
+      <p class="hint muted">Créées d'avance par la cadence. Celles en orange ont un ordre du jour repris à la main. Cliquer sur une séance pour consigner son relevé de décisions — c'est lui qui alimentera le « suivi des décisions » de l'ordre du jour suivant.</p>` : ""}`;
+
+  $("#pj-copil-membres").onclick = () => openCopilMembres(d, r.committee);
+  $$(".pj-seance").forEach((b) => { b.onclick = () => openCopilSeance(d, r.committee.id, r.aVenir.find((x) => x.id === b.dataset.s)); });
+  if ($("#pj-copil-conv")) $("#pj-copil-conv").onclick = (ev) => guard(ev.currentTarget, async () => {
+    if (!confirm(`Envoyer la convocation du ${pjDate(seance.date)} aux ${(r.committee.members || []).filter((m) => m.email).length} membre(s) qui ont une adresse ?`)) return;
+    const out = await api.post(`/api/committees/${r.committee.id}/sessions/${seance.id}/send`, { kind: "convocation", force: true });
+    alert(out?.error ? out.error : `Convocation envoyée à ${out.recipients} destinataire(s).${out.sansEmail?.length ? `\n\nSans adresse, donc non prévenus : ${out.sansEmail.join(", ")}` : ""}`);
+    pjRendreCopil(d);
+  });
+  $("#pj-copil-refill").onclick = (ev) => guard(ev.currentTarget, async () => {
+    if (!seance) return;
+    let out = await api.post(`/api/committees/${r.committee.id}/sessions/${seance.id}/agenda-auto`, {});
+    if (out?.forcable) {
+      if (!confirm(`${out.error}\n\nÉcraser quand même ?`)) return;
+      out = await api.post(`/api/committees/${r.committee.id}/sessions/${seance.id}/agenda-auto`, { reprendre: true });
+    }
+    if (out?.error) return alert(out.error);
+    pjRendreCopil(d);
+  });
+}
+
+function openCopilForm(d, cadences) {
+  const JOURS = [[1, "lundi"], [2, "mardi"], [3, "mercredi"], [4, "jeudi"], [5, "vendredi"]];
+  const bg = openModal("Mettre en place le comité de pilotage", `
+    <div class="row">
+      <div><label class="field-label">Intitulé</label><input id="cp-nom" value="COPIL — ${esc(d.projet.nom)}"></div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <div><label class="field-label">Cadence</label><select id="cp-type">
+        ${Object.entries(cadences).map(([k, v]) => `<option value="${k}" ${k === "hebdo" ? "selected" : ""}>${esc(v.label)}</option>`).join("")}
+      </select></div>
+      <div><label class="field-label">Jour</label><select id="cp-jour">
+        ${JOURS.map(([v, l]) => `<option value="${v}" ${v === 2 ? "selected" : ""}>${l}</option>`).join("")}
+      </select></div>
+      <div><label class="field-label">Heure</label><input id="cp-heure" type="time" value="09:00"></div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <div><label class="field-label">Lieu</label><input id="cp-lieu" placeholder="salle, site…"></div>
+      <div><label class="field-label">Lien visio</label><input id="cp-lien" placeholder="https://…"></div>
+    </div>
+    <p class="hint muted" style="margin-top:10px;">Les séances des dix prochaines semaines sont créées tout de suite, et leur ordre du jour se remplira depuis ce planning avant chaque séance. Une séance tombant un jour férié est reportée au jour ouvré suivant, jamais supprimée.</p>
+    <p class="hint muted">Les membres se complètent ensuite dans l'écran du comité : seuls ceux qui ont une adresse reçoivent la convocation.</p>
+    <div class="actions"><button class="btn-primary" id="cp-save">Créer le comité et les séances</button></div>`);
+  $("#cp-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post(`/api/projets/${d.projet.id}/copil`, {
+      name: $("#cp-nom").value.trim(),
+      cadenceRegle: {
+        type: $("#cp-type").value, jourSemaine: Number($("#cp-jour").value),
+        heure: $("#cp-heure").value, lieu: $("#cp-lieu").value.trim(), lien: $("#cp-lien").value.trim(),
+      },
+    });
+    if (r?.error) return alert(r.error);
+    bg.remove();
+    pjRendreCopil(d);
+  });
+}
+
+
+// Membres du comité. Ceux qui n'ont pas d'adresse sont montrés comme tels :
+// un comité où trois personnes ne reçoivent jamais rien délibère à leur insu.
+function openCopilMembres(d, committee) {
+  const lignes = (committee.members || []).map((m) => ({ ...m }));
+  const ligne = (m, i) => `<div class="row pj-membre" data-i="${i}" style="gap:6px;margin-bottom:6px;">
+    <div><input class="cm-nom" value="${esc(m.name || "")}" placeholder="Nom"></div>
+    <div><input class="cm-role" value="${esc(m.role || "")}" placeholder="Rôle"></div>
+    <div><input class="cm-mail" value="${esc(m.email || "")}" placeholder="adresse@exemple.fr"></div>
+    <button class="btn-ghost btn-sm cm-del" style="flex:0 0 auto;">Retirer</button></div>`;
+  const bg = openModal(`Membres — ${committee.name}`, `
+    <div id="cm-liste">${lignes.map(ligne).join("") || ""}</div>
+    <div class="actions"><button class="btn-ghost btn-sm" id="cm-add">+ Membre</button>
+      <button class="btn-primary" id="cm-save">Enregistrer</button></div>
+    <p class="hint muted">Seuls les membres qui ont une adresse reçoivent la convocation et le compte rendu. Les autres restent des participants nommés.</p>`);
+  const relire = () => $$("#cm-liste .pj-membre").map((el) => ({
+    name: $(".cm-nom", el).value.trim(), role: $(".cm-role", el).value.trim(), email: $(".cm-mail", el).value.trim(),
+  })).filter((m) => m.name || m.email);
+  const brancher = () => $$("#cm-liste .cm-del").forEach((b) => { b.onclick = () => { b.closest(".pj-membre").remove(); }; });
+  brancher();
+  $("#cm-add").onclick = () => { $("#cm-liste").insertAdjacentHTML("beforeend", ligne({}, lignes.length)); brancher(); };
+  $("#cm-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const out = await api.patch(`/api/committees/${committee.id}`, { members: relire() });
+    if (out?.error) return alert(out.error);
+    bg.remove();
+    pjRendreCopil(d);
+  });
+}
+
+// Une séance : son ordre du jour tel qu'il serait rempli maintenant, et son
+// relevé de décisions. Le relevé n'est pas un compte rendu — ce sont les
+// engagements datés que l'ordre du jour suivant ira rechercher.
+async function openCopilSeance(d, cid, seance) {
+  if (!seance) return;
+  const apercu = await api.get(`/api/committees/${cid}/sessions/${seance.id}/agenda-projet`);
+  const c = await api.get(`/api/committees/${cid}`);
+  const s = (c.sessions || []).find((x) => x.id === seance.id) || {};
+  const res = (s.resolutions || []).map((x) => ({ ...x }));
+  const ligneRes = (x) => `<div class="row pj-res" style="gap:6px;margin-bottom:6px;">
+    <div style="flex:2;"><input class="cr-txt" value="${esc(x.text || "")}" placeholder="Décision prise"></div>
+    <div><input class="cr-own" value="${esc(x.owner || "")}" placeholder="Qui"></div>
+    <div><input class="cr-due" type="date" value="${esc(x.dueDate || "")}"></div>
+    <button class="btn-ghost btn-sm cr-del" style="flex:0 0 auto;">×</button></div>`;
+  const bg = openModal(`Séance du ${pjDate(seance.date)}`, `
+    <div class="section-title" style="margin-top:0;">Ordre du jour</div>
+    ${apercu?.odj?.points?.length ? `<div class="card" style="overflow:hidden;">${apercu.odj.points.map((pt, i) => `
+      <div style="padding:9px 12px;border-bottom:1px solid var(--line-2);border-left:4px solid ${PJ_GRAVITE[pt.gravite] || "var(--line)"};">
+        <b style="font-size:13.5px;">${i + 1}. ${esc(pt.titre)}</b>
+        <span class="muted" style="font-size:12px;"> ${pt.minutes} min</span>
+        ${pt.decision ? `<div style="font-size:12.5px;margin-top:2px;"><span class="muted">Décision attendue :</span> ${esc(pt.decision)}</div>` : ""}
+      </div>`).join("")}</div>` : '<p class="muted">Ordre du jour indisponible.</p>'}
+    <p class="hint muted">${s.agendaAuto === false ? "Repris à la main : le remplissage automatique ne touchera plus cette séance." : "Rempli automatiquement avant la séance."}</p>
+
+    <div class="section-title">Relevé de décisions</div>
+    <div id="cr-liste">${res.map(ligneRes).join("")}</div>
+    <div class="actions"><button class="btn-ghost btn-sm" id="cr-add">+ Décision</button>
+      <button class="btn-primary" id="cr-save">Enregistrer</button></div>
+    <p class="hint muted">Ce que le comité a tranché, avec qui et pour quand. L'ordre du jour de la séance suivante reprendra automatiquement celles arrivées à échéance.</p>`);
+  const brancher = () => $$("#cr-liste .cr-del").forEach((b) => { b.onclick = () => b.closest(".pj-res").remove(); });
+  brancher();
+  $("#cr-add").onclick = () => { $("#cr-liste").insertAdjacentHTML("beforeend", ligneRes({})); brancher(); };
+  $("#cr-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const out = await api.patch(`/api/committees/${cid}/sessions/${seance.id}`, {
+      resolutions: $$("#cr-liste .pj-res").map((el) => ({
+        text: $(".cr-txt", el).value.trim(), owner: $(".cr-own", el).value.trim(), dueDate: $(".cr-due", el).value,
+      })).filter((x) => x.text),
+    });
+    if (out?.error) return alert(out.error);
+    bg.remove();
+    pjRendreCopil(d);
   });
 }
