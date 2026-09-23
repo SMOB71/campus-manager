@@ -165,13 +165,17 @@ test("le zip complet porte le sommaire et toutes les pièces annoncées", async 
   // Et tout supplément est justifié : un PDF, un ordre du jour, ou le sommaire.
   const attendus = new Set(pieces.map((p) => p.fichier));
   const surplus = noms.filter((n) => n !== "SOMMAIRE.txt" && !attendus.has(n.split("/").pop()));
-  const injustifies = surplus.filter((n) => !n.startsWith("6 - PDF/") && !n.includes("/Ordres du jour/"));
+  const injustifies = surplus.filter((n) => !n.startsWith("6 - PDF/")
+    && !n.includes("/Ordres du jour/") && !n.startsWith("3 - Par direction/"));
   assert.deepEqual(injustifies, [], "le zip porte des fichiers que rien n'annonce");
-  // Le dossier PDF doit exister et couvrir tous les documents Word annoncés.
+  // Le dossier PDF couvre les documents Word annoncés ET les feuilles de
+  // route par direction, qui ne sont pas des « pièces » mais N fichiers.
   const pdfs = noms.filter((n) => n.startsWith("6 - PDF/"));
   const words = pieces.filter((p) => p.ext === "docx");
-  assert.equal(pdfs.length, words.length,
-    `${pdfs.length} PDF pour ${words.length} documents Word`);
+  const directions = noms.filter((n) => n.startsWith("3 - Par direction/"));
+  assert.ok(directions.length >= 6, `${directions.length} feuilles de route par direction`);
+  assert.equal(pdfs.length, words.length + directions.length,
+    `${pdfs.length} PDF pour ${words.length} documents Word et ${directions.length} feuilles`);
 });
 
 test("le pack est réservé aux administrateurs", async () => {
@@ -446,7 +450,106 @@ test("le zip porte un dossier PDF couvrant tous les documents Word", async () =>
   }
   const pdfs = noms.filter((n) => n.startsWith("6 - PDF/") && n.endsWith(".pdf"));
   const words = pieces.filter((p) => p.ext === "docx");
-  assert.equal(pdfs.length, words.length, `${pdfs.length} PDF pour ${words.length} documents Word`);
+  const directions = noms.filter((n) => n.startsWith("3 - Par direction/"));
+  assert.equal(pdfs.length, words.length + directions.length,
+    `${pdfs.length} PDF pour ${words.length} Word et ${directions.length} feuilles de direction`);
   // Aucun PowerPoint ni classeur dans le dossier PDF : ils gardent leur format.
   assert.ok(!noms.some((n) => n.startsWith("6 - PDF/") && /\.(pptx|xlsx)$/.test(n)));
+});
+
+test("un ordre du jour n'est pas vierge : il porte la trame et ce qui échoit", async () => {
+  // Les 48 ordres du jour d'un COPIL hebdomadaire tenaient en trois lignes
+  // génériques — « revue d'avancement », « aucun arbitrage », « actions
+  // prioritaires » — pour un plan de 198 actions. La trame de l'instance,
+  // pourtant écrite au registre, n'était pas utilisée du tout.
+  const { enrichirSeances, vue } = await import("../lib/pack/index.js");
+  const { ordresDuJour } = await import("../lib/pack/documents.js");
+  const { charte } = await import("../lib/pack/charte.js");
+  const { buildOpeningTasks } = await import("../lib/calc.js");
+  const { planOuverture } = await import("../lib/pack/ouverture.js");
+  const taches = buildOpeningTasks("2027-09-01", {}, 11);
+  const { projet, plan } = planOuverture({ id: "o", name: "Brest", targetDate: "2027-09-01", budget: 1e6 },
+    taches, { aujourdhui: "2026-10-05" });
+  const seances = [];
+  for (let d = new Date("2026-10-05T00:00:00Z"); d <= new Date("2027-09-01T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 7)) {
+    seances.push({ date: d.toISOString().slice(0, 10), instance: "COPIL hebdomadaire" });
+  }
+  const s = enrichirSeances(projet, vue(plan), seances);
+  assert.equal(s.length, seances.length);
+  assert.ok(s.every((x) => x.trame), "chaque séance doit porter la trame de son instance");
+  // Sur un plan de 198 actions réparties sur 48 semaines, la plupart des
+  // séances ont de la matière. Zéro partout signalerait que le rattachement
+  // ne marche pas.
+  const avecMatiere = s.filter((x) => x.actions.length || x.jalons.length || x.echues.length);
+  assert.ok(avecMatiere.length > s.length * 0.6, `${avecMatiere.length}/${s.length} séances ont de la matière`);
+
+  const t = await lireDocx(await ordresDuJour(projet, vue(plan), charte({}), [s[12]]));
+  // Les sept étapes de la trame, pas un gabarit figé.
+  assert.match(t, /Atterrissage/);
+  assert.match(t, /Actions hors marge/);
+  assert.match(t, /Relevé de décisions/);
+  // Ce qui échoit, et de quoi cocher.
+  assert.match(t, /Soldé ou non/);
+  assert.match(t, /À solder d'ici la prochaine séance/);
+  assert.ok(!/Aucun arbitrage bloquant identifié/.test(t), "l'ancien gabarit ne doit plus apparaître");
+  // Et jamais de « retard » dans un ordre du jour pré-rempli : un plan qui n'a
+  // pas commencé n'a rien en retard.
+  assert.ok(!/\ben retard\b/i.test(t), "un ordre du jour futur ne peut pas connaître les retards");
+});
+
+test("ce qui n'est pas soldé revient à l'ordre du jour suivant", async () => {
+  // Un point non tranché ne disparaît pas parce que la semaine est finie.
+  const { enrichirSeances, vue } = await import("../lib/pack/index.js");
+  const { buildOpeningTasks } = await import("../lib/calc.js");
+  const { planOuverture } = await import("../lib/pack/ouverture.js");
+  const taches = buildOpeningTasks("2027-09-01", {}, 11);
+  const seances = [];
+  for (let d = new Date("2026-10-05T00:00:00Z"); d <= new Date("2027-09-01T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 7)) {
+    seances.push({ date: d.toISOString().slice(0, 10), instance: "COPIL hebdomadaire" });
+  }
+  // Projet en cours : des échéances sont passées et rien n'est soldé.
+  const { projet, plan } = planOuverture({ id: "o", name: "Brest", targetDate: "2027-09-01", budget: 1e6 },
+    taches, { aujourdhui: "2027-02-15" });
+  const s = enrichirSeances(projet, vue(plan), seances);
+  const prochaine = s.find((x) => x.date >= "2027-02-15");
+  assert.ok(prochaine.reportees.length > 0, "les points non soldés doivent remonter à la prochaine séance");
+  assert.ok(prochaine.reportees.every((t) => t.statut !== "faite"), "une action soldée ne se reporte pas");
+
+  // Mais on n'invente pas le retard des séances LOINTAINES : la dernière de
+  // l'année ne peut pas savoir ce qui aura été soldé d'ici là.
+  assert.equal(s[s.length - 1].reportees.length, 0);
+
+  // Et sur un plan qui vient d'être semé, il n'y a rien à reporter.
+  const neuf = planOuverture({ id: "o", name: "Brest", targetDate: "2027-09-01", budget: 1e6 },
+    taches, { aujourdhui: "2026-10-05" });
+  const s2 = enrichirSeances(neuf.projet, vue(neuf.plan), seances);
+  assert.equal(s2.reduce((n, x) => n + x.reportees.length, 0), 0);
+});
+
+test("une feuille de route par direction : ses actions, ses échéances, rien d'autre", async () => {
+  const { feuillesDirection, vue } = await import("../lib/pack/index.js");
+  const { charte } = await import("../lib/pack/charte.js");
+  const { buildOpeningTasks, OPENING_DEPTS } = await import("../lib/calc.js");
+  const { planOuverture } = await import("../lib/pack/ouverture.js");
+  const taches = buildOpeningTasks("2027-09-01", {}, 11);
+  const { projet, plan } = planOuverture({ id: "o", name: "Brest", targetDate: "2027-09-01", budget: 1e6 },
+    taches, { aujourdhui: "2026-10-05" });
+  const l = vue(plan);
+  const f = await feuillesDirection(projet, l, charte({}));
+  assert.equal(f.length, OPENING_DEPTS.length, "une feuille par direction portant des actions");
+  assert.ok(f.every((x) => estZip(x.octets)));
+
+  // Aucune action perdue, aucune comptée deux fois : les six feuilles couvrent
+  // le plan exactement.
+  const parDept = {};
+  for (const t of l.taches.filter((x) => !x.synthese)) parDept[t.dept] = (parDept[t.dept] || 0) + 1;
+  assert.equal(Object.values(parDept).reduce((a, b) => a + b, 0), l.taches.filter((x) => !x.synthese).length);
+
+  const fin = f.find((x) => /Finance/.test(x.libelle));
+  const t = await lireDocx(fin.octets);
+  assert.match(t, /Toutes vos actions, par échéance/);
+  assert.match(t, /Terminé quand/);
+  assert.match(t, /Votre engagement/);
+  // Une feuille de direction ne parle que d'elle.
+  assert.ok(!/Ressources humaines/.test(t), "la feuille Finance ne doit pas porter les actions d'une autre direction");
 });
