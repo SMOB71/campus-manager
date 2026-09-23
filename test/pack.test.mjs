@@ -337,3 +337,25 @@ test("les ordres du jour sortent aussi en un fichier par séance", async () => {
   assert.match(out[0].chemin, /Ordres du jour\/.*ODJ-01-2026-10-12\.docx$/);
   assert.match(out[2].chemin, /ODJ-03-2026-10-26\.docx$/);
 });
+
+test("aucun document ne laisse fuir une valeur non résolue", async () => {
+  // Huit cellules « undefined » sont passées dans un document livré parce que
+  // le générateur lisait `x.dept` sur une liste qui ne portait que `{title, n}`.
+  // Rien ne l'a vu : le fichier était structurellement valide. Ce test regarde
+  // ce que le document DIT, pas seulement qu'il s'ouvre.
+  const suspects = [/\bundefined\b/, /\bNaN\b/, /\[object \w+\]/, /\$\{/, /\bInvalid Date\b/,
+    // Une date ISO dans une phrase est une fuite de format : on écrit le 1er
+    // septembre 2027, pas 2027-09-01.
+    /\b\d{4}-\d{2}-\d{2}\b/];
+  const inv = await (await get(`/api/openings/${ouvertureId}/pack?inventaire=1`)).json();
+  const mots = ["docx"];                       // le texte des .pptx et .xlsx est lu ailleurs
+  for (const p of inv.pieces.filter((x) => mots.includes(x.ext))) {
+    const r = await get(`/api/openings/${ouvertureId}/pack/${p.cle}`);
+    assert.equal(r.status, 200, `${p.nom} ne se produit pas`);
+    const t = await lireDocx(Buffer.from(await r.arrayBuffer()));
+    for (const rx of suspects) {
+      const m = t.match(rx);
+      assert.equal(m, null, `${p.nom} laisse passer « ${m && m[0]} »`);
+    }
+  }
+});
