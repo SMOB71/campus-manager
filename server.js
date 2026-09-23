@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import cron from "node-cron";
 import * as XLSX from "xlsx";
-import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY, REVIEW_NOTES, CODIR_AGENDA, COPIL_AGENDA, CURRICULUM_IMPORT, TEACHING_ASSIGNMENTS } from "./lib/prompts.js";
+import { systemFor, modelFor, PROMPTS, EMAIL_MODEL, VISIT_VARIANTS, SYNTHESE_RESEAU, CHAT_ASSISTANT, RECOVERY_PLAN, RECLAMATION_REPLY, REVIEW_NOTES, CODIR_AGENDA, COPIL_AGENDA, CURRICULUM_IMPORT, TEACHING_ASSIGNMENTS, PROJET_CADRAGE } from "./lib/prompts.js";
 import { issueCookie, clearCookie, sessionUserId, issueCsrf, csrfValid } from "./lib/auth.js";
 import * as userstore from "./lib/userstore.js";
 import { generateDailyBrief } from "./lib/brief.js";
@@ -54,6 +54,7 @@ import * as demarrage from "./lib/demarrage.js";
 import * as proj from "./lib/projets.js";
 import * as copilproj from "./lib/copilprojet.js";
 import { planProjet, htmlPlanProjet } from "./lib/pack/projet.js";
+import * as cadrage from "./lib/cadrage.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -1869,6 +1870,137 @@ app.get("/api/projets/:id/export", requireAuth, (req, res) => {
     "Budget prévu €": t.budgetPrevu || "", "Budget dépensé €": t.budgetDepense || "",
   }));
   sendXlsx(res, "Planning", lignes, `projet-${String(p.nom || "").replace(/[^\w-]+/g, "-").toLowerCase()}.xlsx`);
+});
+
+// --- Alimenter un projet depuis une note de cadrage --------------------------
+// Les documents du pack sortent « — à renseigner — » tant que la fiche est
+// vide. Or ces informations existent déjà, dans une note Word que personne ne
+// veut ressaisir en quinze champs. On la lit ; on ne l'écrit pas : `analyser`
+// produit une PROPOSITION, et seule la validation humaine la fait entrer.
+
+// La lecture déterministe d'abord. Le modèle n'intervient qu'en renfort, sur
+// une note en prose qu'aucun titre ne structure — et sa sortie passe par le
+// même tamis, avec les mêmes règles de date.
+async function analyserCadrage(texte, { ia = false } = {}) {
+  const p = cadrage.analyser(texte);
+  const pauvre = p.vide || p.absent.length > cadrage.ATTENDUES.length - 3;
+  if (!ia || !openai || !pauvre) return { ...p, source: "structure", iaUtilisee: false };
+  try {
+    const resp = await openai.chat.completions.create({
+      model: modelFor("note_cadrage"),
+      messages: [{ role: "system", content: PROJET_CADRAGE }, { role: "user", content: String(texte).slice(0, 60000) }],
+      max_completion_tokens: 3000,
+    });
+    const brut = resp.choices?.[0]?.message?.content || "";
+    const json = JSON.parse(brut.slice(brut.indexOf("{"), brut.lastIndexOf("}") + 1));
+    // On RECONSTRUIT la proposition depuis le JSON du modèle en repassant par
+    // les mêmes convertisseurs : une date que le modèle aurait inventée dans un
+    // format libre ne franchit pas cette étape.
+    const norm = {
+      champs: {
+        nom: String(json.nom || "").trim(),
+        objectif: String(json.objectif || "").trim(), contexte: String(json.contexte || "").trim(),
+        perimetre: String(json.perimetre || "").trim(), horsPerimetre: String(json.horsPerimetre || "").trim(),
+        commanditaire: String(json.commanditaire || "").trim(), sponsor: String(json.sponsor || "").trim(),
+        coSponsor: String(json.coSponsor || "").trim(), relaisDG: String(json.relaisDG || "").trim(),
+        pilote: String(json.pilote || "").trim(), budget: Number(json.budget) > 0 ? Math.round(Number(json.budget)) : 0,
+      },
+      registres: {
+        risques: (json.risques || []).filter((r) => r?.titre).map((r) => ({
+          titre: String(r.titre), impact: ["faible", "moyen", "eleve"].includes(r.impact) ? r.impact : "moyen",
+          statut: "ouvert", proprietaire: String(r.proprietaire || ""), planB: String(r.planB || ""), echeance: "", seuil: "", decideur: "",
+        })),
+        kpis: (json.kpis || []).filter((k) => k?.indicateur).map((k) => ({ indicateur: String(k.indicateur), cible: String(k.cible || ""), echeance: "", type: "officiel", valeur: "" })),
+        instances: (json.instances || []).filter((i) => i?.nom).map((i) => ({ nom: String(i.nom), frequence: String(i.frequence || ""), composition: String(i.composition || ""), role: "" })),
+        fournisseurs: [], changements: [],
+      },
+      actions: (json.chantiers || []).flatMap((c) => (c?.actions || []).filter((a) => a?.titre).map((a) => ({
+        titre: String(a.titre), chantier: String(c.titre || ""),
+        dureeJours: Number(a.dureeJours) > 0 ? Math.round(Number(a.dureeJours)) : null, dureeSource: "",
+        echeance: cadrage.dateDe(a.echeance) || null, responsable: String(a.responsable || ""),
+      }))),
+      jalons: (json.jalons || []).filter((j) => j?.titre).map((j) => ({ titre: String(j.titre), date: cadrage.dateDe(j.date) || null, texteDate: "" })),
+    };
+    norm.chantiers = [...new Set(norm.actions.map((a) => a.chantier).filter(Boolean))];
+    const present = (cle) => {
+      if (cle === "chantiers") return norm.actions.length > 0;
+      if (["risques", "kpis", "instances"].includes(cle)) return norm.registres[cle].length > 0;
+      if (cle === "budget") return norm.champs.budget > 0;
+      return !!String(norm.champs[cle] || "").trim();
+    };
+    return {
+      ...norm,
+      trouve: cadrage.ATTENDUES.filter(present),
+      absent: cadrage.ATTENDUES.filter((c) => !present(c)),
+      datesNonLues: norm.jalons.filter((j) => !j.date).map((j) => j.titre),
+      vide: !cadrage.ATTENDUES.some(present),
+      source: "ia", iaUtilisee: true,
+    };
+  } catch (e) {
+    console.error("[cadrage-ia]", e?.message || e);
+    return { ...p, source: "structure", iaUtilisee: false, iaEchec: "structuration automatique indisponible — lecture littérale seule" };
+  }
+}
+
+app.post("/api/projets/cadrage/analyser", requireAuth, async (req, res) => {
+  const texte = String(req.body?.texte || "");
+  if (texte.trim().length < 40) return res.status(400).json({ error: "note trop courte : colle le texte de la note de cadrage, ou dépose le fichier" });
+  if (texte.length > 300000) return res.status(400).json({ error: "note trop longue (300 000 caractères)" });
+  const p = await analyserCadrage(texte, { ia: !!req.body?.ia });
+  res.json({
+    proposition: p,
+    // Ce que la note ne dit pas, DIT AVANT de produire les documents : c'est
+    // exactement ce qui sortirait « à renseigner » dans le Word.
+    taches: cadrage.tachesDepuisProposition(p),
+  });
+});
+
+// Applique ce que l'humain a retenu. Sur un projet existant, on ne remplace
+// jamais un champ déjà rempli sans `ecraser` explicite.
+app.post("/api/projets/cadrage/appliquer", requireAuth, requireAdmin, (req, res) => {
+  const { proposition, choix = null, ecraser = false, taches = [], projetId = null, campusId = null } = req.body || {};
+  if (!proposition?.champs) return res.status(400).json({ error: "proposition absente" });
+
+  let projet = null;
+  if (projetId) {
+    projet = store.getProjet(projetId);
+    if (!projet) return res.status(404).json({ error: "projet introuvable" });
+    if (!peutProjet(req, res, projet)) return;
+  } else {
+    if (campusId && !assertCampus(req, res, campusId)) return;
+    const nom = String(req.body?.nom || proposition.champs.nom || "").trim();
+    if (!nom) return res.status(400).json({ error: "la note ne donne pas de nom au projet : saisis-le" });
+    projet = store.addProjet({ ...proj.normaliserProjet({ nom, campusId, debut: req.body?.debut || aujourdhuiISO() }), id: undefined, reference: null });
+  }
+
+  const f = cadrage.fusionner(projet, proposition, { choix, ecraser });
+  if (Object.keys(f.patch).length) store.updateProjet(projet.id, f.patch);
+
+  // Les tâches arrivent telles que l'écran de validation les a laissées :
+  // durées ajustées, lignes décochées retirées. On recâble les références du
+  // document vers de vrais identifiants.
+  const map = new Map();
+  let creees = 0;
+  for (const t of taches) {
+    if (!t?.titre) continue;
+    const rec = store.addProjetTache({
+      ...proj.normaliserTache({ ...t, id: undefined, parentId: null, liens: [] }),
+      projetId: projet.id, id: undefined,
+    });
+    if (t.ref) map.set(t.ref, rec.id);
+    creees++;
+  }
+  for (const t of taches) {
+    if (!t?.parentRef || !map.has(t.ref) || !map.has(t.parentRef)) continue;
+    store.updateProjetTache(map.get(t.ref), { parentId: map.get(t.parentRef) });
+  }
+
+  logAudit(req, projetId ? "update" : "create", "projet", `${projetId ? "enrichi" : "créé"} depuis une note de cadrage — ${projet.nom}${creees ? ` (${creees} action(s))` : ""}`);
+  res.json({
+    projet: store.getProjet(projet.id), taches: creees,
+    conflits: f.conflits, ajoutees: f.ajoutees,
+    restantARenseigner: proposition.absent || [],
+  });
 });
 
 // --- Pack documentaire du projet --------------------------------------------

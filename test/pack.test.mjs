@@ -308,8 +308,28 @@ test("la fiche action ne se contredit pas sur le porteur", async () => {
     "la fiche affiche un porteur puis affirme qu'il n'y en a pas");
   assert.match(texte, /Terminé quand/);
   assert.match(texte, /Point de vigilance/);
-  // Ce qui manque est DIT, pas comblé.
-  assert.match(texte, /condition de clôture à définir/);
+  // Le modèle les porte toutes aujourd'hui ; la fiche doit le dire.
+  assert.match(texte, /Toutes les actions portent une condition de clôture/);
+});
+
+test("une action sans condition de clôture est signalée, pas comblée", async () => {
+  // L'invariant, pas l'état du jour : le premier test affirmait qu'il restait
+  // des trous, et il est tombé le jour où on les a bouchés.
+  const { fichesAction } = await import("../lib/pack/documents.js");
+  const { charte } = await import("../lib/pack/charte.js");
+  const plan = {
+    debut: "2026-10-02", fin: "2027-09-01", resume: {},
+    taches: [
+      { id: "a", code: "1", titre: "Action sans critère", lot: "Essai", dept: "Opérations",
+        debut: "2026-10-02", fin: "2026-10-09", critereFin: "", margeTotale: 10, liens: [] },
+      { id: "b", code: "2", titre: "Action avec critère", lot: "Essai", dept: "Opérations",
+        debut: "2026-10-02", fin: "2026-10-09", critereFin: "Le document est signé.", margeTotale: 10, liens: [] },
+    ],
+  };
+  const t = await lireDocx(await fichesAction({ nom: "Essai", instances: [], risques: [] }, plan, charte({})));
+  assert.match(t, /1 action n'a pas encore de condition de clôture écrite/);
+  assert.match(t, /condition de clôture à définir/);
+  assert.match(t, /Le document est signé\./);
 });
 
 test("le Flash INFO porte un bloc par direction, aucun supprimé", async () => {

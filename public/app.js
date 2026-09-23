@@ -9105,7 +9105,8 @@ async function renderPortefeuilleProjets() {
   if (d?.error) { $("#view").innerHTML = `<p class="neg">${esc(d.error)}</p>`; return; }
   PJ.referentiels = d.referentiels;
 
-  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="pj-new">+ Projet</button>`;
+  $("#topbar-actions").innerHTML = `<button class="btn-ghost btn-sm" id="pj-note">Depuis une note</button>
+    <button class="btn-primary btn-sm" id="pj-new">+ Projet</button>`;
   const NIV = { bloquant: "pj-a-bloquant", important: "pj-a-important", conseille: "pj-a-conseille" };
 
   $("#view").innerHTML = `
@@ -9147,6 +9148,7 @@ async function renderPortefeuilleProjets() {
 
   $("#pj-campus").onchange = (e) => { PJ.campus = e.target.value; renderPortefeuilleProjets(); };
   $("#pj-new").onclick = () => openProjetForm(null, d.modeles);
+  $("#pj-note").onclick = () => openCadrage(null);
   $$(".pj-row").forEach((tr) => { tr.onclick = () => { PJ.ouvert = tr.dataset.id; PJ.onglet = "planning"; PJ.zoom = null; renderProjets(); }; });
   $$(".pj-mod-use").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); openProjetForm(null, d.modeles, b.dataset.id); }; });
   $$(".pj-mod-del").forEach((b) => { b.onclick = async (e) => {
@@ -9180,6 +9182,7 @@ async function renderFicheProjet() {
         <button class="btn-ghost btn-sm" id="pj-simuler">Simuler</button>
         <button class="btn-ghost btn-sm" id="pj-niveler">Niveler la charge</button>
         <button class="btn-ghost btn-sm" id="pj-ref">${p.reference ? "Nouvelle référence" : "Figer la référence"}</button>
+        <button class="btn-ghost btn-sm" id="pj-nourrir">Nourrir depuis une note</button>
         <button class="btn-ghost btn-sm" id="pj-modele">Enregistrer comme modèle</button>
         <button class="btn-ghost btn-sm" id="pj-export">Excel</button>
       </div>
@@ -9260,6 +9263,7 @@ function pjBrancherEntete(d) {
   if ($("#pj-simuler")) $("#pj-simuler").onclick = () => openSimulationProjet(d);
   if ($("#pj-niveler")) $("#pj-niveler").onclick = () => openNivellement(d);
   if ($("#pj-modele")) $("#pj-modele").onclick = () => openModeleProjet(d);
+  if ($("#pj-nourrir")) $("#pj-nourrir").onclick = () => openCadrage(d.projet);
   if ($("#pj-ref")) $("#pj-ref").onclick = async (ev) => guard(ev.currentTarget, async () => {
     const motif = prompt("Figer la référence — motif (ex. « validée en comité du 12 mars ») :", "");
     if (motif === null) return;
@@ -10095,4 +10099,139 @@ async function pjRendreDocuments(d) {
     e.target.value = "";
   };
   $$(".pj-piece").forEach((b) => { b.onclick = () => { location.href = `${base}/pack/${b.dataset.c}`; }; });
+}
+
+
+// ---------- Alimenter un projet depuis une note de cadrage ----------
+// Les documents sortent « — à renseigner — » tant que la fiche est vide. Ces
+// informations existent déjà, dans une note Word que personne ne veut
+// ressaisir. On la lit, on montre ce qu'on y a compris, et RIEN n'entre sans
+// que quelqu'un ait décoché ce qui ne va pas.
+const CADRAGE_LABELS = {
+  objectif: "Objectif", contexte: "Contexte", perimetre: "Périmètre", horsPerimetre: "Hors périmètre",
+  commanditaire: "Commanditaire", sponsor: "Sponsor", coSponsor: "Co-sponsor", relaisDG: "Relais direction générale",
+  pilote: "Pilote", budget: "Budget", risques: "Risques", kpis: "Indicateurs", instances: "Gouvernance",
+  fournisseurs: "Prestataires", chantiers: "Chantiers et actions",
+};
+
+function openCadrage(projet) {
+  const bg = openModal(projet ? `Nourrir « ${projet.nom} » depuis une note` : "Créer un projet depuis une note de cadrage", `
+    <p class="muted" style="font-size:13.5px;margin-top:0;">
+      Colle la note de cadrage, le compte rendu de lancement ou la note d'arbitrage — ou dépose le fichier
+      (Word, PDF, tableur, texte). Ce qui en sera tiré te sera montré avant d'entrer quelque part.</p>
+    <div class="row" style="align-items:center;gap:10px;">
+      <div style="flex:0 0 auto;"><input type="file" id="cd-fichier" accept=".docx,.pdf,.txt,.md,.csv,.xlsx"></div>
+      <label class="muted" style="flex:0 0 auto;font-size:13px;display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="cd-ia"> s'aider de l'IA si la note n'est pas structurée</label>
+    </div>
+    <label class="field-label" style="margin-top:10px;">Texte de la note</label>
+    <textarea id="cd-texte" rows="12" style="width:100%;font-family:var(--mono);font-size:12.5px;" placeholder="# Note de cadrage — …
+
+Commanditaire : …
+Sponsor : …
+
+## Contexte
+…"></textarea>
+    <div class="actions"><button class="btn-primary" id="cd-go">Analyser</button></div>
+    <div id="cd-res"></div>`);
+
+  $("#cd-fichier").onchange = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    $("#cd-res").innerHTML = '<p class="muted">Extraction du fichier…</p>';
+    const r = await api.upload(f);
+    if (r?.error) { $("#cd-res").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    $("#cd-texte").value = r.text || "";
+    $("#cd-res").innerHTML = `<p class="muted">${esc(f.name)} — ${(r.chars || 0).toLocaleString("fr-FR")} caractères extraits. Relis avant d'analyser.</p>`;
+  };
+
+  $("#cd-go").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const texte = $("#cd-texte").value;
+    if (texte.trim().length < 40) return alert("Note trop courte : colle le texte, ou dépose le fichier.");
+    $("#cd-res").innerHTML = '<p class="muted">Lecture…</p>';
+    const r = await api.post("/api/projets/cadrage/analyser", { texte, ia: $("#cd-ia").checked });
+    if (r?.error) { $("#cd-res").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    rendreRevueCadrage(bg, projet, r);
+  });
+}
+
+function rendreRevueCadrage(bg, projet, r) {
+  const p = r.proposition;
+  const champs = Object.entries(p.champs).filter(([k, v]) => k !== "nom" && v !== "" && v !== 0 && v != null);
+  const reg = ["risques", "kpis", "instances", "fournisseurs"].map((k) => [k, (p.registres?.[k] || []).length]).filter(([, n]) => n);
+
+  $("#cd-res").innerHTML = `
+    <div class="section-title">Ce que la note dit</div>
+    ${p.iaUtilisee ? '<p class="hint" style="color:var(--warn);">Note peu structurée : le contenu a été mis en forme automatiquement. Relis chaque ligne avant de valider.</p>' : ""}
+    ${p.iaEchec ? `<p class="hint" style="color:var(--warn);">${esc(p.iaEchec)}</p>` : ""}
+    ${champs.length || reg.length ? `<div class="card" style="overflow:hidden;">
+      ${champs.map(([k, v]) => `<label class="row" style="align-items:flex-start;gap:10px;padding:9px 13px;border-bottom:1px solid var(--line-2);margin:0;">
+        <input type="checkbox" class="cd-champ" data-k="${k}" checked style="flex:0 0 auto;margin-top:3px;">
+        <span style="flex:0 0 150px;font-weight:700;font-size:13px;">${esc(CADRAGE_LABELS[k] || k)}</span>
+        <span style="flex:1;font-size:13px;white-space:pre-wrap;">${esc(k === "budget" ? Number(v).toLocaleString("fr-FR") + " €" : String(v).slice(0, 400))}</span></label>`).join("")}
+      ${reg.map(([k, n]) => `<label class="row" style="align-items:center;gap:10px;padding:9px 13px;border-bottom:1px solid var(--line-2);margin:0;">
+        <input type="checkbox" class="cd-champ" data-k="${k}" checked style="flex:0 0 auto;">
+        <span style="flex:0 0 150px;font-weight:700;font-size:13px;">${esc(CADRAGE_LABELS[k])}</span>
+        <span style="flex:1;font-size:13px;">${n} entrée(s) : ${esc((p.registres[k] || []).map((x) => x.titre || x.indicateur || x.nom).slice(0, 4).join(" · "))}</span></label>`).join("")}
+    </div>` : '<p class="neg">Rien n\'a pu être lu dans cette note. Coche « s\'aider de l\'IA » et réessaie, ou structure la note avec des titres.</p>'}
+
+    ${r.taches.length ? `<div class="section-title">Actions à créer (${r.taches.length})</div>
+      <p class="muted" style="font-size:13px;margin:-6px 0 8px;">Décoche ce qui n'a pas sa place. Les durées marquées sont celles que la note ne donnait pas : à trancher ici, pas plus tard.</p>
+      <div class="card" style="overflow:hidden;">
+        ${r.taches.map((t, i) => `<div class="row" style="align-items:center;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line-2);">
+          <input type="checkbox" class="cd-tache" data-i="${i}" checked style="flex:0 0 auto;">
+          <span style="flex:1;font-size:13px;${t.synthese ? "font-weight:700;" : t.parentRef ? "padding-left:14px;" : ""}">${t.jalon ? "◆ " : ""}${esc(t.titre)}</span>
+          ${t.jalon ? `<span class="pill done" style="flex:0 0 auto;">jalon ${esc(t.contrainte?.date || "")}</span>`
+            : t.synthese ? '<span class="pill" style="flex:0 0 auto;background:var(--line-2);color:var(--muted);">chantier</span>'
+            : `<span style="flex:0 0 auto;display:flex;align-items:center;gap:5px;">
+                <input type="number" class="cd-duree" data-i="${i}" value="${t.dureeJours}" min="0" style="width:64px;padding:3px 6px;font-size:12.5px;">
+                <span class="muted" style="font-size:12px;">j${t.dureeDeduite ? " — non dite" : t.dureeSource ? ` (${esc(t.dureeSource)})` : ""}</span></span>`}
+        </div>`).join("")}
+      </div>` : ""}
+
+    ${p.absent?.length ? `<div class="card card-pad" style="border-left:4px solid var(--warn);margin-top:12px;">
+      <b>Ce que la note ne dit pas</b>
+      <p class="sub muted">Ces rubriques sortiront « — à renseigner — » dans les documents tant qu'elles ne seront pas complétées :
+      ${p.absent.map((k) => esc(CADRAGE_LABELS[k] || k)).join(", ")}.</p></div>` : ""}
+    ${p.datesNonLues?.length ? `<div class="card card-pad" style="border-left:4px solid var(--warn);margin-top:10px;">
+      <b>Échéances sans date exploitable</b>
+      <p class="sub muted">${p.datesNonLues.map(esc).join(" · ")} — une date approximative n'entre pas dans le plan : elle produirait un engagement que personne n'a pris.</p></div>` : ""}
+
+    ${projet ? "" : `<div class="row" style="margin-top:12px;">
+      <div><label class="field-label">Nom du projet</label><input id="cd-nom" value="${esc(p.champs.nom || "")}" placeholder="intitulé"></div>
+      <div><label class="field-label">Campus</label><select id="cd-campus">${campusOptions("")}</select></div>
+    </div>`}
+    <div class="actions" style="margin-top:12px;">
+      <button class="btn-primary" id="cd-appliquer">${projet ? "Enrichir ce projet" : "Créer le projet"}</button>
+      ${projet ? '<label class="muted" style="font-size:13px;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="cd-ecraser"> remplacer aussi ce qui est déjà renseigné</label>' : ""}
+    </div>`;
+
+  $("#cd-appliquer").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const choix = $$(".cd-champ").filter((c) => c.checked).map((c) => c.dataset.k);
+    const taches = $$(".cd-tache").filter((c) => c.checked).map((c) => {
+      const i = Number(c.dataset.i);
+      const t = { ...r.taches[i] };
+      const d = $(`.cd-duree[data-i="${i}"]`);
+      if (d) t.dureeJours = Math.max(0, Number(d.value) || 0);
+      return t;
+    });
+    // Un chantier dont toutes les actions ont été décochées n'a plus d'objet.
+    const refs = new Set(taches.map((t) => t.ref));
+    const utiles = taches.filter((t) => !t.synthese || taches.some((x) => x.parentRef === t.ref));
+    const out = await api.post("/api/projets/cadrage/appliquer", {
+      proposition: p, choix, taches: utiles.filter((t) => !t.parentRef || refs.has(t.parentRef)),
+      projetId: projet?.id || null,
+      nom: projet ? undefined : ($("#cd-nom")?.value || "").trim(),
+      campusId: projet ? undefined : ($("#cd-campus")?.value || null),
+      ecraser: !!$("#cd-ecraser")?.checked,
+    });
+    if (out?.error) return alert(out.error);
+    bg.remove();
+    if (out.conflits?.length) {
+      alert(`Enrichi.\n\nNon remplacé, parce que déjà renseigné :\n${out.conflits.map((c) => `· ${CADRAGE_LABELS[c.cle] || c.cle}`).join("\n")}\n\nCoche « remplacer » si tu veux la version de la note.`);
+    }
+    PJ.ouvert = out.projet.id;
+    PJ.onglet = "planning";
+    renderProjets();
+  });
 }
