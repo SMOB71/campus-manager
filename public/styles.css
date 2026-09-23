@@ -849,3 +849,60 @@ h3.sec { font-family: Georgia, serif; font-size: 15px; color: var(--teal); margi
 /* Statut d'un livrable : « À produire » etait coupe en « À produi » — un select trop
    etroit pour son propre libelle donne un produit qui a l'air casse. */
 .out-st { min-width: 7.5rem; }
+
+/* ---------- Conduite de projet ---------- */
+/* Le diagramme est en deux panneaux : les intitulés restent lisibles pendant
+   qu'on fait défiler le temps. Les hauteurs de ligne des deux panneaux sont
+   liées (30 px, voir PJ_ROW dans app.js) — les désaccorder décale les barres
+   de leur titre, ce qui rend le diagramme faux à la lecture. */
+.pj-gantt { display: flex; align-items: flex-start; }
+.pj-gauche { flex: 0 0 258px; border-right: 1px solid var(--line); background: var(--panel); }
+.pj-droite { flex: 1; overflow-x: auto; }
+.pj-svg { display: block; }
+.pj-nom { height: 30px; display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.pj-nom:hover { background: var(--bg); }
+.pj-nom .pj-titre { overflow: hidden; text-overflow: ellipsis; }
+.pj-nom.pj-crit .pj-titre { color: var(--accent-700); font-weight: 600; }
+.pj-faite { text-decoration: line-through; opacity: .62; }
+.pj-code { font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
+.pj-bar { cursor: pointer; }
+.pj-bar:hover { opacity: .82; }
+text.pj-mois { font-size: 11px; fill: var(--muted); font-weight: 600; }
+text.pj-auj { font-size: 10.5px; fill: var(--accent-700); font-weight: 600; }
+.pj-leg { font-size: 11.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.pj-leg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* Jauge d'avancement : elle affiche un CALCUL, jamais une saisie. */
+.pj-jauge { width: 76px; height: 7px; border-radius: 4px; background: var(--line-2); overflow: hidden; }
+.pj-jauge span { display: block; height: 100%; background: var(--marine); }
+
+.pj-neg { color: var(--danger); font-weight: 600; }
+.pj-pos { color: var(--good); font-weight: 600; }
+.pj-a-bloquant { color: var(--danger); font-size: 12.5px; }
+.pj-a-important { color: var(--warn); font-size: 12.5px; }
+.pj-a-conseille { color: var(--muted); font-size: 12.5px; }
+.pj-row { cursor: pointer; }
+.pj-row:hover { background: var(--bg); }
+.pj-table td { vertical-align: middle; }
+.pj-tr-synth { background: rgba(13, 27, 42, .035); }
+.pj-raf { width: 4.6rem; padding: 3px 6px; font-size: 13px; }
+.pj-chk { font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
+.pj-ress { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.pj-courbe { display: block; }
+.pj-chaine { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pj-maillon { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--ink); border-radius: 8px; padding: 4px 8px; font-size: 12.5px; }
+.pj-fleche-txt { color: var(--muted-2); }
+
+@media (max-width: 820px) {
+  .pj-gauche { flex-basis: 150px; }
+}
+@media print {
+  .pj-droite { overflow: visible; }
+  .pj-gantt { page-break-inside: avoid; }
+}
+
+/* `.row > *` étire ses enfants (flex:1, min-width 170px) : parfait pour des
+   champs de formulaire, désastreux pour une barre de boutons — « Excel » se
+   retrouvait seul sur toute la largeur. Les barres d'action du module projet
+   utilisent donc cette classe, qui rend aux boutons leur largeur naturelle. */
+.pj-actions > * { flex: 0 0 auto; min-width: 0; }

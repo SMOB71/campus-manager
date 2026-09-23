@@ -51,6 +51,7 @@ import * as expl from "./lib/exploitation.js";
 import * as real from "./lib/realisation.js";
 import * as cpf from "./lib/cpf.js";
 import * as demarrage from "./lib/demarrage.js";
+import * as proj from "./lib/projets.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -68,6 +69,8 @@ import * as store from "./lib/store.js";
 import { QUALIOPI_REFERENCE, QUALIOPI_STATUSES, QUALIOPI_GLOSSARY, QUALIOPI_VERSIONS, BASCULE_V2026,
   conformityRate, computeControlDates, versionApplicable, referenceDe, etatVersion, preparerBascule, basculer } from "./lib/qualiopi.js";
 import { analyseChain, planRebase, applyRebase } from "./lib/chain.js";
+import { planOuverture } from "./lib/pack/ouverture.js";
+import { piece as piecePack, zipper as zipperPack, nomZip as nomZipPack, inventaire as inventairePack } from "./lib/pack/index.js";
 import * as backup from "./lib/backup.js";
 import { sendSessionMail, convocationHtml, compteRenduHtml, destinataires, runSessionReminders } from "./lib/copil.js";
 import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_FAMILIES, dateMoinsJours, buildOpeningTasks, buildOpeningBudget, OPENING_DUREE_REF, OPENING_DUREE_MIN } from "./lib/calc.js";
@@ -1495,6 +1498,366 @@ app.post("/api/devis/:id/transformer", requireAuth, requireAdmin, (req, res) => 
   store.updateDevis(d.id, { acteId: acte.id, etape: "transforme" });
   logAudit(req, "create", "acte", `transformation du devis ${d.id} en ${doc.TYPES[corps.type]?.label}`);
   res.json({ acte, aCompleter: v.ok ? [] : v.errors, warnings: v.warnings });
+});
+
+// --- Conduite de projet -----------------------------------------------------
+// Registre distinct des ouvertures de campus et des plans d'action : on ne
+// touche ni aux unes ni aux autres. Ce qui est ici, ce sont les projets qui
+// n'entrent dans aucune case — refonte d'un système, déménagement d'un site,
+// campagne, réorganisation — et qui se pilotent avec des dépendances, une
+// charge et une date de fin calculée.
+//
+// TROIS GARDES QUI N'EXISTENT PAS AILLEURS, et qui tiennent en une phrase
+// chacune : on n'écrit jamais une modification qui rendrait le plan
+// incalculable ; on ne décale pas en silence un jalon qui porte une échéance ;
+// et tout ce qui bouge une date de jalon laisse une trace signée.
+
+const aujourdhuiISO = () => new Date().toISOString().slice(0, 10);
+
+function planDe(projet, taches, auj = aujourdhuiISO()) {
+  return proj.ordonnancer(projet, taches, { aujourdhui: auj });
+}
+// Périmètre : un projet rattaché à un campus suit le cloisonnement habituel ;
+// un projet réseau (sans campus) est réservé à l'administrateur.
+function peutProjet(req, res, projet) {
+  if (!projet.campusId) {
+    if (req.user?.role !== "admin") { res.status(403).json({ error: "projet réseau : réservé à l'administrateur" }); return false; }
+    return true;
+  }
+  return assertCampus(req, res, projet.campusId);
+}
+
+const glissees = (js) => (js.length === 1 ? `le jalon « ${js[0].titre} »` : `${js.length} jalons`);
+
+// Le cœur des gardes. `muter` reçoit la liste des tâches et renvoie la liste
+// telle qu'elle serait APRÈS ; rien n'est écrit tant que le plan résultant n'a
+// pas été calculé.
+function gardeReplanification(req, res, projet, taches, muter, { motif = "", confirmer = false } = {}) {
+  const avant = planDe(projet, taches);
+  const apres = planDe(projet, muter(taches.map((t) => ({ ...t }))));
+  if (!apres.ok) {
+    // Refus AVANT écriture : une dépendance circulaire enregistrée, c'est un
+    // planning qui n'affiche plus aucune date jusqu'à ce que quelqu'un trouve
+    // la boucle à la main.
+    res.status(400).json({ error: apres.erreurs.map((e) => e.message).join(" ; "), erreurs: apres.erreurs });
+    return null;
+  }
+  if (avant.ok) {
+    const avantJalons = new Map(avant.resume.jalons.map((j) => [j.id, j]));
+    const glisses = apres.resume.jalons.filter((j) => {
+      const a = avantJalons.get(j.id);
+      return a && j.echeance && j.echeanceDepassee > 0 && !(a.echeanceDepassee > 0);
+    });
+    if (glisses.length && !motif && !confirmer) {
+      res.status(409).json({
+        error: `cette modification fait passer ${glissees(glisses)} au-delà de son échéance. Indiquez le motif : une date d'engagement qui bouge sans raison écrite, ce sont trois versions du planning en circulation.`,
+        forcable: true, motifRequis: true,
+        jalons: glisses.map((j) => ({ id: j.id, titre: j.titre, echeance: j.echeance, date: j.date, retard: j.echeanceDepassee })),
+      });
+      return null;
+    }
+  }
+  return { avant, apres };
+}
+
+// Journalise ce qui a bougé. On n'écrit une ligne que si une date de jalon
+// change : journaliser chaque frappe noierait la seule information utile.
+function journaliserProjet(req, projet, avant, apres, action, motif) {
+  if (!avant?.ok || !apres?.ok) return;
+  const av = new Map(avant.resume.jalons.map((j) => [j.id, j.date]));
+  const mouvements = apres.resume.jalons
+    .filter((j) => av.has(j.id) && av.get(j.id) !== j.date)
+    .map((j) => ({ jalonId: j.id, titre: j.titre, de: av.get(j.id), vers: j.date }));
+  const finBouge = avant.resume.fin !== apres.resume.fin;
+  if (!mouvements.length && !finBouge) return;
+  store.addProjetJournal({
+    projetId: projet.id, action, motif: String(motif || "").slice(0, 400),
+    par: req.user?.name || req.user?.email || "", parId: req.user?.id || null,
+    finAvant: avant.resume.fin, finApres: apres.resume.fin, mouvements,
+  });
+}
+
+// Vue d'ensemble : le portefeuille, et rien d'autre. Les détails coûtent un
+// calcul par projet, on ne les sert qu'à l'ouverture d'une fiche.
+app.get("/api/projets", requireAuth, (req, res) => {
+  const campusId = req.query.campusId || null;
+  if (campusId && !assertCampus(req, res, campusId)) return;
+  let projets = store.listProjets({ archive: req.query.archive === "1" });
+  if (campusId) projets = projets.filter((p) => p.campusId === campusId);
+  else if (req.user?.role !== "admin") projets = scopeByCampus(req, projets);
+  const plans = {};
+  for (const p of projets) plans[p.id] = planDe(p, store.listProjetTaches({ projetId: p.id }));
+  res.json({
+    ...proj.portefeuille(projets, plans),
+    modeles: store.listProjetModeles().map((m) => ({ id: m.id, nom: m.nom, description: m.description, taches: (m.taches || []).length })),
+    referentiels: { liens: proj.TYPES_LIEN, contraintes: proj.CONTRAINTES, statutsProjet: proj.STATUTS_PROJET, statutsTache: proj.STATUTS_TACHE },
+  });
+});
+
+// Fiche projet : le plan complet, calculé à la demande. Rien n'est stocké de
+// ce qui se calcule — une date de fin en base est une date qui se périme.
+app.get("/api/projets/:id", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const plan = planDe(p, taches);
+  // Jours non travaillés de la fenêtre affichée : le diagramme doit GRISER ce
+  // qui ne produit rien. Un planning qui dessine une barre continue par-dessus
+  // la fermeture de Noël laisse croire à deux semaines de travail qui n'auront
+  // pas lieu — et c'est exactement là que les retards naissent.
+  const nonOuvres = [];
+  if (plan.ok && plan.resume.debut && plan.resume.fin) {
+    const d0 = proj.ajoutJoursCalendaires(plan.resume.debut, -7);
+    const d1 = proj.ajoutJoursCalendaires(plan.resume.fin, 14);
+    for (let d = d0; d <= d1 && nonOuvres.length < 2000; d = proj.ajoutJoursCalendaires(d, 1)) {
+      if (!plan.calendrier.estOuvre(d)) nonOuvres.push(d);
+    }
+  }
+  res.json({
+    projet: p,
+    ok: plan.ok,
+    erreurs: plan.erreurs,
+    // Plan non calculable : on ne sert AUCUNE date, mais on sert quand même les
+    // tâches brutes. Les masquer laisserait l'utilisateur devant un écran vide
+    // qui lui reproche une boucle sans lui donner de quoi la défaire.
+    taches: plan.ok ? plan.taches : store.listProjetTaches({ projetId: p.id }).map((t, i) => ({
+      ...proj.normaliserTache(t), code: String(i + 1), niveau: 0, synthese: false,
+      debut: null, fin: null, avancement: 0, margeTotale: 0, critique: false, conflits: [], echeanceDepassee: 0,
+    })),
+    resume: plan.resume,
+    nonOuvres,
+    charge: plan.ok ? proj.charge(plan) : null,
+    chemins: plan.ok ? proj.cheminsCritiques(plan) : [],
+    derive: plan.ok && p.reference ? proj.derive(plan, p.reference) : null,
+    journal: store.listProjetJournal({ projetId: p.id, max: 50 }),
+    referentiels: { liens: proj.TYPES_LIEN, contraintes: proj.CONTRAINTES, statutsProjet: proj.STATUTS_PROJET, statutsTache: proj.STATUTS_TACHE },
+  });
+});
+
+app.post("/api/projets", requireAuth, (req, res) => {
+  const corps = req.body || {};
+  if (!String(corps.nom || "").trim()) return res.status(400).json({ error: "intitulé du projet requis" });
+  if (corps.campusId && !assertCampus(req, res, corps.campusId)) return;
+  if (!corps.campusId && req.user?.role !== "admin") return res.status(403).json({ error: "un projet sans campus est un projet réseau : réservé à l'administrateur" });
+
+  let taches = [];
+  let debut = corps.debut || aujourdhuiISO();
+  // Création depuis un modèle : c'est ici que le rétroplanning prend son sens.
+  // On donne la date qui ne se négocie pas (rentrée, audit, dépôt) et le début
+  // se déduit — l'inverse de ce que demandent les outils du marché.
+  if (corps.modeleId) {
+    const m = store.getProjetModele(corps.modeleId);
+    if (!m) return res.status(404).json({ error: "modèle introuvable" });
+    const inst = proj.instancierModele(m, { datePivot: corps.datePivot || debut, sens: corps.sens === "avant" ? "avant" : "depuis" });
+    debut = inst.debutProjet;
+    taches = inst.taches;
+  }
+  const projet = store.addProjet({
+    ...proj.normaliserProjet({ ...corps, debut }),
+    id: undefined, reference: null,
+  });
+  // Les identifiants du modèle sont des références internes : on les remplace
+  // par de vrais identifiants en conservant la structure des liens.
+  const map = new Map();
+  for (const t of taches) map.set(t.id, null);
+  for (const t of taches) {
+    const rec = store.addProjetTache({ ...proj.normaliserTache({ ...t, id: undefined }), projetId: projet.id, id: undefined, parentId: null, liens: [] });
+    map.set(t.id, rec.id);
+  }
+  for (const t of taches) {
+    const nouvelId = map.get(t.id);
+    if (!nouvelId) continue;
+    store.updateProjetTache(nouvelId, {
+      parentId: t.parentId ? map.get(t.parentId) || null : null,
+      liens: (t.liens || []).map((l) => ({ deId: map.get(l.deId), type: l.type, decalage: l.decalage })).filter((l) => l.deId),
+    });
+  }
+  logAudit(req, "create", "projet", projet.nom);
+  res.json({ projet, taches: store.listProjetTaches({ projetId: projet.id }) });
+});
+
+app.patch("/api/projets/:id", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  if (req.body?.campusId && !assertCampus(req, res, req.body.campusId)) return;
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const futur = proj.normaliserProjet({ ...p, ...req.body });
+  const avant = planDe(p, taches);
+  const apres = planDe(futur, taches);
+  if (!apres.ok) return res.status(400).json({ error: apres.erreurs.map((e) => e.message).join(" ; "), erreurs: apres.erreurs });
+  const out = store.updateProjet(p.id, { ...req.body });
+  journaliserProjet(req, p, avant, apres, "modification du cadre du projet", req.body?.motif);
+  logAudit(req, "update", "projet", p.nom);
+  res.json({ projet: out });
+});
+
+app.delete("/api/projets/:id", requireAuth, requireAdmin, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  store.deleteProjet(p.id);
+  logAudit(req, "delete", "projet", p.nom);
+  res.json({ ok: true });
+});
+
+// --- Tâches ---
+app.post("/api/projets/:id/taches", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  if (!String(req.body?.titre || "").trim()) return res.status(400).json({ error: "intitulé de la tâche requis" });
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const provisoire = { ...proj.normaliserTache({ ...req.body, id: "__nouvelle__" }), projetId: p.id, id: "__nouvelle__" };
+  const g = gardeReplanification(req, res, p, taches, (arr) => [...arr, provisoire], req.body || {});
+  if (!g) return;
+  const rec = store.addProjetTache({ ...proj.normaliserTache({ ...req.body, id: undefined }), projetId: p.id, id: undefined });
+  journaliserProjet(req, p, g.avant, g.apres, `ajout de la tâche « ${rec.titre} »`, req.body?.motif);
+  res.json({ tache: rec });
+});
+
+app.patch("/api/projets/:id/taches/:tid", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const t = store.getProjetTache(req.params.tid);
+  if (!t || t.projetId !== p.id) return res.status(404).json({ error: "tâche introuvable" });
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const patch = { ...req.body };
+  delete patch.motif; delete patch.confirmer;
+  // Cohérence du couple statut / reste à faire : « faite » impose un reste nul
+  // et une date de fin, « à faire » remet le compteur sur la durée. Laisser les
+  // deux diverger, c'est rouvrir la porte au pourcentage de confort.
+  if (patch.statut === "faite") {
+    patch.resteAFaire = 0;
+    patch.finReelle = patch.finReelle || t.finReelle || aujourdhuiISO();
+    patch.debutReel = patch.debutReel || t.debutReel || patch.finReelle;
+  }
+  if (patch.statut === "en_cours" && !patch.debutReel && !t.debutReel) patch.debutReel = aujourdhuiISO();
+  if (patch.statut === "a_faire") { patch.resteAFaire = patch.dureeJours ?? t.dureeJours; patch.debutReel = null; patch.finReelle = null; }
+  const g = gardeReplanification(req, res, p, taches, (arr) => arr.map((x) => (x.id === t.id ? { ...x, ...patch } : x)), req.body || {});
+  if (!g) return;
+  const out = store.updateProjetTache(t.id, patch);
+  journaliserProjet(req, p, g.avant, g.apres, `modification de « ${out.titre} »`, req.body?.motif);
+  res.json({ tache: out });
+});
+
+app.delete("/api/projets/:id/taches/:tid", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const t = store.getProjetTache(req.params.tid);
+  if (!t || t.projetId !== p.id) return res.status(404).json({ error: "tâche introuvable" });
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const avant = planDe(p, taches);
+  const out = store.deleteProjetTache(t.id);
+  const apres = planDe(p, store.listProjetTaches({ projetId: p.id }));
+  journaliserProjet(req, p, avant, apres, `suppression de « ${t.titre} »`, req.body?.motif);
+  res.json({ ok: true, ...out });
+});
+
+// --- Référence (baseline) ---
+// Figer une référence est un acte : il se signe et il se motive.
+app.post("/api/projets/:id/reference", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const plan = planDe(p, store.listProjetTaches({ projetId: p.id }));
+  if (!plan.ok) return res.status(409).json({ error: "plan non calculable : on ne fige pas une référence sur un planning faux" });
+  if (p.reference && !req.body?.confirmer) {
+    return res.status(409).json({
+      error: `une référence existe déjà (figée le ${String(p.reference.prise).slice(0, 10)}, fin au ${p.reference.fin}). La remplacer efface la mesure de la dérive accumulée depuis.`,
+      forcable: true,
+    });
+  }
+  const ref = proj.prendreReference(plan, { par: req.user?.name || req.user?.email || "", motif: req.body?.motif || "" });
+  store.updateProjet(p.id, { reference: ref });
+  store.addProjetJournal({ projetId: p.id, action: p.reference ? "nouvelle référence (la précédente est remplacée)" : "référence figée",
+    motif: String(req.body?.motif || "").slice(0, 400), par: req.user?.name || req.user?.email || "",
+    finAvant: p.reference?.fin || null, finApres: ref.fin, mouvements: [] });
+  logAudit(req, "update", "projet", `référence figée — ${p.nom}`);
+  res.json({ reference: ref });
+});
+
+// --- Simulation : ne touche à rien ---
+app.post("/api/projets/:id/simuler", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const s = proj.simuler(p, store.listProjetTaches({ projetId: p.id }), req.body?.modifications || [], { aujourdhui: aujourdhuiISO() });
+  if (!s.ok) return res.status(400).json({ error: s.erreurs?.map((e) => e.message).join(" ; ") || "simulation impossible" });
+  res.json(s);
+});
+
+// --- Nivellement : proposé, puis appliqué seulement si on le demande ---
+app.post("/api/projets/:id/nivellement", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const n = proj.nivellement(p, taches, { aujourdhui: aujourdhuiISO() });
+  if (!n.ok) return res.status(400).json({ error: "plan non calculable" });
+  if (!req.body?.appliquer) return res.json({ ...n, applique: false });
+  if (!n.propositions.length) return res.json({ ...n, applique: false });
+
+  const avant = planDe(p, taches);
+  for (const prop of n.propositions) store.updateProjetTache(prop.tacheId, { contrainte: { type: "pas_avant", date: prop.vers } });
+  const apres = planDe(p, store.listProjetTaches({ projetId: p.id }));
+  journaliserProjet(req, p, avant, apres, `nivellement appliqué (${n.propositions.length} tâche(s) décalée(s))`, req.body?.motif);
+  logAudit(req, "update", "projet", `nivellement — ${p.nom}`);
+  res.json({ ...n, applique: true });
+});
+
+// --- Modèles : capturés depuis un projet réel, jamais livrés tout faits ---
+app.get("/api/projets-modeles", requireAuth, (req, res) => {
+  res.json({ modeles: store.listProjetModeles() });
+});
+app.post("/api/projets/:id/modele", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const taches = store.listProjetTaches({ projetId: p.id });
+  if (!taches.length) return res.status(400).json({ error: "projet sans tâche : il n'y a pas de trame à capturer" });
+  const plan = planDe(p, taches);
+  const modele = proj.modeleDepuisProjet(p, taches, plan, { nom: req.body?.nom || p.nom, description: req.body?.description || "" });
+  const rec = store.addProjetModele({ ...modele, parId: req.user?.id || null, par: req.user?.name || req.user?.email || "" });
+  logAudit(req, "create", "modele-projet", rec.nom);
+  res.json({ modele: rec });
+});
+app.delete("/api/projets-modeles/:mid", requireAuth, requireAdmin, (req, res) => {
+  const m = store.getProjetModele(req.params.mid);
+  if (!m) return res.status(404).json({ error: "modèle introuvable" });
+  store.deleteProjetModele(m.id);
+  logAudit(req, "delete", "modele-projet", m.nom);
+  res.json({ ok: true });
+});
+
+// --- Export ---
+app.get("/api/projets/:id/export", requireAuth, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).send("Projet introuvable");
+  if (!p.campusId && req.user?.role !== "admin") return res.status(403).send("Hors périmètre");
+  if (p.campusId && !canCampus(req, p.campusId)) return res.status(403).send("Hors périmètre");
+  const plan = planDe(p, store.listProjetTaches({ projetId: p.id }));
+  if (!plan.ok) return res.status(409).send("Plan non calculable : rien à exporter");
+  const noms = new Map(plan.taches.map((t) => [t.id, t.titre]));
+  const lignes = plan.taches.map((t) => ({
+    "N°": t.code, Tâche: `${"    ".repeat(t.niveau || 0)}${t.titre}`, Lot: t.lot || "",
+    Type: t.synthese ? "regroupement" : t.jalon ? "jalon" : "tâche",
+    "Durée (j ouvrés)": t.jalon ? 0 : t.dureeJours,
+    Début: t.debut || "", Fin: t.fin || "",
+    "Reste à faire (j)": t.synthese ? "" : t.resteAFaire,
+    "Avancement %": Math.round((t.avancement || 0) * 100),
+    Statut: proj.STATUTS_TACHE[t.statut]?.label || t.statut,
+    "Marge totale (j)": t.synthese ? "" : t.margeTotale,
+    Critique: t.critique ? "oui" : "",
+    Échéance: t.echeance || "", "Retard sur échéance (j)": t.echeanceDepassee || "",
+    Prédécesseurs: (t.liens || []).map((l) => `${noms.get(l.deId) || "?"} (${l.type}${l.decalage ? (l.decalage > 0 ? "+" : "") + l.decalage : ""})`).join(" ; "),
+    Responsable: t.responsable || "",
+    "Budget prévu €": t.budgetPrevu || "", "Budget dépensé €": t.budgetDepense || "",
+  }));
+  sendXlsx(res, "Planning", lignes, `projet-${String(p.nom || "").replace(/[^\w-]+/g, "-").toLowerCase()}.xlsx`);
 });
 
 // --- Contrats des intervenants ---
@@ -4091,6 +4454,63 @@ function buildOpeningHtml(o) {
   </div>
 </body></html>`;
 }
+// ===== Pack documentaire d'ouverture =====
+// Un rétroplanning n'est pas un livrable : ce qui se présente, se signe et se
+// distribue, ce sont des Word, des PowerPoint et un classeur. L'application les
+// produit elle-même pour qu'ils ne divergent jamais du plan — un pack refait à
+// la main est faux le lendemain.
+const MIME_PACK = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
+function packOuverture(o) {
+  // Les tâches enregistrées priment : ce sont elles qui portent les
+  // responsables, les statuts et les échéances corrigées. Le modèle ne sert
+  // que si l'ouverture n'a jamais été semée.
+  const taches = (o.tasks || []).length ? o.tasks : buildOpeningTasks(o.targetDate, store.getOpeningSettings(), dureeDe(o));
+  const { projet, plan } = planOuverture(o, taches, { aujourdhui: new Date().toISOString().slice(0, 10) });
+  // Les séances déjà programmées du COPIL alimentent les ordres du jour : à
+  // défaut, le document est simplement absent du pack plutôt que vide.
+  const seances = store.listCommittees({ scope: "opening", scopeId: o.id })
+    .flatMap((c) => (c.sessions || []).map((se) => ({ ...se, instance: c.name })))
+    .filter((se) => se.date && se.status !== "cancelled")
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return { projet, plan, options: { seances }, settings: store.getSettings() };
+}
+
+app.get("/api/openings/:id/pack", requireAuth, requireAdmin, async (req, res) => {
+  const o = store.getOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: "introuvable" });
+  const { projet, plan, options, settings } = packOuverture(o);
+  if (req.query.inventaire) return res.json({ pieces: inventairePack(projet, plan, options) });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${nomZipPack(projet)}"`);
+  try {
+    const r = await zipperPack(projet, plan, settings, options, res);
+    logAudit(req, "export", "pack-ouverture", `${o.name} — ${r.pieces.length} pièces${r.echecs.length ? `, ${r.echecs.length} en échec` : ""}`);
+  } catch (e) {
+    // Les entêtes sont déjà parties : on ne peut plus répondre en JSON. On coupe
+    // le flux, ce qui fait échouer le téléchargement côté navigateur plutôt que
+    // de livrer une archive tronquée qui s'ouvrirait à moitié.
+    logAudit(req, "export", "pack-ouverture", `ECHEC ${o.name} : ${e.message}`);
+    res.destroy();
+  }
+});
+
+app.get("/api/openings/:id/pack/:cle", requireAuth, requireAdmin, async (req, res) => {
+  const o = store.getOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: "introuvable" });
+  const { projet, plan, options, settings } = packOuverture(o);
+  const r = await piecePack(req.params.cle, projet, plan, settings, options).catch((e) => ({ error: e.message }));
+  if (r.error) return res.status(r.error === "document inconnu" ? 404 : 500).json({ error: r.error });
+  res.setHeader("Content-Type", MIME_PACK[r.type] || "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${r.nom}"`);
+  logAudit(req, "export", "pack-ouverture", `${o.name} — ${r.libelle}`);
+  res.send(r.octets);
+});
+
 app.get("/api/openings/:id/export", requireAuth, requireAdmin, (req, res) => {
   const o = store.getOpening(req.params.id);
   if (!o) return res.status(404).json({ error: "introuvable" });

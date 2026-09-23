@@ -342,11 +342,11 @@ async function registerPasskey(deviceName) {
 }
 
 // ---------- Navigation ----------
-const NAV_GROUPS = ["Chantier 2026", "Pilotage", "Ouverture de campus", "Décisions", "Réseau", "Enseignement", "LMS", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
+const NAV_GROUPS = ["Chantier 2026", "Pilotage", "Projets", "Ouverture de campus", "Décisions", "Réseau", "Enseignement", "LMS", "Recrutement", "Performance", "Conformité", "Atelier", "Administration"];
 // Rubriques rendues À PLAT, sans repli ni intitulé de groupe. Une ouverture de campus
 // n'est pas une entrée parmi dix : c'est un projet de quinze mois consulté tous les jours,
 // et le ranger dans « Réseau » entre Tournée et SI campus le rendait introuvable.
-const NAV_SOLO = new Set(["Ouverture de campus"]);
+const NAV_SOLO = new Set(["Ouverture de campus", "Projets"]);
 const NAV = [
   { id: "accueil", label: "Accueil", icon: I.home, group: "Pilotage" },
   { id: "demarrage", label: "Prêt à exploiter ?", icon: I.shield, admin: true, group: "Pilotage" },
@@ -355,6 +355,9 @@ const NAV = [
   // d'action au lieu de 3 vues redondantes Accueil/Notifications/Priorités).
   { id: "priorites", label: "Priorités & alertes", icon: I.target, group: "Pilotage" },
   { id: "assistant", label: "Assistant", icon: I.chat, group: "Pilotage" },
+  // Rubrique à plat, comme les ouvertures : un portefeuille de projets se
+  // consulte tous les jours, il n'a rien à faire replié dans un groupe.
+  { id: "projets", label: "Projets", icon: I.route, group: "Projets" },
   { id: "decisions", label: "Décisions (CODIR)", icon: I.gavel, admin: true, group: "Décisions" },
   { id: "arbitrages", label: "Arbitrages CODIR", icon: I.clip, admin: true, group: "Décisions" },
   { id: "redressements", label: "Plans de redressement", icon: I.rocket, admin: true, group: "Décisions" },
@@ -508,7 +511,7 @@ function setView(v) {
   $("#view-title").textContent = NAV.find((n) => n.id === v)?.label || "";
   renderLicenceBanner();
   $("#topbar-actions").innerHTML = "";
-  ({ accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, catalogue: renderCatalogue, cpf: renderCpf, repertoire: renderRepertoire, exploitation: renderExploitation, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
+  ({ projets: renderProjets, accueil: renderAccueil, assistant: renderAssistant, notifications: renderNotifications, emails: renderEmails, reseau: renderReseau, admissions: renderAdmissions, calendrier: renderCalendrier, atelier: renderAtelier, qualiopi: renderQualiopi, enquetes: renderEnquetes, chantier: renderChantier, ressources: renderRessources, "suivi-distance": renderSuiviDistance, "dispositif-foad": renderDispositifFoad, "documents-of": renderDocumentsOf, certification: renderCertification, "insertion-actions": renderInsertionActions, indicateurs: renderIndicateurs, risques: renderRisques, directeurs: renderDirecteurs, utilisateurs: renderUtilisateurs, historique: renderHistorique, actions: renderActions, campus: renderCampus, objectifs: renderObjectifs, tournee: renderTournee, documents: renderDocuments, finance: renderFinance, insertion: renderInsertion, catalogue: renderCatalogue, cpf: renderCpf, repertoire: renderRepertoire, exploitation: renderExploitation, entreprises: renderEntreprises, journal: renderJournal, ouvertures: renderOuvertures, backups: renderBackups, decisions: renderDecisions, revues: renderRevues, evenements: renderEvenements, parametres: renderParametres, rgpd: renderRGPD, heatmap: renderHeatmap, priorites: renderPriorites, redressements: renderRedressements, prevision: renderPrevision, arbitrages: renderArbitrages, si: renderSi, apprenants: renderApprenants, contrats: renderContrats, facturation: renderFacturation, planning: renderPlanning, emargement: renderEmargement, notes: renderNotes, professeurs: renderProfesseurs, "dossiers-rh": renderDossiersRh, "contrats-profs": renderContratsProfs, "masse-horaire": renderMasseHoraire, referentiels: renderReferentiels, sallesclasses: renderSallesClasses, declarations: renderDeclarations, licence: renderLicence, exports: renderExports, deca: renderDeca, taxe: renderTaxe, demarrage: renderDemarrage, "indicateurs-publies": renderIndicateursPublies, mobilite: renderMobilite, apikeys: renderApiKeys, qualite: renderQualite, decrochage: renderDecrochage, jury: renderJury }[v] || renderAccueil)();
 }
 
 const campusName = (id) => state.campuses.find((c) => c.id === id)?.name || "";
@@ -5432,7 +5435,7 @@ function openOuvertureForm(o) {
       <div><label class="field-label">Date de rentrée (cible)</label><input class="txt ouf" data-f="targetDate" type="date" value="${esc(e.targetDate || "")}"></div>
       <div><label class="field-label">Budget d'ouverture (€)</label><input class="txt ouf" data-f="budget" type="number" value="${e.budget ?? ""}"></div>
       <div><label class="field-label">Durée du projet (mois avant la rentrée)</label><input class="txt ouf" data-f="dureeMois" type="number" min="12" max="24" step="0.5" value="${e.dureeMois ?? ""}" placeholder="15 (modèle)">
-        <p class="hint muted" style="margin-top:4px;">Raccourcir ne comprime que l'amont — étude, décision, recherche du local. Les délais subis (opposition du recteur, instruction ERP, chantier, fournisseurs, commission de sécurité) gardent leur date.</p></div>
+        <p class="hint muted" style="margin-top:4px;">Raccourcir ne comprime que l'amont — étude, décision, recherche du local. Les délais subis (appel d'offres, instruction ERP, chantier, fournisseurs, commission de sécurité) gardent leur date.</p></div>
       ${o ? `<div><label class="field-label">Statut</label><select class="txt ouf" data-f="status">${Object.entries(OUV_STATUS).map(([k, l]) => `<option value="${k}" ${e.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : ""}
       <div style="grid-column:1/-1;"><label class="field-label">Notes</label><input class="txt ouf" data-f="notes" value="${esc(e.notes || "")}"></div>
     </div>
@@ -5679,6 +5682,7 @@ async function openOuvertureDetail(oid) {
       <button class="btn-ghost btn-sm" id="ouv-reseed">Régénérer le type</button>
       <button class="btn-ghost btn-sm" id="ouv-xlsx">Excel</button>
       <button class="btn-ghost btn-sm" id="ouv-print">Imprimer</button>
+      <button class="btn-sm" id="ouv-pack">Pack documentaire</button>
       ${o.campusId ? `<button class="btn-ghost btn-sm" disabled>Fiche campus créée ✓</button>` : `<button class="btn-ghost btn-sm" id="ouv-convert">Convertir en campus</button>`}
       <button class="btn-ghost btn-sm" id="ouv-edit">Modifier</button>
       <button class="btn-ghost btn-sm btn-danger" id="ouv-del">Supprimer</button>
@@ -5691,6 +5695,7 @@ async function openOuvertureDetail(oid) {
   $("#ouv-reseed").onclick = async () => { if (!confirm("Régénérer le rétroplanning type ? Cela remplace les tâches actuelles.")) return; const r = await api.post(`/api/openings/${oid}/seed`, {}); if (r?.error) { alert(r.error); return; } closeModals(); openOuvertureDetail(oid); };
   $("#ouv-xlsx").onclick = () => { location.href = `/api/openings/${oid}/export`; };
   $("#ouv-print").onclick = () => window.open(`/api/openings/${oid}/export?format=print`, "_blank");
+  $("#ouv-pack").onclick = () => openPackForm(oid);
   $("#ouv-convert") && ($("#ouv-convert").onclick = async () => { if (!confirm("Convertir ce projet en fiche campus (le projet passe « Ouvert ») ?")) return; const r = await api.post(`/api/openings/${oid}/convert`, {}); if (r?.ok) { alert(r.already ? "Ce projet est déjà lié à une fiche campus." : "Fiche campus créée ✓ (onglet Campus)"); closeModals(); openOuvertureDetail(oid); } });
   $$("#ouv-mode .chip").forEach((c) => c.addEventListener("click", () => { ouvView = c.dataset.m; closeModals(); openOuvertureDetail(oid); }));
   if (ouvView === "budget") {
@@ -5809,6 +5814,45 @@ async function openOuvertureDetail(oid) {
     $$(".cp-task").forEach((b) => b.addEventListener("click", () => openTaskSheet(oid, b.dataset.tid)));
   }
 }
+async function openPackForm(oid) {
+  const r = await api.get(`/api/openings/${oid}/pack?inventaire=1`);
+  const pieces = r?.pieces || [];
+  if (!pieces.length) { alert("Aucun document à produire pour ce projet."); return; }
+  const dossiers = [...new Set(pieces.map((p) => p.dossier))];
+  const ICONE = { docx: "Word", pptx: "PowerPoint", xlsx: "Excel" };
+  openModal("Pack documentaire", `
+    <p class="sub">${pieces.length} documents produits depuis le plan : ils ne peuvent pas diverger de lui.
+    Le classeur de pilotage est le seul destiné à être modifié — les autres se régénèrent.</p>
+    ${dossiers.map((d) => `
+      <div class="ouv-lot"><h4>${esc(d)}</h4>
+      ${pieces.filter((p) => p.dossier === d).map((p) => `
+        <div class="ouv-task">
+          <div style="flex:1;min-width:0;">
+            <b>${esc(p.nom)}</b> <span class="pill">${ICONE[p.ext] || esc(p.ext)}</span>
+            <div class="sub muted">${esc(p.quoi)}</div>
+          </div>
+          <button class="btn-ghost btn-sm" data-piece="${esc(p.cle)}">Télécharger</button>
+        </div>`).join("")}
+      </div>`).join("")}
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center;">
+      <button id="pack-tout" class="btn-sm">Télécharger le pack complet (.zip)</button>
+      <span id="pack-etat" class="sub muted"></span>
+    </div>`);
+  $$("[data-piece]").forEach((b) => b.addEventListener("click", () => {
+    location.href = `/api/openings/${oid}/pack/${b.dataset.piece}`;
+  }));
+  $("#pack-tout").onclick = () => {
+    const b = $("#pack-tout");
+    b.disabled = true;
+    $("#pack-etat").textContent = "Construction du pack… (quelques secondes)";
+    location.href = `/api/openings/${oid}/pack`;
+    // Le navigateur ne signale pas la fin d'un telechargement declenche par
+    // navigation : on redonne la main apres un delai plutot que de laisser le
+    // bouton mort si l'utilisateur veut relancer.
+    setTimeout(() => { b.disabled = false; $("#pack-etat").textContent = "Téléchargement lancé."; }, 12000);
+  };
+}
+
 function openTaskForm(oid, t) {
   const e = t || {};
   openModal(t ? "Modifier la tâche" : "Nouvelle tâche", `
@@ -8959,4 +9003,791 @@ async function openAssignments(curriculumId) {
     alert(`${out.updated} fiche(s) enrichie(s). Le générateur saura désormais qui peut enseigner quoi.`);
     closeModals(); renderReferentiels();
   };
+}
+
+// ---------- Vue : Projets (conduite de projet) ----------
+// Ce module ne recouvre NI les ouvertures de campus NI les plans d'action : ce
+// sont des registres distincts, et on n'y touche pas. Ici vivent les projets
+// qui n'entrent dans aucune case et qui se pilotent avec des dépendances, une
+// charge et une date de fin CALCULÉE — jamais saisie.
+const PJ = { campus: "", ouvert: null, onglet: "planning", zoom: null, data: null };
+
+const pjJour = (iso) => new Date(String(iso).slice(0, 10) + "T00:00:00Z");
+const pjAdd = (iso, n) => new Date(pjJour(iso).getTime() + n * 86400000).toISOString().slice(0, 10);
+const pjDiff = (a, b) => Math.round((pjJour(b) - pjJour(a)) / 86400000);
+const pjDate = (iso) => (iso ? pjJour(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "2-digit" }) : "—");
+const pjPct = (v) => Math.round((v || 0) * 100);
+const pjEcart = (n) => (n == null ? '<span class="muted">—</span>'
+  : n > 0 ? `<span class="pj-neg">+${n} j</span>` : n < 0 ? `<span class="pj-pos">${n} j</span>` : '<span class="muted">à l\'heure</span>');
+
+// Envoi d'une mutation qui peut se heurter à une garde « motif requis ». Le
+// serveur refuse (409) tant qu'aucune raison n'est écrite ; on la demande une
+// fois, puis on renvoie. C'est la trace qui manque partout ailleurs : une date
+// d'engagement qui bouge sans motif, ce sont trois plannings en circulation.
+async function pjAvecMotif(appel) {
+  let r = await appel(null);
+  if (r?.motifRequis || (r?.forcable && r?.error)) {
+    const motif = prompt(`${r.error}\n\nMotif (obligatoire) :`, "");
+    if (!motif || !motif.trim()) return null;
+    r = await appel(motif.trim());
+  }
+  if (r?.error) { alert(r.error); return null; }
+  return r;
+}
+
+async function renderProjets() {
+  if (PJ.ouvert) return renderFicheProjet();
+  return renderPortefeuilleProjets();
+}
+
+// --- Portefeuille : la réponse à « lequel me coûtera cher si je ne m'en
+// occupe pas cette semaine ». Pas de note sur 100 : des faits, comptés.
+async function renderPortefeuilleProjets() {
+  const q = PJ.campus ? `?campusId=${encodeURIComponent(PJ.campus)}` : "";
+  const d = await api.get("/api/projets" + q);
+  if (d?.error) { $("#view").innerHTML = `<p class="neg">${esc(d.error)}</p>`; return; }
+  PJ.referentiels = d.referentiels;
+
+  $("#topbar-actions").innerHTML = `<button class="btn-primary btn-sm" id="pj-new">+ Projet</button>`;
+  const NIV = { bloquant: "pj-a-bloquant", important: "pj-a-important", conseille: "pj-a-conseille" };
+
+  $("#view").innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:flex-end;gap:10px;flex-wrap:wrap;">
+      <div><label class="field-label">Campus</label><select id="pj-campus">
+        <option value="">Tous (réseau compris)</option>
+        ${state.campuses.map((c) => `<option value="${c.id}" ${c.id === PJ.campus ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+      </select></div>
+    </div>
+    <div class="kpis" style="margin-bottom:14px;">
+      ${fkpi(d.actifs, "projets actifs")}
+      ${fkpi(d.enAlerte, "en alerte", d.enAlerte ? "bad" : "good")}
+      ${fkpi(d.nonCalculables, "plans non calculables", d.nonCalculables ? "bad" : "good")}
+    </div>
+    <div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Projet</th><th>Campus</th><th>Pilote</th><th>Fin prévue</th><th>Dérive</th>
+        <th>Avancement</th><th>Reste</th><th>Prochain jalon</th><th>Ce qui cloche</th></tr></thead>
+      <tbody>${d.lignes.length ? d.lignes.map((l) => `<tr class="pj-row" data-id="${l.id}">
+        <td><b>${esc(l.nom)}</b><br><span class="muted" style="font-size:12px;">${esc(d.referentiels.statutsProjet[l.statut]?.label || l.statut)}</span></td>
+        <td>${esc(campusName(l.campusId) || "réseau")}</td>
+        <td>${esc(l.pilote || "—")}</td>
+        <td>${l.calculable ? pjDate(l.fin) : '<span class="pj-neg">—</span>'}</td>
+        <td>${l.calculable ? pjEcart(l.derive) : ""}</td>
+        <td>${l.calculable ? `<div class="pj-jauge" title="${pjPct(l.avancement)} %"><span style="width:${pjPct(l.avancement)}%"></span></div>` : ""}</td>
+        <td>${l.calculable ? `${l.resteAFaireJours} j` : ""}</td>
+        <td>${l.prochainJalon ? `${esc(l.prochainJalon.titre)}<br><span class="muted" style="font-size:12px;">${pjDate(l.prochainJalon.date)}</span>` : '<span class="muted">—</span>'}</td>
+        <td>${l.alertes.length ? l.alertes.map((a) => `<div class="${NIV[a.niveau]}">${esc(a.texte)}</div>`).join("") : '<span class="muted">rien à signaler</span>'}</td>
+      </tr>`).join("") : `<tr><td colspan="9" class="muted">Aucun projet. Les ouvertures de campus et les plans d'action restent dans leurs rubriques : ici vivent les projets qui n'y entrent pas.</td></tr>`}
+      </tbody></table></div>
+
+    <div class="section-title">Modèles</div>
+    <p class="muted" style="font-size:13.5px;margin:-6px 0 10px;">Aucune trame n'est livrée avec le module : un modèle décidé par l'éditeur décrit son idée du métier, pas le vôtre. Un modèle se capture depuis un projet qui a tourné — bouton « Enregistrer comme modèle » sur une fiche.</p>
+    ${d.modeles.length ? `<div class="card" style="overflow-x:auto;"><table class="net-table">
+      <thead><tr><th>Modèle</th><th>Tâches</th><th>Description</th><th></th></tr></thead><tbody>
+      ${d.modeles.map((m) => `<tr><td><b>${esc(m.nom)}</b></td><td>${m.taches}</td><td class="muted">${esc(m.description || "")}</td>
+        <td><button class="btn-ghost btn-sm pj-mod-use" data-id="${m.id}">Lancer un projet</button>
+        ${isAdmin() ? `<button class="btn-ghost btn-sm pj-mod-del" data-id="${m.id}">Supprimer</button>` : ""}</td></tr>`).join("")}
+      </tbody></table></div>` : '<p class="muted">Aucun modèle capturé pour l\'instant.</p>'}`;
+
+  $("#pj-campus").onchange = (e) => { PJ.campus = e.target.value; renderPortefeuilleProjets(); };
+  $("#pj-new").onclick = () => openProjetForm(null, d.modeles);
+  $$(".pj-row").forEach((tr) => { tr.onclick = () => { PJ.ouvert = tr.dataset.id; PJ.onglet = "planning"; PJ.zoom = null; renderProjets(); }; });
+  $$(".pj-mod-use").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); openProjetForm(null, d.modeles, b.dataset.id); }; });
+  $$(".pj-mod-del").forEach((b) => { b.onclick = async (e) => {
+    e.stopPropagation();
+    if (!confirm("Supprimer ce modèle ? Les projets déjà créés à partir de lui ne bougent pas.")) return;
+    const r = await api.del(`/api/projets-modeles/${b.dataset.id}`);
+    if (r?.error) return alert(r.error);
+    renderPortefeuilleProjets();
+  }; });
+}
+
+// --- Fiche projet ---
+async function renderFicheProjet() {
+  const d = await api.get(`/api/projets/${PJ.ouvert}`);
+  if (d?.error) { PJ.ouvert = null; alert(d.error); return renderProjets(); }
+  PJ.data = d;
+  const p = d.projet, r = d.resume;
+
+  $("#topbar-actions").innerHTML = `
+    <button class="btn-ghost btn-sm" id="pj-back">← Portefeuille</button>
+    <button class="btn-ghost btn-sm" id="pj-edit">Cadre du projet</button>
+    <button class="btn-primary btn-sm" id="pj-add">+ Tâche</button>`;
+
+  const entete = `
+    <div class="row" style="align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+      <div style="flex:1;min-width:240px;">
+        <h2 style="margin:0 0 2px;">${esc(p.nom)}</h2>
+        <div class="muted" style="font-size:13px;">${esc(campusName(p.campusId) || "projet réseau")}${p.pilote ? ` · piloté par ${esc(p.pilote)}` : ""} · début ${pjDate(p.debut)}</div>
+      </div>
+      <div class="row pj-actions" style="gap:6px;flex-wrap:wrap;">
+        <button class="btn-ghost btn-sm" id="pj-simuler">Simuler</button>
+        <button class="btn-ghost btn-sm" id="pj-niveler">Niveler la charge</button>
+        <button class="btn-ghost btn-sm" id="pj-ref">${p.reference ? "Nouvelle référence" : "Figer la référence"}</button>
+        <button class="btn-ghost btn-sm" id="pj-modele">Enregistrer comme modèle</button>
+        <button class="btn-ghost btn-sm" id="pj-export">Excel</button>
+      </div>
+    </div>`;
+
+  if (!d.ok) {
+    $("#view").innerHTML = `${entete}
+      <div class="card card-pad" style="border-left:4px solid var(--danger);">
+        <b>Ce plan n'est pas calculable — aucune date n'est affichée.</b>
+        <p class="sub muted">Un planning faux est plus dangereux qu'un planning absent : on prend des décisions avec. Ce qui bloque :</p>
+        <ul style="margin:6px 0 0;padding-left:18px;">${d.erreurs.map((e) => `<li>${esc(e.message)}</li>`).join("")}</ul>
+      </div>
+      <div class="section-title">Tâches</div>${pjTableTaches(d)}`;
+    pjBrancherEntete(d);
+    pjBrancherTable(d);
+    return;
+  }
+
+  const surcharge = (d.charge?.ressources || []).reduce((s, x) => s + x.nbJoursSurcharge, 0);
+  const onglets = [["planning", "Planning"], ["taches", `Tâches (${d.taches.filter((t) => !t.synthese).length})`],
+    ["charge", `Charge${surcharge ? " ⚠" : ""}`], ["journal", `Journal (${d.journal.length})`]];
+
+  $("#view").innerHTML = `${entete}
+    <div class="kpis" style="margin-bottom:12px;">
+      ${fkpi(pjDate(r.fin), "fin prévue")}
+      ${fkpi(pjPct(r.avancement) + " %", "avancement constaté")}
+      ${fkpi(r.resteAFaireJours + " j", "reste à faire")}
+      ${fkpi(d.derive ? (d.derive.finEcart > 0 ? "+" : "") + d.derive.finEcart + " j" : "—", d.derive ? "dérive / référence" : "sans référence", d.derive?.finEcart > 0 ? "bad" : d.derive ? "good" : "")}
+      ${fkpi(r.critiques.length, "tâches critiques")}
+      ${fkpi(surcharge, "jours de surcharge", surcharge ? "bad" : "good")}
+    </div>
+    ${pjBandeaux(d)}
+    <div class="row pj-actions" style="gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+      ${onglets.map(([k, l]) => `<button class="btn-ghost btn-sm pj-tab ${PJ.onglet === k ? "btn-primary" : ""}" data-t="${k}">${l}</button>`).join("")}
+    </div>
+    <div id="pj-contenu"></div>`;
+
+  $("#pj-contenu").innerHTML = PJ.onglet === "planning" ? pjGantt(d)
+    : PJ.onglet === "taches" ? pjTableTaches(d)
+    : PJ.onglet === "charge" ? pjCharge(d)
+    : pjJournal(d);
+
+  pjBrancherEntete(d);
+  $$(".pj-tab").forEach((b) => { b.onclick = () => { PJ.onglet = b.dataset.t; renderFicheProjet(); }; });
+  if (PJ.onglet === "planning") pjBrancherGantt(d);
+  if (PJ.onglet === "taches") pjBrancherTable(d);
+  if (PJ.onglet === "charge") pjBrancherCharge(d);
+}
+
+function pjBandeaux(d) {
+  const r = d.resume;
+  const bloc = (couleur, titre, corps) => `<div class="card card-pad" style="border-left:4px solid ${couleur};margin-bottom:10px;">
+    <b>${titre}</b><div style="font-size:13.5px;margin-top:4px;">${corps}</div></div>`;
+  let out = "";
+  if (r.echeancesDepassees.length) {
+    out += bloc("var(--danger)", "Échéances dépassées",
+      `${r.echeancesDepassees.map((e) => `« ${esc(e.titre)} » : échéance au ${pjDate(e.echeance)}, fin prévue au ${pjDate(e.fin)} — <b>${e.retard} jour(s) ouvré(s) de retard</b>.`).join("<br>")}
+       <div class="muted" style="margin-top:4px;">L'échéance n'a pas comprimé le plan : elle affiche le retard. Il se traite en arbitrant le contenu, la charge ou la date — pas en raccourcissant les tâches dans le tableur.</div>`);
+  }
+  if (r.conflits.length) {
+    out += bloc("var(--warn)", "Dates imposées en conflit",
+      r.conflits.map((c) => `« ${esc(c.titre)} » — ${c.conflits.map(esc).join(" ; ")}`).join("<br>"));
+  }
+  if (d.erreurs?.length) {
+    out += bloc("var(--warn)", "À corriger", d.erreurs.map((e) => esc(e.message)).join("<br>"));
+  }
+  return out;
+}
+
+function pjBrancherEntete(d) {
+  $("#pj-back").onclick = () => { PJ.ouvert = null; PJ.data = null; renderProjets(); };
+  $("#pj-edit").onclick = () => openProjetForm(d.projet);
+  $("#pj-add").onclick = () => openTacheForm(d, null);
+  if ($("#pj-export")) $("#pj-export").onclick = () => window.open(`/api/projets/${d.projet.id}/export`, "_blank");
+  if ($("#pj-simuler")) $("#pj-simuler").onclick = () => openSimulationProjet(d);
+  if ($("#pj-niveler")) $("#pj-niveler").onclick = () => openNivellement(d);
+  if ($("#pj-modele")) $("#pj-modele").onclick = () => openModeleProjet(d);
+  if ($("#pj-ref")) $("#pj-ref").onclick = async (ev) => guard(ev.currentTarget, async () => {
+    const motif = prompt("Figer la référence — motif (ex. « validée en comité du 12 mars ») :", "");
+    if (motif === null) return;
+    const r = await pjAvecMotif((m) => api.post(`/api/projets/${d.projet.id}/reference`, { motif: motif || m || "", confirmer: !!m || undefined }));
+    if (r) renderFicheProjet();
+  });
+}
+
+// --- Diagramme ---
+// Trois partis pris qui le distinguent d'un Gantt de tableur :
+//   • les jours non travaillés sont GRISÉS (week-ends, fériés, fermetures du
+//     site) — une barre continue par-dessus la fermeture de Noël promet deux
+//     semaines de travail qui n'auront pas lieu ;
+//   • la référence figée s'affiche en ombre sous la barre : la dérive se voit,
+//     elle ne se déduit pas ;
+//   • le chemin critique est en corail, et rien d'autre ne l'est.
+const PJ_ROW = 30, PJ_HEAD = 46, PJ_GUT = 8;
+
+function pjGantt(d) {
+  const taches = d.taches;
+  if (!taches.length) return '<div class="card card-pad muted">Aucune tâche. Le bouton « + Tâche » en haut à droite ouvre la première.</div>';
+  const dates = taches.flatMap((t) => [t.debut, t.fin]).filter(Boolean).sort();
+  const d0 = pjAdd(dates[0], -4);
+  const d1 = pjAdd(dates[dates.length - 1], 8);
+  const span = Math.max(1, pjDiff(d0, d1) + 1);
+  const PX = PJ.zoom || (span <= 60 ? 16 : span <= 140 ? 8 : span <= 380 ? 4 : span <= 900 ? 2 : 1);
+  const X = (iso) => pjDiff(d0, iso) * PX;
+  const W = span * PX;
+  const H = PJ_HEAD + taches.length * PJ_ROW;
+  const auj = d.resume.aujourdhui;
+  const refLignes = new Map((d.derive?.lignes || []).map((l) => [l.id, l]));
+
+  let fond = "";
+  // Jours non travaillés : au-dessous de 4 px par jour, le grisé devient une
+  // bouillie — on s'abstient plutôt que de salir le fond.
+  if (PX >= 4) {
+    for (const j of (d.nonOuvres || [])) {
+      if (j < d0 || j > d1) continue;
+      fond += `<rect x="${X(j)}" y="${PJ_HEAD}" width="${PX}" height="${H - PJ_HEAD}" fill="rgba(13,27,42,.05)"/>`;
+    }
+  }
+  // Bandes de mois + libellés.
+  let axe = "";
+  let m = d0.slice(0, 8) + "01";
+  while (m <= d1) {
+    const x = X(m);
+    const label = pjJour(m).toLocaleDateString("fr-FR", { month: "short", year: PX < 6 ? "2-digit" : undefined });
+    if (x > -40) {
+      axe += `<line x1="${x}" y1="24" x2="${x}" y2="${H}" stroke="var(--line)" stroke-width="1"/>`;
+      axe += `<text x="${x + 4}" y="38" class="pj-mois">${esc(label)}</text>`;
+    }
+    m = pjAdd(m, 32).slice(0, 8) + "01";
+  }
+  const xAuj = X(auj);
+  const ligneAuj = xAuj >= 0 && xAuj <= W
+    ? `<line x1="${xAuj}" y1="20" x2="${xAuj}" y2="${H}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 3"/>
+       <text x="${xAuj + 4}" y="16" class="pj-auj">aujourd'hui</text>` : "";
+
+  let barres = "";
+  const pos = new Map();
+  taches.forEach((t, i) => {
+    const y = PJ_HEAD + i * PJ_ROW;
+    barres += `<rect x="0" y="${y}" width="${W}" height="${PJ_ROW}" fill="${i % 2 ? "rgba(13,27,42,.018)" : "transparent"}"/>`;
+    if (!t.debut) return;
+    const x = X(t.debut);
+    const w = Math.max(PX * 0.6, (pjDiff(t.debut, t.fin || t.debut) + 1) * PX);
+    const yb = y + 7;
+    pos.set(t.id, { x, w, y: y + PJ_ROW / 2 });
+
+    // Référence figée : ombre grise sous la barre.
+    const ref = refLignes.get(t.id);
+    if (ref?.referenceDebut && ref?.referenceFin) {
+      const xr = X(ref.referenceDebut);
+      const wr = Math.max(2, (pjDiff(ref.referenceDebut, ref.referenceFin) + 1) * PX);
+      barres += `<rect x="${xr}" y="${y + PJ_ROW - 7}" width="${wr}" height="4" rx="2" fill="rgba(13,27,42,.22)"><title>référence : ${esc(ref.referenceDebut)} → ${esc(ref.referenceFin)}</title></rect>`;
+    }
+
+    const couleur = t.statut === "abandonnee" ? "#9aa5ad" : t.statut === "faite" ? "var(--teal-2)" : t.critique ? "var(--accent)" : "var(--marine)";
+    const infobulle = `${t.code} ${t.titre}\n${t.debut} → ${t.fin}\n${t.jalon ? "jalon" : t.dureeJours + " j ouvrés"}${t.synthese ? "" : ` · reste ${t.resteAFaire} j`}${t.synthese ? "" : `\nmarge totale ${t.margeTotale} j${t.critique ? " — chemin critique" : ""}`}${t.echeance ? `\néchéance ${t.echeance}${t.echeanceDepassee ? ` — ${t.echeanceDepassee} j de retard` : ""}` : ""}`;
+
+    if (t.jalon) {
+      const cx = x + PX / 2, cy = y + PJ_ROW / 2, s = 8;
+      barres += `<g class="pj-bar" data-t="${t.id}"><polygon points="${cx},${cy - s} ${cx + s},${cy} ${cx},${cy + s} ${cx - s},${cy}"
+        fill="${t.statut === "faite" ? "var(--teal-2)" : t.echeanceDepassee ? "var(--danger)" : couleur}" stroke="#fff" stroke-width="1.5"><title>${esc(infobulle)}</title></polygon></g>`;
+    } else if (t.synthese) {
+      barres += `<g class="pj-bar" data-t="${t.id}"><path d="M${x},${yb + 2} L${x + w},${yb + 2} L${x + w},${yb + 9} L${x + w - 5},${yb + 4} L${x + 5},${yb + 4} L${x},${yb + 9} Z"
+        fill="var(--ink)" opacity=".75"><title>${esc(infobulle)}</title></path></g>`;
+    } else {
+      const wAv = Math.max(0, Math.min(w, w * (t.avancement || 0)));
+      barres += `<g class="pj-bar" data-t="${t.id}">
+        <rect x="${x}" y="${yb}" width="${w}" height="${PJ_ROW - 15}" rx="3" fill="${couleur}" opacity=".24"/>
+        ${wAv > 0.5 ? `<rect x="${x}" y="${yb}" width="${wAv}" height="${PJ_ROW - 15}" rx="3" fill="${couleur}"/>` : ""}
+        <rect x="${x}" y="${yb}" width="${w}" height="${PJ_ROW - 15}" rx="3" fill="transparent" stroke="${couleur}" stroke-width="1"><title>${esc(infobulle)}</title></rect>
+        ${t.echeance ? `<line x1="${X(t.echeance) + PX}" y1="${y + 3}" x2="${X(t.echeance) + PX}" y2="${y + PJ_ROW - 3}" stroke="${t.echeanceDepassee ? "var(--danger)" : "var(--warn)"}" stroke-width="2"/>` : ""}
+      </g>`;
+    }
+  });
+
+  // Flèches de dépendance.
+  let liens = "";
+  for (const t of taches) {
+    if (t.synthese) continue;
+    for (const l of (t.liens || [])) {
+      const a = pos.get(l.deId), b = pos.get(t.id);
+      if (!a || !b) continue;
+      const depuisFin = l.type === "FD" || l.type === "FF";
+      const x1 = depuisFin ? a.x + a.w : a.x;
+      const versDebut = l.type === "FD" || l.type === "DD";
+      const x2 = versDebut ? b.x : b.x + b.w;
+      const coude = Math.max(x1 + 7, x2 - 10);
+      liens += `<path d="M${x1},${a.y} H${coude} V${b.y} H${x2}" fill="none" stroke="rgba(13,27,42,.4)" stroke-width="1" marker-end="url(#pj-fleche)"/>`;
+    }
+  }
+
+  const gauche = taches.map((t) => `<div class="pj-nom ${t.critique && !t.synthese ? "pj-crit" : ""}" data-t="${t.id}" style="padding-left:${8 + (t.niveau || 0) * 14}px;">
+      <span class="pj-code">${esc(t.code || "")}</span>
+      <span class="pj-titre ${t.statut === "faite" ? "pj-faite" : ""}">${t.jalon ? "◆ " : ""}${esc(t.titre)}</span>
+    </div>`).join("");
+
+  return `<div class="card" style="padding:0;overflow:hidden;">
+    <div class="row pj-actions" style="gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center;">
+      <span class="muted" style="font-size:12.5px;">Zoom</span>
+      ${[["Jour", 16], ["Semaine", 8], ["Mois", 4], ["Année", 1.6]].map(([l, z]) => `<button class="btn-ghost btn-sm pj-zoom ${PJ.zoom === z ? "btn-primary" : ""}" data-z="${z}">${l}</button>`).join("")}
+      <span style="flex:1"></span>
+      <span class="pj-leg"><i style="background:var(--accent)"></i>chemin critique</span>
+      <span class="pj-leg"><i style="background:var(--marine)"></i>tâche</span>
+      <span class="pj-leg"><i style="background:var(--teal-2)"></i>faite</span>
+      ${d.derive ? '<span class="pj-leg"><i style="background:rgba(13,27,42,.22)"></i>référence figée</span>' : ""}
+    </div>
+    <div class="pj-gantt">
+      <div class="pj-gauche" style="padding-top:${PJ_HEAD}px;">${gauche}</div>
+      <div class="pj-droite"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" class="pj-svg">
+        <defs><marker id="pj-fleche" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 z" fill="rgba(13,27,42,.4)"/></marker></defs>
+        ${fond}${axe}${barres}${liens}${ligneAuj}
+      </svg></div>
+    </div>
+  </div>
+  ${d.chemins?.length ? `<div class="section-title">Chemin critique</div>
+    <div class="card card-pad"><p class="muted" style="font-size:13.5px;margin-top:0;">La chaîne, dans l'ordre : c'est là qu'un jour gagné est un jour gagné sur la fin du projet. Ailleurs, il est absorbé par la marge.</p>
+    <div class="pj-chaine">${d.chemins[0].taches.map((t) => `<span class="pj-maillon">${esc(t.titre)}<span class="muted"> · ${t.duree} j</span></span>`).join('<span class="pj-fleche-txt">→</span>')}</div></div>` : ""}`;
+}
+
+function pjBrancherGantt(d) {
+  $$(".pj-zoom").forEach((b) => { b.onclick = () => { PJ.zoom = Number(b.dataset.z); renderFicheProjet(); }; });
+  $$(".pj-bar, .pj-nom").forEach((el) => { el.onclick = () => {
+    const t = d.taches.find((x) => x.id === el.dataset.t);
+    if (t) openTacheForm(d, t);
+  }; });
+  // Le diagramme s'ouvre sur aujourd'hui, pas sur le début d'un projet lancé
+  // il y a huit mois.
+  const droite = $(".pj-droite");
+  if (droite) {
+    const dates = d.taches.flatMap((t) => [t.debut, t.fin]).filter(Boolean).sort();
+    if (dates.length) {
+      const span = Math.max(1, pjDiff(pjAdd(dates[0], -4), pjAdd(dates[dates.length - 1], 8)) + 1);
+      const PX = PJ.zoom || (span <= 60 ? 16 : span <= 140 ? 8 : span <= 380 ? 4 : span <= 900 ? 2 : 1);
+      droite.scrollLeft = Math.max(0, pjDiff(pjAdd(dates[0], -4), d.resume.aujourdhui) * PX - 120);
+    }
+  }
+}
+
+// --- Tableau des tâches ---
+// La colonne qui compte est « reste à faire », modifiable sur la ligne. C'est
+// le geste quotidien : on ne demande jamais un pourcentage, on demande ce qu'il
+// reste. Le pourcentage, lui, se déduit — et une tâche « à 90 % » depuis trois
+// semaines se voit tout de suite, parce que son reste ne descend pas.
+function pjTableTaches(d) {
+  const noms = new Map(d.taches.map((t) => [t.id, t.titre]));
+  const ST = d.referentiels.statutsTache;
+  const lignes = d.taches.map((t) => {
+    const retard = t.echeanceDepassee > 0;
+    return `<tr class="${t.synthese ? "pj-tr-synth" : ""}">
+      <td class="muted">${esc(t.code || "")}</td>
+      <td style="padding-left:${6 + (t.niveau || 0) * 16}px;">
+        <b class="${t.statut === "faite" ? "pj-faite" : ""}">${t.jalon ? "◆ " : ""}${esc(t.titre)}</b>
+        ${t.critique && !t.synthese ? '<span class="pill overdue" style="margin-left:6px;">critique</span>' : ""}
+        ${t.lot ? `<br><span class="muted" style="font-size:12px;">${esc(t.lot)}</span>` : ""}</td>
+      <td>${t.jalon ? "—" : t.dureeJours + " j"}</td>
+      <td>${pjDate(t.debut)}</td>
+      <td class="${retard ? "pj-neg" : ""}">${pjDate(t.fin)}${retard ? `<br><span style="font-size:11.5px;">échéance ${pjDate(t.echeance)}</span>` : ""}</td>
+      <td>${t.synthese || t.jalon ? "" : `<input class="pj-raf" type="number" min="0" step="0.5" value="${t.resteAFaire}" data-t="${t.id}" title="reste à faire, en jours ouvrés">`}</td>
+      <td><div class="pj-jauge" title="${pjPct(t.avancement)} %"><span style="width:${pjPct(t.avancement)}%"></span></div></td>
+      <td>${t.synthese ? "" : `<span class="${t.margeTotale < 0 ? "pj-neg" : t.margeTotale === 0 ? "muted" : ""}">${t.margeTotale} j</span>`}</td>
+      <td>${t.synthese ? "" : `<select class="pj-statut out-st" data-t="${t.id}">${Object.entries(ST).map(([k, v]) => `<option value="${k}" ${k === t.statut ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select>`}</td>
+      <td class="muted" style="font-size:12.5px;">${(t.liens || []).map((l) => `${esc(noms.get(l.deId) || "?")} <span class="pj-code">${l.type}${l.decalage ? (l.decalage > 0 ? "+" : "") + l.decalage : ""}</span>`).join("<br>") || "—"}</td>
+      <td>${esc(t.responsable || t.role || "—")}</td>
+      <td><button class="btn-ghost btn-sm pj-ed" data-t="${t.id}">Modifier</button>
+        <button class="btn-ghost btn-sm pj-del" data-t="${t.id}">Suppr.</button></td>
+    </tr>`;
+  }).join("");
+  return `<div class="card" style="overflow-x:auto;"><table class="net-table pj-table">
+    <thead><tr><th>N°</th><th>Tâche</th><th>Durée</th><th>Début</th><th>Fin</th><th>Reste</th><th>Avancement</th><th>Marge</th><th>Statut</th><th>Dépend de</th><th>Qui</th><th></th></tr></thead>
+    <tbody>${lignes || '<tr><td colspan="12" class="muted">Aucune tâche.</td></tr>'}</tbody></table></div>
+    <p class="hint muted">Le début et la fin ne se saisissent pas : ils sont calculés depuis les durées, les liens et le calendrier. Pour tenir une date, posez une échéance sur la tâche — elle révélera le retard au lieu de le masquer.</p>`;
+}
+
+function pjBrancherTable(d) {
+  $$(".pj-ed").forEach((b) => { b.onclick = () => openTacheForm(d, d.taches.find((t) => t.id === b.dataset.t)); });
+  $$(".pj-del").forEach((b) => { b.onclick = async () => {
+    const t = d.taches.find((x) => x.id === b.dataset.t);
+    if (!confirm(`Supprimer « ${t.titre} » ?\n\nLes dépendances qui pointaient dessus seront retirées et ses sous-tâches remontées d'un niveau — sinon le plan deviendrait incalculable.`)) return;
+    const r = await api.del(`/api/projets/${d.projet.id}/taches/${t.id}`);
+    if (r?.error) return alert(r.error);
+    renderFicheProjet();
+  }; });
+  $$(".pj-statut").forEach((s) => { s.onchange = async () => {
+    // Qu'on ait appliqué ou annulé (motif refusé), on redessine : sinon le
+    // menu resterait sur une valeur que le serveur n'a pas retenue.
+    await pjAvecMotif((m) => api.patch(`/api/projets/${d.projet.id}/taches/${s.dataset.t}`, { statut: s.value, motif: m || undefined }));
+    renderFicheProjet();
+  }; });
+  $$(".pj-raf").forEach((i) => { i.onchange = async () => {
+    const t = d.taches.find((x) => x.id === i.dataset.t);
+    const raf = Math.max(0, Number(i.value) || 0);
+    // Saisir un reste inférieur à la durée, c'est avoir commencé. On le déduit
+    // plutôt que de demander à l'utilisateur de cocher deux cases cohérentes.
+    const statut = raf === 0 ? "faite" : raf < t.dureeJours ? "en_cours" : t.statut;
+    await pjAvecMotif((m) => api.patch(`/api/projets/${d.projet.id}/taches/${t.id}`, { resteAFaire: raf, statut, motif: m || undefined }));
+    renderFicheProjet();
+  }; });
+}
+
+// --- Charge ---
+function pjCharge(d) {
+  const c = d.charge;
+  if (!c?.ressources?.length) {
+    return `<div class="card card-pad muted">Aucune ressource déclarée. Ajoutez-en dans « Cadre du projet » : sans capacité déclarée, la surcharge est invisible — et c'est elle qui fait glisser les plannings, pas les dépendances.</div>`;
+  }
+  const courbe = (r) => {
+    if (!r.courbe.length) return "";
+    const L = 3, H = 46;
+    const W = Math.max(120, r.courbe.length * L);
+    const max = Math.max(r.pic, r.capaciteJour, 1);
+    const barres = r.courbe.map((p, i) => {
+      const h = (p.v / max) * H;
+      return `<rect x="${i * L}" y="${H - h}" width="${L - 0.5}" height="${h}" fill="${p.v > r.capaciteJour + 1e-9 ? "var(--danger)" : "var(--marine)"}"><title>${p.date} : ${p.v} j</title></rect>`;
+    }).join("");
+    const yCap = H - (r.capaciteJour / max) * H;
+    return `<svg width="${W}" height="${H}" class="pj-courbe">${barres}
+      <line x1="0" y1="${yCap}" x2="${W}" y2="${yCap}" stroke="var(--ink)" stroke-dasharray="3 2" stroke-width="1"/></svg>`;
+  };
+  return `${c.inconnues.length ? `<div class="card card-pad" style="border-left:4px solid var(--warn);margin-bottom:10px;">
+      <b>Affectations orphelines</b><div style="font-size:13.5px;">${c.inconnues.map((u) => `${u.taches.length} tâche(s) affectée(s) à une ressource retirée du projet.`).join("<br>")}
+      <div class="muted">Elles restent comptées : si on les ignorait, la charge baisserait toute seule au moment où quelqu'un quitte le projet.</div></div></div>` : ""}
+    <div class="pj-ress">${c.ressources.map((r) => `<div class="card card-pad">
+      <div class="row" style="align-items:center;gap:10px;">
+        <div style="flex:1;"><b>${esc(r.nom)}</b>${r.role ? ` <span class="muted">· ${esc(r.role)}</span>` : ""}
+          <div class="muted" style="font-size:12.5px;">capacité déclarée ${r.capaciteJour} j/jour · ${r.totalJours} j affectés · pic ${r.pic}</div></div>
+        ${r.nbJoursSurcharge ? `<span class="pill overdue" style="flex:0 0 auto;">${r.nbJoursSurcharge} j de surcharge</span>` : '<span class="pill done" style="flex:0 0 auto;">tenable</span>'}
+      </div>
+      <div style="overflow-x:auto;margin-top:8px;">${courbe(r)}</div>
+      ${r.joursSurcharge.length ? `<div class="muted" style="font-size:12.5px;margin-top:6px;">Premiers jours en dépassement : ${r.joursSurcharge.slice(0, 6).map((j) => `${pjDate(j.date)} (${j.charge}/${j.capacite})`).join(", ")}${r.joursSurcharge.length > 6 ? "…" : ""}</div>` : ""}
+    </div>`).join("")}</div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-ghost btn-sm" id="pj-niv2">Proposer un nivellement</button></div>
+    <p class="hint muted">La capacité est une part de journée consacrée à CE projet. 0,4 pour un directeur qui garde son campus à faire tourner : c'est cette valeur-là qui fait apparaître les surcharges que « 1 ETP » masque.</p>`;
+}
+function pjBrancherCharge(d) { if ($("#pj-niv2")) $("#pj-niv2").onclick = () => openNivellement(d); }
+
+// --- Journal ---
+function pjJournal(d) {
+  if (!d.journal.length) return '<div class="card card-pad muted">Rien n\'a encore déplacé une date de jalon ni la fin du projet.</div>';
+  return `<div class="card" style="overflow-x:auto;"><table class="net-table">
+    <thead><tr><th>Quand</th><th>Qui</th><th>Quoi</th><th>Motif</th><th>Fin du projet</th><th>Jalons déplacés</th></tr></thead><tbody>
+    ${d.journal.map((j) => `<tr>
+      <td>${pjDate(j.at)}<br><span class="muted" style="font-size:11.5px;">${esc(String(j.at || "").slice(11, 16))}</span></td>
+      <td>${esc(j.par || "—")}</td><td>${esc(j.action || "")}</td>
+      <td class="muted">${esc(j.motif || "—")}</td>
+      <td>${j.finAvant !== j.finApres ? `${pjDate(j.finAvant)} → <b>${pjDate(j.finApres)}</b>` : '<span class="muted">inchangée</span>'}</td>
+      <td class="muted" style="font-size:12.5px;">${(j.mouvements || []).map((m) => `${esc(m.titre)} : ${pjDate(m.de)} → ${pjDate(m.vers)}`).join("<br>") || "—"}</td>
+    </tr>`).join("")}</tbody></table></div>
+    <p class="hint muted">Seules les modifications qui déplacent une date de jalon ou la fin du projet sont journalisées : tout tracer noierait la seule information utile.</p>`;
+}
+
+// --- Formulaire : cadre du projet ---
+// Le calendrier et les ressources vivent ici, et non dans un écran de
+// réglages : ce sont eux qui déterminent les dates, les cacher reviendrait à
+// rendre le calcul incompréhensible.
+const PJ_JOURS = [[1, "L"], [2, "M"], [3, "M"], [4, "J"], [5, "V"], [6, "S"], [7, "D"]];
+
+function pjLigneFermeture(f = {}) {
+  return `<div class="row pj-ferm" style="gap:6px;margin-bottom:6px;align-items:center;">
+    <input type="date" class="pj-f-du" value="${esc(f.du || "")}" title="du">
+    <input type="date" class="pj-f-au" value="${esc(f.au || "")}" title="au">
+    <input type="text" class="pj-f-motif grow" placeholder="motif (fermeture de fin d'année…)" value="${esc(f.motif || "")}">
+    <button class="btn-ghost btn-sm pj-f-del" type="button">−</button></div>`;
+}
+function pjLigneRessource(r = {}) {
+  return `<div class="row pj-ress-l" style="gap:6px;margin-bottom:6px;align-items:center;">
+    <input type="hidden" class="pj-r-id" value="${esc(r.id || "r" + Math.random().toString(36).slice(2, 8))}">
+    <input type="text" class="pj-r-nom grow" placeholder="Nom" value="${esc(r.nom || "")}">
+    <input type="text" class="pj-r-role grow" placeholder="Rôle" value="${esc(r.role || "")}">
+    <input type="number" class="pj-r-cap" step="0.1" min="0" max="3" style="width:6rem;" placeholder="j/jour" value="${r.capaciteJour ?? 1}" title="part de journée consacrée à CE projet">
+    <button class="btn-ghost btn-sm pj-r-del" type="button">−</button></div>`;
+}
+
+async function openProjetForm(projet, modeles = [], modeleId = "") {
+  const isEdit = !!projet?.id;
+  const p = projet || { calendrier: { joursOuvres: [1, 2, 3, 4, 5], feries: true, fermetures: [] }, ressources: [], debut: new Date().toISOString().slice(0, 10) };
+  const cal = p.calendrier || {};
+  const ouvres = cal.joursOuvres || [1, 2, 3, 4, 5];
+  const ST = PJ.referentiels?.statutsProjet || { cadrage: { label: "Cadrage" }, en_cours: { label: "En cours" }, suspendu: { label: "Suspendu" }, termine: { label: "Terminé" }, abandonne: { label: "Abandonné" } };
+
+  const bg = openModal(isEdit ? "Cadre du projet" : "Nouveau projet", `
+    <div class="grid" style="gap:10px;">
+      <div><label class="field-label">Intitulé</label><input id="pf-nom" type="text" value="${esc(p.nom || "")}" placeholder="Refonte du système de scolarité"></div>
+      <div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">Campus</label><select id="pf-campus">
+          ${isAdmin() ? `<option value="">Projet réseau (tous campus)</option>` : ""}
+          ${state.campuses.map((c) => `<option value="${c.id}" ${c.id === p.campusId ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+        </select></div>
+        <div><label class="field-label">Pilote</label><input id="pf-pilote" type="text" value="${esc(p.pilote || "")}"></div>
+      </div>
+      <div><label class="field-label">Ce que le projet doit produire</label><textarea id="pf-objectif" rows="2">${esc(p.objectif || "")}</textarea></div>
+      <div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">Début</label><input id="pf-debut" type="date" value="${esc(p.debut || "")}"></div>
+        <div><label class="field-label">Statut</label><select id="pf-statut">${Object.entries(ST).map(([k, v]) => `<option value="${k}" ${k === p.statut ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></div>
+      </div>
+      ${!isEdit && modeles.length ? `<div class="card card-pad" style="background:var(--bg);">
+        <label class="field-label">Partir d'un modèle (facultatif)</label>
+        <select id="pf-modele"><option value="">— Projet vierge —</option>${modeles.map((m) => `<option value="${m.id}" ${m.id === modeleId ? "selected" : ""}>${esc(m.nom)} (${m.taches} tâches)</option>`).join("")}</select>
+        <div class="grid grid-2" style="gap:10px;margin-top:8px;">
+          <div><label class="field-label">Date pivot</label><input id="pf-pivot" type="date" value="${esc(p.debut || "")}"></div>
+          <div><label class="field-label">Sens</label><select id="pf-sens">
+            <option value="avant">La date pivot est la FIN (rétroplanning)</option>
+            <option value="depuis">La date pivot est le début</option>
+          </select></div>
+        </div>
+        <p class="hint muted">Une rentrée, un audit, une date de dépôt ne se négocient pas : on part de la date cible et on remonte. C'est le sens par défaut.</p>
+      </div>` : ""}
+      <div class="card card-pad" style="background:var(--bg);">
+        <label class="field-label">Calendrier — ce qui ne produit rien ne compte pas</label>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;">
+          ${PJ_JOURS.map(([n, l]) => `<label class="pj-chk"><input type="checkbox" class="pf-jour" value="${n}" ${ouvres.includes(n) ? "checked" : ""}> ${l}</label>`).join("")}
+          <label class="pj-chk"><input type="checkbox" id="pf-feries" ${cal.feries !== false ? "checked" : ""}> jours fériés</label>
+          <label class="pj-chk"><input type="checkbox" id="pf-am" ${cal.alsaceMoselle ? "checked" : ""}> Alsace-Moselle</label>
+        </div>
+        <label class="field-label" style="margin-top:10px;">Fermetures du site</label>
+        <div id="pf-fermetures">${(cal.fermetures || []).map(pjLigneFermeture).join("")}</div>
+        <button class="btn-ghost btn-sm" type="button" id="pf-add-ferm">+ Fermeture</button>
+      </div>
+      <div class="card card-pad" style="background:var(--bg);">
+        <label class="field-label">Ressources et capacité réelle</label>
+        <div id="pf-ressources">${(p.ressources || []).map(pjLigneRessource).join("")}</div>
+        <button class="btn-ghost btn-sm" type="button" id="pf-add-ress">+ Ressource</button>
+        <p class="hint muted">Capacité = part de journée consacrée à ce projet. Mettre 1 partout rend la charge muette.</p>
+      </div>
+      <div><label class="field-label">Budget du projet (€)</label><input id="pf-budget" type="number" step="100" value="${p.budget || 0}"></div>
+    </div>
+    <div class="actions" style="margin-top:14px;">
+      <button class="btn-primary" id="pf-save">${isEdit ? "Enregistrer" : "Créer le projet"}</button>
+      ${isEdit && isAdmin() ? '<button class="btn-ghost" id="pf-del">Supprimer le projet</button>' : ""}
+    </div>`);
+
+  $("#pf-add-ferm").onclick = () => { $("#pf-fermetures").insertAdjacentHTML("beforeend", pjLigneFermeture()); pjBrancherLignes(bg); };
+  $("#pf-add-ress").onclick = () => { $("#pf-ressources").insertAdjacentHTML("beforeend", pjLigneRessource()); pjBrancherLignes(bg); };
+  pjBrancherLignes(bg);
+
+  $("#pf-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const corps = {
+      nom: $("#pf-nom").value.trim(),
+      campusId: $("#pf-campus").value || null,
+      pilote: $("#pf-pilote").value.trim(),
+      objectif: $("#pf-objectif").value.trim(),
+      debut: $("#pf-debut").value,
+      statut: $("#pf-statut").value,
+      budget: Number($("#pf-budget").value) || 0,
+      calendrier: {
+        joursOuvres: $$(".pf-jour").filter((c) => c.checked).map((c) => Number(c.value)),
+        feries: $("#pf-feries").checked,
+        alsaceMoselle: $("#pf-am").checked,
+        fermetures: $$(".pj-ferm").map((row) => ({
+          du: row.querySelector(".pj-f-du").value, au: row.querySelector(".pj-f-au").value,
+          motif: row.querySelector(".pj-f-motif").value.trim(),
+        })).filter((f) => f.du && f.au),
+      },
+      ressources: $$(".pj-ress-l").map((row) => ({
+        id: row.querySelector(".pj-r-id").value,
+        nom: row.querySelector(".pj-r-nom").value.trim(),
+        role: row.querySelector(".pj-r-role").value.trim(),
+        capaciteJour: Number(row.querySelector(".pj-r-cap").value) || 0,
+      })).filter((r) => r.nom),
+    };
+    if (!corps.nom) return alert("L'intitulé du projet est requis.");
+    if (!corps.calendrier.joursOuvres.length) return alert("Au moins un jour travaillé est nécessaire, sinon aucune tâche ne peut progresser.");
+    if ($("#pf-modele")?.value) { corps.modeleId = $("#pf-modele").value; corps.datePivot = $("#pf-pivot").value || corps.debut; corps.sens = $("#pf-sens").value; }
+    const r = isEdit ? await api.patch(`/api/projets/${projet.id}`, corps) : await api.post("/api/projets", corps);
+    if (r?.error) return alert(r.error);
+    closeModals();
+    if (!isEdit) PJ.ouvert = r.projet.id;
+    renderProjets();
+  });
+  if ($("#pf-del")) $("#pf-del").onclick = async () => {
+    if (!confirm(`Supprimer « ${projet.nom} » et toutes ses tâches ? Cette action est définitive.`)) return;
+    const r = await api.del(`/api/projets/${projet.id}`);
+    if (r?.error) return alert(r.error);
+    closeModals(); PJ.ouvert = null; renderProjets();
+  };
+}
+function pjBrancherLignes(bg) {
+  bg.querySelectorAll(".pj-f-del").forEach((b) => { b.onclick = () => b.closest(".pj-ferm").remove(); });
+  bg.querySelectorAll(".pj-r-del").forEach((b) => { b.onclick = () => b.closest(".pj-ress-l").remove(); });
+  bg.querySelectorAll(".pj-l-del").forEach((b) => { b.onclick = () => b.closest(".pj-lien").remove(); });
+  bg.querySelectorAll(".pj-a-del").forEach((b) => { b.onclick = () => b.closest(".pj-aff").remove(); });
+}
+
+// --- Formulaire : tâche ---
+function pjLigneLien(taches, l = {}, moiId = "") {
+  const TL = PJ.referentiels?.liens || { FD: { label: "Fin → Début" }, DD: { label: "Début → Début" }, FF: { label: "Fin → Fin" }, DF: { label: "Début → Fin" } };
+  return `<div class="row pj-lien" style="gap:6px;margin-bottom:6px;align-items:center;">
+    <select class="pj-l-de grow">${taches.filter((t) => t.id !== moiId && !t.synthese).map((t) => `<option value="${t.id}" ${t.id === l.deId ? "selected" : ""}>${esc(t.code ? t.code + " " : "")}${esc(t.titre)}</option>`).join("")}</select>
+    <select class="pj-l-type">${Object.entries(TL).map(([k, v]) => `<option value="${k}" ${k === (l.type || "FD") ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select>
+    <input type="number" class="pj-l-dec" style="width:5.5rem;" value="${l.decalage || 0}" title="décalage en jours ouvrés (négatif = recouvrement)">
+    <button class="btn-ghost btn-sm pj-l-del" type="button">−</button></div>`;
+}
+function pjLigneAff(ressources, a = {}) {
+  return `<div class="row pj-aff" style="gap:6px;margin-bottom:6px;align-items:center;">
+    <select class="pj-a-r grow">${ressources.map((r) => `<option value="${r.id}" ${r.id === a.ressourceId ? "selected" : ""}>${esc(r.nom)}${r.role ? " — " + esc(r.role) : ""}</option>`).join("")}</select>
+    <input type="number" class="pj-a-taux" step="0.1" min="0" max="3" style="width:6rem;" value="${a.tauxJour ?? 1}" title="part de journée">
+    <button class="btn-ghost btn-sm pj-a-del" type="button">−</button></div>`;
+}
+
+async function openTacheForm(d, tache) {
+  const isEdit = !!tache?.id;
+  const t = tache || { dureeJours: 1, statut: "a_faire", liens: [], affectations: [], contrainte: { type: "auplustot" } };
+  const CT = d.referentiels.contraintes, ST = d.referentiels.statutsTache;
+  const ressources = d.projet.ressources || [];
+  const candidatsParent = d.taches.filter((x) => x.id !== t.id && !x.jalon);
+
+  const bg = openModal(isEdit ? `Tâche — ${t.titre}` : "Nouvelle tâche", `
+    <div class="grid" style="gap:10px;">
+      <div><label class="field-label">Intitulé</label><input id="tf-titre" type="text" value="${esc(t.titre || "")}"></div>
+      <div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">Lot / phase</label><input id="tf-lot" type="text" value="${esc(t.lot || "")}"></div>
+        <div><label class="field-label">Rattachée à</label><select id="tf-parent">
+          <option value="">— Aucune (premier niveau) —</option>
+          ${candidatsParent.map((x) => `<option value="${x.id}" ${x.id === t.parentId ? "selected" : ""}>${esc(x.code ? x.code + " " : "")}${esc(x.titre)}</option>`).join("")}
+        </select></div>
+      </div>
+      <div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">Nature</label><select id="tf-jalon">
+          <option value="0" ${!t.jalon ? "selected" : ""}>Tâche (elle consomme des jours)</option>
+          <option value="1" ${t.jalon ? "selected" : ""}>Jalon (date d'événement, durée nulle)</option>
+        </select></div>
+        <div><label class="field-label">Durée (jours ouvrés)</label><input id="tf-duree" type="number" min="0" step="0.5" value="${t.dureeJours ?? 1}" ${t.jalon ? "disabled" : ""}></div>
+      </div>
+      <div class="card card-pad" style="background:var(--bg);">
+        <label class="field-label">Dépend de</label>
+        <div id="tf-liens">${(t.liens || []).map((l) => pjLigneLien(d.taches, l, t.id)).join("")}</div>
+        ${d.taches.filter((x) => x.id !== t.id && !x.synthese).length ? `<button class="btn-ghost btn-sm" type="button" id="tf-add-lien">+ Dépendance</button>` : '<span class="muted">Aucune autre tâche pour l\'instant.</span>'}
+      </div>
+      <div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">Contrainte de date</label><select id="tf-ctype">
+          ${Object.entries(CT).map(([k, v]) => `<option value="${k}" ${k === (t.contrainte?.type || "auplustot") ? "selected" : ""}>${esc(v.label)}</option>`).join("")}
+        </select></div>
+        <div><label class="field-label">Date</label><input id="tf-cdate" type="date" value="${esc(t.contrainte?.date || "")}"></div>
+      </div>
+      <p class="hint muted" id="tf-caide">${esc(CT[t.contrainte?.type || "auplustot"]?.aide || "")}</p>
+      ${ressources.length ? `<div class="card card-pad" style="background:var(--bg);">
+        <label class="field-label">Qui la fait</label>
+        <div id="tf-affs">${(t.affectations || []).map((a) => pjLigneAff(ressources, a)).join("")}</div>
+        <button class="btn-ghost btn-sm" type="button" id="tf-add-aff">+ Affectation</button></div>` : ""}
+      <div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">Responsable (nom)</label><input id="tf-resp" type="text" value="${esc(t.responsable || "")}"></div>
+        <div><label class="field-label">Rôle attendu</label><input id="tf-role" type="text" value="${esc(t.role || "")}" placeholder="directeur de campus, prestataire…"></div>
+      </div>
+      ${isEdit && !t.synthese ? `<div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">État</label><select id="tf-statut">${Object.entries(ST).map(([k, v]) => `<option value="${k}" ${k === t.statut ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></div>
+        <div><label class="field-label">Reste à faire (jours)</label><input id="tf-raf" type="number" min="0" step="0.5" value="${t.resteAFaire ?? t.dureeJours}"></div>
+      </div>
+      <p class="hint muted">On ne saisit jamais un pourcentage : on saisit ce qu'il reste. Le pourcentage s'en déduit, et la fin prévue est recalculée sur le reste — pas sur la durée d'origine.</p>` : ""}
+      <div class="grid grid-2" style="gap:10px;">
+        <div><label class="field-label">Budget prévu (€)</label><input id="tf-bp" type="number" step="50" value="${t.budgetPrevu || 0}"></div>
+        <div><label class="field-label">Dépensé (€)</label><input id="tf-bd" type="number" step="50" value="${t.budgetDepense || 0}"></div>
+      </div>
+      <div><label class="field-label">Note</label><textarea id="tf-note" rows="2">${esc(t.note || "")}</textarea></div>
+    </div>
+    <div class="actions" style="margin-top:14px;">
+      <button class="btn-primary" id="tf-save">${isEdit ? "Enregistrer" : "Ajouter"}</button>
+      ${isEdit ? '<button class="btn-ghost" id="tf-sim">Simuler un décalage</button>' : ""}
+    </div>`);
+
+  const rafraichirLignes = () => pjBrancherLignes(bg);
+  if ($("#tf-add-lien")) $("#tf-add-lien").onclick = () => { $("#tf-liens").insertAdjacentHTML("beforeend", pjLigneLien(d.taches, {}, t.id)); rafraichirLignes(); };
+  if ($("#tf-add-aff")) $("#tf-add-aff").onclick = () => { $("#tf-affs").insertAdjacentHTML("beforeend", pjLigneAff(ressources, {})); rafraichirLignes(); };
+  rafraichirLignes();
+  $("#tf-jalon").onchange = () => { $("#tf-duree").disabled = $("#tf-jalon").value === "1"; if ($("#tf-jalon").value === "1") $("#tf-duree").value = 0; };
+  $("#tf-ctype").onchange = () => { $("#tf-caide").textContent = CT[$("#tf-ctype").value]?.aide || ""; };
+
+  $("#tf-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const jalon = $("#tf-jalon").value === "1";
+    const ctype = $("#tf-ctype").value;
+    const corps = {
+      titre: $("#tf-titre").value.trim(), lot: $("#tf-lot").value.trim(),
+      parentId: $("#tf-parent").value || null, jalon,
+      dureeJours: jalon ? 0 : Number($("#tf-duree").value) || 0,
+      contrainte: { type: ctype, date: ctype === "auplustot" ? null : ($("#tf-cdate").value || null) },
+      liens: $$(".pj-lien").map((row) => ({ deId: row.querySelector(".pj-l-de").value, type: row.querySelector(".pj-l-type").value, decalage: Number(row.querySelector(".pj-l-dec").value) || 0 })).filter((l) => l.deId),
+      affectations: $$(".pj-aff").map((row) => ({ ressourceId: row.querySelector(".pj-a-r").value, tauxJour: Number(row.querySelector(".pj-a-taux").value) || 0 })).filter((a) => a.ressourceId),
+      responsable: $("#tf-resp").value.trim(), role: $("#tf-role").value.trim(),
+      budgetPrevu: Number($("#tf-bp").value) || 0, budgetDepense: Number($("#tf-bd").value) || 0,
+      note: $("#tf-note").value.trim(),
+    };
+    if (!corps.titre) return alert("L'intitulé est requis.");
+    if (ctype !== "auplustot" && !corps.contrainte.date) return alert("Cette contrainte a besoin d'une date.");
+    if ($("#tf-statut")) { corps.statut = $("#tf-statut").value; corps.resteAFaire = Number($("#tf-raf").value) || 0; }
+    const r = await pjAvecMotif((m) => (isEdit
+      ? api.patch(`/api/projets/${d.projet.id}/taches/${t.id}`, { ...corps, motif: m || undefined })
+      : api.post(`/api/projets/${d.projet.id}/taches`, { ...corps, motif: m || undefined })));
+    if (!r) return;
+    closeModals();
+    renderFicheProjet();
+  });
+  if ($("#tf-sim")) $("#tf-sim").onclick = () => { closeModals(); openSimulationProjet(d, t.id); };
+}
+
+// --- Simulation : répondre sans rien écrire ---
+async function openSimulationProjet(d, tacheId = "") {
+  const feuilles = d.taches.filter((t) => !t.synthese);
+  if (!feuilles.length) return alert("Aucune tâche à simuler.");
+  openModal("Et si… ?", `
+    <p class="muted" style="font-size:13.5px;margin-top:0;">Rien n'est enregistré : on regarde ce que coûterait la décision avant de la prendre.</p>
+    <div class="grid grid-2" style="gap:10px;">
+      <div><label class="field-label">Tâche</label><select id="sim-t">${feuilles.map((t) => `<option value="${t.id}" ${t.id === tacheId ? "selected" : ""}>${esc(t.code ? t.code + " " : "")}${esc(t.titre)}</option>`).join("")}</select></div>
+      <div><label class="field-label">Décalage (jours ouvrés)</label><input id="sim-dec" type="number" step="1" value="5"></div>
+    </div>
+    <div><label class="field-label">Ou : nouvelle durée (laisser vide pour ne pas y toucher)</label><input id="sim-duree" type="number" min="0" step="0.5" placeholder=""></div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="sim-go">Calculer l'impact</button></div>
+    <div id="sim-out" style="margin-top:12px;"></div>`);
+
+  $("#sim-go").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const mod = { tacheId: $("#sim-t").value };
+    const dec = Number($("#sim-dec").value) || 0;
+    const duree = $("#sim-duree").value;
+    if (dec) mod.decalageJours = dec;
+    if (duree !== "") mod.dureeJours = Number(duree);
+    const r = await api.post(`/api/projets/${d.projet.id}/simuler`, { modifications: [mod] });
+    if (r?.error) { $("#sim-out").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+    $("#sim-out").innerHTML = `
+      <div class="kpis">${fkpi(pjDate(r.finAvant), "fin actuelle")}
+        ${fkpi(pjDate(r.finApres), "fin simulée", r.ecartJours > 0 ? "bad" : "good")}
+        ${fkpi((r.ecartJours > 0 ? "+" : "") + r.ecartJours + " j", "écart", r.ecartJours > 0 ? "bad" : "good")}</div>
+      ${r.ecartJours === 0 ? '<p class="muted">La marge absorbe entièrement ce décalage : la fin du projet ne bouge pas.</p>' : ""}
+      ${r.impacts.length ? `<div class="section-title">Jalons déplacés</div><ul>${r.impacts.map((i) => `<li>${esc(i.titre)} : ${pjDate(i.avant)} → <b>${pjDate(i.apres)}</b> (${i.ecart > 0 ? "+" : ""}${i.ecart} j)</li>`).join("")}</ul>` : ""}
+      ${r.nouvellesCritiques.length ? `<p><b>Entrent sur le chemin critique :</b> ${r.nouvellesCritiques.map((x) => esc(x.titre)).join(", ")}</p>` : ""}
+      ${r.chargeApres > r.chargeAvant ? `<p class="neg">Cette hypothèse crée ${r.chargeApres - r.chargeAvant} surcharge(s) de plus.</p>` : ""}`;
+  });
+}
+
+// --- Nivellement : proposé, chiffré, appliqué seulement si on le demande ---
+async function openNivellement(d) {
+  const bg = openModal("Nivellement de la charge", '<p class="muted">Calcul…</p>');
+  const r = await api.post(`/api/projets/${d.projet.id}/nivellement`, {});
+  if (r?.error) { bg.querySelector(".modal-body").innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+  bg.querySelector(".modal-body").innerHTML = `
+    <div class="kpis">${fkpi(r.avant.joursSurcharge, "jours de surcharge", r.avant.joursSurcharge ? "bad" : "good")}
+      ${fkpi(r.apres.joursSurcharge, "après nivellement", r.apres.joursSurcharge ? "bad" : "good")}
+      ${fkpi((r.coutJours > 0 ? "+" : "") + r.coutJours + " j", "coût sur la fin", r.coutJours > 0 ? "bad" : "good")}</div>
+    ${r.propositions.length ? `<div class="section-title">Ce qu'il faudrait décaler</div>
+      <div class="card" style="overflow-x:auto;"><table class="net-table"><thead><tr><th>Tâche</th><th>De</th><th>Vers</th><th>Décalage</th></tr></thead><tbody>
+      ${r.propositions.map((p) => `<tr><td>${esc(p.titre)}</td><td>${pjDate(p.de)}</td><td><b>${pjDate(p.vers)}</b></td><td>${p.jours} j</td></tr>`).join("")}
+      </tbody></table></div>` : '<p class="muted">Aucun décalage à proposer.</p>'}
+    ${(r.irreductibles || []).length ? `<div class="section-title">Ce qu'un décalage ne résout pas</div>
+      <ul>${r.irreductibles.map((i) => `<li>${esc(i.nom)}, le ${pjDate(i.date)} — ${esc(i.motif)}</li>`).join("")}</ul>` : ""}
+    ${r.propositions.length ? `<div class="actions" style="margin-top:12px;">
+      <button class="btn-primary" id="niv-go">Appliquer ces décalages</button></div>
+      <p class="hint muted">Appliquer pose une contrainte « pas avant » sur chaque tâche décalée, et l'inscrit au journal. Rien n'est fait tant que vous n'avez pas cliqué.</p>` : ""}`;
+
+  if ($("#niv-go")) $("#niv-go").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const motif = prompt("Motif de l'arbitrage de charge :", "nivellement de la charge");
+    if (motif === null) return;
+    const out = await api.post(`/api/projets/${d.projet.id}/nivellement`, { appliquer: true, motif });
+    if (out?.error) return alert(out.error);
+    closeModals(); renderFicheProjet();
+  });
+}
+
+// --- Capturer un modèle ---
+async function openModeleProjet(d) {
+  openModal("Enregistrer comme modèle", `
+    <p class="muted" style="font-size:13.5px;margin-top:0;">La trame conserve les tâches, leur durée, leurs enchaînements et leur position relative — mais <b>ni les dates, ni les personnes</b> : les unes se recalculent, les autres changent de poste.</p>
+    <div><label class="field-label">Nom du modèle</label><input id="mo-nom" type="text" value="${esc(d.projet.nom)}"></div>
+    <div><label class="field-label">À quoi il sert</label><textarea id="mo-desc" rows="2" placeholder="Quand l'utiliser, ce qu'il suppose…"></textarea></div>
+    <div class="actions" style="margin-top:12px;"><button class="btn-primary" id="mo-save">Enregistrer</button></div>`);
+  $("#mo-save").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const r = await api.post(`/api/projets/${d.projet.id}/modele`, { nom: $("#mo-nom").value.trim(), description: $("#mo-desc").value.trim() });
+    if (r?.error) return alert(r.error);
+    closeModals();
+    alert(`Modèle « ${r.modele.nom} » enregistré (${r.modele.taches.length} tâches). Il apparaît dans le portefeuille.`);
+  });
 }

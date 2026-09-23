@@ -227,20 +227,23 @@ test("le modèle porte les échéances réglementaires qui ne se rattrapent pas"
 test("recalibrer : seul l'amont se comprime, la chaîne contrainte ne bouge pas", async () => {
   const { recalibrer, OPENING_PIVOT, OPENING_DUREE_REF } = await import("../lib/calc.js");
   // Au-delà du pivot (déclaration au recteur), les délais sont subis : trois mois
-  // d'opposition légale ne deviennent pas deux mois parce qu'on vise une ouverture
+  // subi ne devient pas plus court parce qu'on vise une ouverture
   // plus courte. Un recalibrage qui les toucherait produirait un plan infaisable.
-  for (const m of [OPENING_PIVOT, 9, 6, 3, 1, 0, -1]) {
+  for (const m of [OPENING_PIVOT, 6, 3, 1, 0, -1]) {
     assert.equal(recalibrer(m, 12), m, `M${m} est en aval du pivot : il ne doit pas bouger`);
   }
-  // L'amont, lui, se comprime : 4,5 mois deviennent 1,5 mois pour un plan de 12 mois.
+  // L'amont, lui, se comprime : les 8 mois du modèle tiennent en 5 pour un plan de 12.
   assert.equal(recalibrer(OPENING_DUREE_REF, 12), 12, "la première action cale sur la durée visée");
-  assert.equal(recalibrer(12, 12), 11, "M−12 se resserre à M−11");
+  assert.equal(recalibrer(OPENING_DUREE_REF, 11), 11, "et sur 11 mois de la même façon");
   assert.ok(recalibrer(14, 12) < 14 && recalibrer(14, 12) > OPENING_PIVOT);
+  // Le pivot est sur le CHEMIN CRITIQUE mesuré (appel d'offres → chantier → commission
+  // → arrêté), pas sur une échéance à date opposable qui, elle, a de la marge.
+  assert.equal(OPENING_PIVOT, 7, "déplacer le pivot change ce que le plan promet : à revoir avec le modèle");
 });
 
 test("recalibrer : ordre préservé, et aucune durée ne passe sous le plancher d'amont", async () => {
   const { recalibrer, OPENING_DUREE_REF, OPENING_PIVOT, OPENING_AMONT_MIN } = await import("../lib/calc.js");
-  const amont = [15, 14.5, 14, 13, 12, 11.5, 11, 10.75];
+  const amont = [15, 14.5, 14, 13, 12, 11.5, 11, 10.5, 9, 8, 7.25];
   for (const duree of [14, 12, 10, 6, 1]) {
     const vus = amont.map((m) => recalibrer(m, duree));
     for (let i = 1; i < vus.length; i++) {
