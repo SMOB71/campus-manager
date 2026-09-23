@@ -247,3 +247,28 @@ test("le remplacement total reste possible, mais il faut le demander", async () 
   const t = apres.find((x) => x.tplKey === t0.tplKey);
   assert.equal(t.owner, "", "le remplacement explicite doit bien repartir du modèle");
 });
+
+test("un plan antérieur à tplKey se met à jour sans se dédoubler", async () => {
+  // Cas réel trouvé en production : une ouverture de 151 actions créée avant
+  // que le modèle ne porte `tplKey`. Sans repli sur le titre, la fusion les
+  // traitait toutes comme « ajoutées à la main » et produisait 349 actions —
+  // chaque action en double, et plus moyen de savoir laquelle fait foi.
+  const { buildOpeningTasks, fusionnerRetroplanning } = await import("../lib/calc.js");
+  const modele = buildOpeningTasks("2027-09-01", {}, 11);
+  const ancien = modele.slice(0, 120).map((t) => ({
+    id: `vieux-${t.tplKey}`, tplKey: null, title: t.title, lot: t.lot,
+    dueDate: "2026-01-01", status: "todo", dependsOn: [],
+  }));
+  ancien.push({ id: "propre-1", tplKey: null, title: "Action propre à ce campus", dueDate: "2027-02-02", status: "doing" });
+
+  const { taches, resume } = fusionnerRetroplanning(ancien, modele);
+  assert.equal(taches.length, modele.length + 1, "le plan doit valoir le modèle plus l'action propre au projet");
+  assert.equal(resume.ajoutees.length, modele.length - 120);
+  assert.equal(resume.deplacees.length, 120, "les 120 dates périmées doivent être signalées comme déplacées");
+  assert.equal(resume.conservees.length, 1);
+  // Aucun titre en double : c'est tout l'enjeu.
+  const titres = taches.map((t) => t.title);
+  assert.equal(new Set(titres).size, titres.length, "la fusion a produit des doublons");
+  // Et l'identifiant historique survit, pour que ce qui le référence tienne.
+  assert.ok(taches.some((t) => t.id === `vieux-${modele[0].tplKey}`));
+});
