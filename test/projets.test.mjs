@@ -9,7 +9,7 @@ import {
   feriesFR, construireCalendrier, ajouterJoursOuvres, compterJoursOuvres, indexJour,
   ordonnancer, validerPlan, chercherCycle, charge, nivellement, simuler,
   prendreReference, derive, cheminsCritiques, modeleDepuisProjet, instancierModele,
-  portefeuille, normaliserTache, TYPES_LIEN,
+  portefeuille, normaliserTache, fusionnerModele, TYPES_LIEN,
 } from "../lib/projets.js";
 
 // 2026-01-05 est un lundi : toutes les dates des tests partent de là.
@@ -413,4 +413,74 @@ test("PROJET VIDE — pas de plantage, pas de date inventée", () => {
   assert.equal(p.resume.taches, 0);
   assert.equal(p.resume.fin, LUNDI);
   assert.deepEqual(cheminsCritiques(p), []);
+});
+
+// ---------------------------------------------------------------------------
+test("REJOUER UN MODÈLE — le modèle donne la forme, la tâche garde le travail", () => {
+  const taches = [
+    { id: "t1", titre: "Ancien intitulé", dureeJours: 5, modeleRef: "T1", modeleId: "m1",
+      statut: "en_cours", resteAFaire: 2, responsable: "Marc", note: "prestataire relancé" },
+    { id: "t2", titre: "Déposer", dureeJours: 2, modeleRef: "T2", modeleId: "m1" },
+    { id: "t3", titre: "Ajoutée à la main", dureeJours: 1 },
+  ];
+  const modele = [
+    { ref: "T1", titre: "Intitulé corrigé", dureeJours: 8, lot: "Cadrage" },
+    { ref: "T2", titre: "Déposer", dureeJours: 4, liens: [{ ref: "T1", type: "FD" }] },
+    { ref: "T3", titre: "Nouvelle étape du modèle", dureeJours: 3 },
+  ];
+  const f = fusionnerModele(taches, modele, { modeleId: "m1" });
+
+  // Appariement par la clé de modèle, qui survit au changement de titre.
+  const maj = f.majs.find((x) => x.ref === "T1");
+  assert.equal(maj.id, "t1");
+  assert.equal(maj.patch.titre, "Intitulé corrigé");
+  assert.equal(maj.patch.dureeJours, 8);
+  // Ce qu'un humain a mis n'est PAS dans le patch : statut, responsable, note,
+  // reste à faire d'une tâche démarrée.
+  assert.equal("statut" in maj.patch, false);
+  assert.equal("responsable" in maj.patch, false);
+  assert.equal("note" in maj.patch, false);
+  assert.equal("resteAFaire" in maj.patch, false);
+  // Sur une tâche jamais commencée, le reste à faire suit la nouvelle durée.
+  assert.equal(f.majs.find((x) => x.ref === "T2").patch.resteAFaire, 4);
+
+  assert.deepEqual(f.ajouts.map((a) => a.titre), ["Nouvelle étape du modèle"]);
+  assert.equal(f.conservees, 1);                       // la tâche ajoutée à la main reste
+  assert.deepEqual(f.renommees ?? [], []);             // (le résumé des renommages est côté route)
+  // Les liens du modèle sont traduits vers les identifiants qui survivent.
+  assert.deepEqual(f.liens.find((l) => l.id === "t2").liens, [{ deId: "t1", type: "FD", decalage: 0 }]);
+});
+
+test("REJOUER UN MODÈLE — une tâche retirée n'est supprimée que si personne n'y a touché", () => {
+  const modele = [{ ref: "T1", titre: "Reste au modèle", dureeJours: 2 }];
+  const base = (extra) => [
+    { id: "t1", titre: "Reste au modèle", dureeJours: 2, modeleRef: "T1", modeleId: "m1" },
+    { id: "t2", titre: "Retirée du modèle", dureeJours: 2, modeleRef: "T9", modeleId: "m1", ...extra },
+  ];
+  // Intacte : elle part.
+  const propre = fusionnerModele(base({}), modele, { modeleId: "m1" });
+  assert.deepEqual(propre.supprimables.map((t) => t.id), ["t2"]);
+  assert.equal(propre.gardees.length, 0);
+
+  // Travaillée : elle reste. Effacer un travail consigné serait pire qu'un plan
+  // un peu long.
+  for (const marque of [{ statut: "en_cours" }, { responsable: "Claire" }, { note: "vu en comité" }, { affectations: [{ ressourceId: "r1", tauxJour: 1 }] }]) {
+    const f = fusionnerModele(base(marque), modele, { modeleId: "m1" });
+    assert.equal(f.supprimables.length, 0, JSON.stringify(marque));
+    assert.equal(f.gardees[0].id, "t2");
+  }
+});
+
+test("REJOUER UN MODÈLE — à défaut de clé, on apparie sur le titre", () => {
+  // Plan monté à la main puis rattaché à un modèle : sans cet appariement, tout
+  // se dédoublerait.
+  const f = fusionnerModele(
+    [{ id: "x", titre: "Recenser l'existant", dureeJours: 3, responsable: "Marc" }],
+    [{ ref: "T1", titre: "Recenser l'existant", dureeJours: 6 }],
+    { modeleId: "m2" },
+  );
+  assert.equal(f.majs.length, 1);
+  assert.equal(f.majs[0].id, "x");
+  assert.equal(f.ajouts.length, 0);
+  assert.equal(f.majs[0].patch.modeleRef, "T1");
 });

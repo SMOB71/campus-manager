@@ -267,3 +267,31 @@ test("EXPORT — le planning sort en tableur avec les marges et le chemin critiq
   const buf = Buffer.from(await r.arrayBuffer());
   assert.equal(buf.slice(0, 2).toString(), "PK");
 });
+
+test("REJOUER UN MODÈLE CORRIGÉ — l'aperçu d'abord, le travail saisi ensuite préservé", async () => {
+  // Un projet monté depuis un modèle, puis du travail dessus.
+  const modeles = await jget("/api/projets-modeles");
+  const modele = modeles.modeles[0];
+  const neuf = await (await post("/api/projets", { nom: "Rejeu", campusId, modeleId: modele.id, datePivot: auj })).json();
+  const pid = neuf.projet.id;
+  let d = await jget(`/api/projets/${pid}`);
+  const cible = d.taches.find((t) => !t.synthese && !t.jalon);
+  await patch(`/api/projets/${pid}/taches/${cible.id}`, { responsable: "Marc", statut: "en_cours", resteAFaire: 1 });
+
+  // L'aperçu ne touche à rien.
+  const ap = await (await post(`/api/projets/${pid}/modele/${modele.id}/appliquer?apercu=1`, {})).json();
+  assert.equal(ap.apercu, true);
+  assert.ok(ap.misesAJour >= 1);
+  const inchange = await jget(`/api/projets/${pid}`);
+  assert.equal(inchange.taches.find((t) => t.id === cible.id).responsable, "Marc");
+
+  // L'application préserve ce qu'un humain a mis.
+  const r = await (await post(`/api/projets/${pid}/modele/${modele.id}/appliquer`, { motif: "modèle corrigé" })).json();
+  assert.equal(r.applique, true);
+  d = await jget(`/api/projets/${pid}`);
+  const apres = d.taches.find((t) => t.id === cible.id);
+  assert.equal(apres.responsable, "Marc");
+  assert.equal(apres.statut, "en_cours");
+  assert.equal(apres.resteAFaire, 1);
+  assert.equal(d.ok, true);
+});

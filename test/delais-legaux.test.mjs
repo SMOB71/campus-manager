@@ -194,3 +194,30 @@ test("le pack expose les sources, et les rattache aux actions qu'elles commanden
     assert.ok(x.regleLegale, `${x.titre} : règle non résolue`);
   }
 });
+
+test("les admissions courent jusqu'à la rentrée, et au-delà", () => {
+  // La barre « Marketing & admissions » s'arrêtait au 2 mai : le plan n'avait
+  // aucune action d'admission après. Or c'est en juillet-août que se joue le
+  // remplissage, et la phase complémentaire court jusqu'à la mi-septembre.
+  // Un chantier qui s'arrête quatre mois avant l'ouverture dit au COMEX que
+  // le sujet est clos.
+  for (const duree of DUREES) {
+    const { t } = plan(duree);
+    const mk = t.filter((x) => x.lot === "marketing").map((x) => x.dueDate).sort();
+    assert.ok(mk[mk.length - 1] > RENTREE, `${duree} mois : les admissions s'arrêtent le ${mk[mk.length - 1]}`);
+    // Et il y a bien de la matière sur l'été, pas juste une action symbolique.
+    const ete = t.filter((x) => x.lot === "marketing" && x.dueDate >= `${RENTREE.slice(0, 4)}-06-01` && x.dueDate <= RENTREE);
+    assert.ok(ete.length >= 5, `${duree} mois : ${ete.length} action(s) d'admission entre juin et la rentrée`);
+  }
+});
+
+test("l'objectif d'inscrits est tranché avant la pré-rentrée", () => {
+  // On n'ouvre pas sans savoir combien d'apprenants sont inscrits fermes.
+  for (const duree of DUREES) {
+    const { d } = plan(duree);
+    assert.ok(d("objectif-atteint"), "le jalon d'atteinte de l'objectif doit exister");
+    assert.ok(d("objectif-atteint") < d("prerentree"));
+    assert.ok(d("constitution-promos") < d("prerentree"), "les promotions se constituent avant la pré-rentrée");
+    assert.ok(d("inscriptions") < d("objectif-atteint"));
+  }
+});
