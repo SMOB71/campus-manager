@@ -553,3 +553,43 @@ test("une feuille de route par direction : ses actions, ses échéances, rien d'
   // Une feuille de direction ne parle que d'elle.
   assert.ok(!/Ressources humaines/.test(t), "la feuille Finance ne doit pas porter les actions d'une autre direction");
 });
+
+test("le classeur alerte tout seul, et cache sa plomberie", async () => {
+  // Il était « pas joli, pas top fonctionnel » : une liste de quinze lignes de
+  // texte sans hiérarchie, ZÉRO mise en forme conditionnelle — quand « actions
+  // hors marge » passait de 0 à 40, rien ne changeait —, et l'onglet « Liens »,
+  // pure mécanique de propagation, exposé comme un document.
+  const { piece, vue } = await import("../lib/pack/index.js");
+  const { buildOpeningTasks } = await import("../lib/calc.js");
+  const { planOuverture } = await import("../lib/pack/ouverture.js");
+  const taches = buildOpeningTasks("2027-09-01", {}, 11);
+  const { projet, plan } = planOuverture({ id: "o", name: "Brest", targetDate: "2027-09-01", budget: 1e6 },
+    taches, { aujourdhui: "2026-10-05" });
+  const r = await piece("pilotage", projet, vue(plan), {}, { seances: [{ date: "2026-10-05", instance: "COPIL" }] });
+  assert.ok(estZip(r.octets));
+
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const d = mkdtempSync(path.join(os.tmpdir(), "xl-"));
+  const f = path.join(d, "x.xlsx");
+  writeFileSync(f, r.octets);
+  const liste = execFileSync("unzip", ["-Z1", f]).toString().split("\n");
+  const wb = execFileSync("unzip", ["-p", f, "xl/workbook.xml"]).toString();
+
+  const feuilles = [...wb.matchAll(/name="([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(feuilles.some((n) => /Cette semaine/.test(n)), "il manque la vue « quoi faire maintenant »");
+  assert.ok(feuilles.some((n) => /Suivi des séances/.test(n)));
+  assert.ok(feuilles.some((n) => /Relevé de décisions/.test(n)));
+  // La mécanique de propagation n'est pas un document : elle est masquée.
+  assert.match(wb, /name="Liens"[^>]*state="hidden"|state="hidden"[^>]*name="Liens"/);
+
+  // Les alertes : sans elles, il faut relire deux cents lignes pour trouver
+  // la seule qui pousse la date de rentrée.
+  let regles = 0;
+  for (const n of liste.filter((x) => /xl\/worksheets\/sheet\d+\.xml$/.test(x))) {
+    regles += (execFileSync("unzip", ["-p", f, n], { maxBuffer: 64 * 1024 * 1024 }).toString()
+      .match(/<conditionalFormatting/g) || []).length;
+  }
+  assert.ok(regles >= 4, `${regles} mise(s) en forme conditionnelle : le classeur doit se signaler seul`);
+  rmSync(d, { recursive: true, force: true });
+});
