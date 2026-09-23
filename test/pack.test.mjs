@@ -198,3 +198,52 @@ test("la feuille cite les échéances imposées, même après passage par le mag
   const mk = await (await get(`/api/openings/${ouvertureId}/export?format=print&dept=com`)).text();
   assert.ok(!/Échéances imposées/.test(mk), "section légale affichée sans aucune échéance à citer");
 });
+
+// ── Remise à niveau d'un plan déjà saisi ────────────────────────────────────
+// Le défaut qui empêchait de corriger le modèle : régénérer effaçait tout.
+// Corriger un délai légal coûtait alors les responsables, les statuts et les
+// réalisations consignées — donc on ne corrigeait pas.
+test("mettre à jour depuis le modèle conserve ce qu'un humain a saisi", async () => {
+  const o = await (await post("/api/openings", { name: "Brest", targetDate: "2027-09-01", dureeMois: 11 })).json();
+  const avant = (await (await get(`/api/openings/${o.id}`)).json()).tasks;
+  assert.ok(avant.length > 100, "l'ouverture doit être semée à la création");
+
+  // On saisit du travail : un responsable, un statut, une réalisation. Puis on
+  // ajoute une tâche à la main, et on simule une action disparue du modèle.
+  const cible = avant.find((t) => t.tplKey === "autorisation-erp");
+  await req(`/api/openings/${o.id}/tasks/${cible.id}`, { method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { owner: "Direction des opérations", status: "doing", notes: "Dossier en cours de montage" } });
+  const manuelle = await (await post(`/api/openings/${o.id}/tasks`, { title: "Point local ajouté à la main", dueDate: "2027-01-10" })).json();
+
+  const ap = await (await post(`/api/openings/${o.id}/seed`, { apercu: true })).json();
+  assert.equal(ap.apercu, true);
+  assert.equal(ap.mode, "fusion");
+  // L'aperçu n'écrit RIEN : c'est tout son intérêt.
+  const inchange = (await (await get(`/api/openings/${o.id}`)).json()).tasks;
+  assert.equal(inchange.length, avant.length + 1);
+
+  await post(`/api/openings/${o.id}/seed`, {});
+  const apres = (await (await get(`/api/openings/${o.id}`)).json()).tasks;
+
+  const t = apres.find((x) => x.tplKey === "autorisation-erp");
+  assert.equal(t.owner, "Direction des opérations", "le responsable saisi a été écrasé");
+  assert.equal(t.status, "doing", "le statut saisi a été écrasé");
+  assert.match(t.notes, /montage/, "les notes saisies ont été écrasées");
+  assert.ok(apres.some((x) => x.id === manuelle.id), "une tâche ajoutée à la main ne doit jamais disparaître");
+
+  // Les dépendances doivent pointer vers des tâches qui existent encore.
+  const ids = new Set(apres.map((x) => x.id));
+  const cassees = apres.flatMap((x) => (x.dependsOn || []).filter((d) => !ids.has(d)));
+  assert.deepEqual(cassees, [], "la fusion a laissé des dépendances orphelines");
+});
+
+test("le remplacement total reste possible, mais il faut le demander", async () => {
+  const o = await (await post("/api/openings", { name: "Rennes", targetDate: "2027-09-01", dureeMois: 11 })).json();
+  const t0 = (await (await get(`/api/openings/${o.id}`)).json()).tasks[0];
+  await req(`/api/openings/${o.id}/tasks/${t0.id}`, { method: "PATCH", cookie: A.cookie, csrf: A.csrf,
+    json: { owner: "Quelqu'un" } });
+  await post(`/api/openings/${o.id}/seed`, { mode: "remplacer" });
+  const apres = (await (await get(`/api/openings/${o.id}`)).json()).tasks;
+  const t = apres.find((x) => x.tplKey === t0.tplKey);
+  assert.equal(t.owner, "", "le remplacement explicite doit bien repartir du modèle");
+});

@@ -74,7 +74,7 @@ import { planOuverture } from "./lib/pack/ouverture.js";
 import { piece as piecePack, zipper as zipperPack, nomZip as nomZipPack, inventaire as inventairePack } from "./lib/pack/index.js";
 import * as backup from "./lib/backup.js";
 import { sendSessionMail, convocationHtml, compteRenduHtml, destinataires, runSessionReminders } from "./lib/copil.js";
-import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_DEPTS, OPENING_SOURCES, OPENING_FAMILIES, deptOf, loiDe, dateMoinsJours, buildOpeningTasks, buildOpeningBudget, OPENING_DUREE_REF, OPENING_DUREE_MIN } from "./lib/calc.js";
+import { marginOf, healthScore, schoolYearRange, extractPnlPostes, OPENING_LOTS, OPENING_DEPTS, OPENING_SOURCES, OPENING_FAMILIES, deptOf, loiDe, fusionnerRetroplanning, dateMoinsJours, buildOpeningTasks, buildOpeningBudget, OPENING_DUREE_REF, OPENING_DUREE_MIN } from "./lib/calc.js";
 // Duree visee d'un projet : celle du projet si elle est saisie, sinon celle du modele.
 // Bornee au plancher tenable — en dessous, la chaine reglementaire ne rentre plus.
 const dureeDe = (o) => (Number(o?.dureeMois) > 0 ? Math.max(OPENING_DUREE_MIN, Number(o.dureeMois)) : OPENING_DUREE_REF);
@@ -4225,15 +4225,40 @@ app.delete("/api/openings/:id", requireAuth, requireAdmin, (req, res) => {
   logAudit(req, "delete", "opening", o?.name || req.params.id);
   res.json({ ok: true });
 });
+// Remise à niveau d'un rétroplanning depuis le modèle.
+//
+// Par défaut on FUSIONNE : le modèle apporte ses actions et ses dates, la
+// tâche enregistrée garde ce qu'un humain y a mis. L'ancien comportement
+// remplaçait tout — donc corriger un délai légal coûtait les responsables, les
+// statuts et les réalisations consignées, et on ne corrigeait pas.
+//
+// `apercu` ne écrit rien : on montre d'abord ce qui va bouger. Un plan de deux
+// cents actions ne se remplace pas à l'aveugle.
 app.post("/api/openings/:id/seed", requireAuth, requireAdmin, (req, res) => {
   const o = store.getOpening(req.params.id);
   if (!o) return res.status(404).json({ error: "introuvable" });
   if (!o.targetDate) return res.status(400).json({ error: "renseigne d'abord la date de rentrée" });
-  const merge = req.body?.merge === true;
-  const seeded = buildOpeningTasks(o.targetDate, store.getOpeningSettings(), dureeDe(o));
-  store.setOpeningTasks(o.id, merge ? [...(o.tasks || []), ...seeded] : seeded);
-  logAudit(req, "seed", "opening", `${o.name} — rétroplanning type`);
-  res.json(store.getOpening(o.id));
+  const modele = buildOpeningTasks(o.targetDate, store.getOpeningSettings(), dureeDe(o));
+  const remplacer = req.body?.mode === "remplacer";
+
+  if (remplacer) {
+    if (req.body?.apercu) {
+      return res.json({ apercu: true, mode: "remplacer", resume: {
+        avant: (o.tasks || []).length, apres: modele.length,
+        ajoutees: [], deplacees: [], supprimees: (o.tasks || []).map((t) => ({ tplKey: t.tplKey, title: t.title })), conservees: [], inchangees: 0,
+      } });
+    }
+    store.setOpeningTasks(o.id, modele);
+    logAudit(req, "seed", "opening", `${o.name} — rétroplanning REMPLACÉ (${modele.length} actions)`);
+    return res.json(store.getOpening(o.id));
+  }
+
+  const { taches, resume } = fusionnerRetroplanning(o.tasks || [], modele);
+  if (req.body?.apercu) return res.json({ apercu: true, mode: "fusion", resume });
+  store.setOpeningTasks(o.id, taches);
+  logAudit(req, "seed", "opening",
+    `${o.name} — fusion : ${resume.ajoutees.length} ajoutée(s), ${resume.deplacees.length} date(s) déplacée(s), ${resume.supprimees.length} retirée(s), ${resume.conservees.length} conservée(s)`);
+  res.json({ ...store.getOpening(o.id), resume });
 });
 // --- Répertoire des personnes du projet ---
 // Une seule liste alimente les membres de comité ET les responsabilités des

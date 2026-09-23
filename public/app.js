@@ -5684,7 +5684,7 @@ async function openOuvertureDetail(oid) {
     <div class="row" style="margin:10px 0;gap:8px;align-items:center;">
       <div class="chips" id="ouv-mode"><button class="chip ${ouvView === "lot" ? "active" : ""}" data-m="lot">Par lot</button><button class="chip ${ouvView === "frise" ? "active" : ""}" data-m="frise">Frise</button><button class="chip ${ouvView === "budget" ? "active" : ""}" data-m="budget">Budget</button><button class="chip ${ouvView === "copil" ? "active" : ""}" data-m="copil">Comité</button><button class="chip ${ouvView === "chaine" ? "active" : ""}" data-m="chaine">Chaîne</button><button class="chip ${ouvView === "params" ? "active" : ""}" data-m="params">Paramètres réseau</button></div>
       <button class="btn-ghost btn-sm" id="ouv-addtask">+ Tâche</button>
-      <button class="btn-ghost btn-sm" id="ouv-reseed">Régénérer le type</button>
+      <button class="btn-ghost btn-sm" id="ouv-reseed">Mettre à jour depuis le modèle</button>
       <button class="btn-ghost btn-sm" id="ouv-xlsx">Excel</button>
       <button class="btn-ghost btn-sm" id="ouv-print">Imprimer le plan</button>
       <select class="txt" id="ouv-print-dir" style="width:auto;padding:4px 8px;font-size:13px;"><option value="">Imprimer une direction…</option>${ouvDepts.map((d) => `<option value="${d.k}">${esc(d.l)}</option>`).join("")}</select>
@@ -5698,7 +5698,7 @@ async function openOuvertureDetail(oid) {
   $("#ouv-edit").onclick = () => { closeModals(); openOuvertureForm(o); };
   $("#ouv-del").onclick = async () => { if (!confirm("Supprimer ce projet d'ouverture ?")) return; await api.del(`/api/openings/${oid}`); closeModals(); renderOuvertures(); };
   $("#ouv-addtask").onclick = () => openTaskForm(oid);
-  $("#ouv-reseed").onclick = async () => { if (!confirm("Régénérer le rétroplanning type ? Cela remplace les tâches actuelles.")) return; const r = await api.post(`/api/openings/${oid}/seed`, {}); if (r?.error) { alert(r.error); return; } closeModals(); openOuvertureDetail(oid); };
+  $("#ouv-reseed").onclick = () => openReseedForm(oid);
   $("#ouv-xlsx").onclick = () => { location.href = `/api/openings/${oid}/export`; };
   // Deux impressions distinctes : le rétroplanning complet (consultation) et la
   // feuille d'une direction (relecture et signature). C'est la seconde qu'on
@@ -5829,6 +5829,48 @@ async function openOuvertureDetail(oid) {
     $$(".cp-task").forEach((b) => b.addEventListener("click", () => openTaskSheet(oid, b.dataset.tid)));
   }
 }
+// Remise à niveau depuis le modèle : on montre ce qui va bouger AVANT d'écrire.
+// L'ancienne version demandait « Cela remplace les tâches actuelles, confirmer ? »
+// et effaçait deux cents lignes de travail sur un oui.
+async function openReseedForm(oid) {
+  const a = await api.post(`/api/openings/${oid}/seed`, { apercu: true });
+  if (a?.error) { alert(a.error); return; }
+  const r = a.resume;
+  const liste = (titre, items, rendu) => items.length
+    ? `<p class="field-label" style="margin-top:12px;">${titre} (${items.length})</p>
+       <div class="list">${items.slice(0, 40).map(rendu).join("")}</div>
+       ${items.length > 40 ? `<p class="hint muted">… et ${items.length - 40} autre(s).</p>` : ""}`
+    : "";
+  openModal("Mettre le plan à jour depuis le modèle", `
+    <p class="sub">Le modèle a évolué. La mise à jour apporte ses actions et ses dates, et <b>conserve ce que vous avez saisi</b> : responsables, statuts, réalisations consignées, pièces, commentaires et étapes.</p>
+    <div class="kpis" style="grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0;">
+      ${fkpi(r.ajoutees.length, "Actions ajoutées")}
+      ${fkpi(r.deplacees.length, "Dates déplacées")}
+      ${fkpi(r.supprimees.length, "Retirées", r.supprimees.length ? "bad" : "")}
+      ${fkpi(r.avant + " → " + r.apres, "Volume")}
+    </div>
+    ${liste("Actions ajoutées", r.ajoutees, (x) => `<div class="ouv-task"><span class="ttl">${esc(x.title)}</span><span class="muted">${esc(x.dueDate || "")}</span></div>`)}
+    ${liste("Dates déplacées", r.deplacees, (x) => `<div class="ouv-task"><span class="ttl">${esc(x.title)}</span><span class="muted">${esc(x.de)} → <b>${esc(x.a)}</b></span></div>`)}
+    ${liste("Retirées du modèle et jamais travaillées", r.supprimees, (x) => `<div class="ouv-task"><span class="ttl">${esc(x.title)}</span><span class="muted">supprimée</span></div>`)}
+    ${liste("Conservées", r.conservees, (x) => `<div class="ouv-task"><span class="ttl">${esc(x.title)}</span><span class="muted">${esc(x.motif)}</span></div>`)}
+    <p class="hint muted" style="margin-top:12px;">${r.inchangees} action(s) inchangée(s). Une action que vous avez ajoutée à la main n'est jamais supprimée ; une action retirée du modèle n'est supprimée que si personne n'y a touché.</p>
+    <div class="actions" style="margin-top:14px;">
+      <button class="btn-ghost btn-sm btn-danger" id="rs-remplacer">Tout remplacer</button>
+      <button class="btn-primary" id="rs-ok">Mettre à jour</button>
+    </div>`);
+  $("#rs-ok").onclick = async () => {
+    const x = await api.post(`/api/openings/${oid}/seed`, {});
+    if (x?.error) { alert(x.error); return; }
+    closeModals(); openOuvertureDetail(oid);
+  };
+  $("#rs-remplacer").onclick = async () => {
+    if (!confirm(`Tout remplacer efface les ${r.avant} tâches actuelles et le travail saisi dessus : responsables, statuts, réalisations, pièces. Confirmer ?`)) return;
+    const x = await api.post(`/api/openings/${oid}/seed`, { mode: "remplacer" });
+    if (x?.error) { alert(x.error); return; }
+    closeModals(); openOuvertureDetail(oid);
+  };
+}
+
 async function openPackForm(oid) {
   const r = await api.get(`/api/openings/${oid}/pack?inventaire=1`);
   const pieces = r?.pieces || [];
