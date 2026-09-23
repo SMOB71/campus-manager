@@ -8,7 +8,8 @@
 // le modèle — aucun n'est décoratif.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildOpeningTasks, OPENING_DUREE_MIN, OPENING_DUREE_REF } from "../lib/calc.js";
+import { buildOpeningTasks, OPENING_DUREE_MIN, OPENING_DUREE_REF, OPENING_SOURCES } from "../lib/calc.js";
+import { planOuverture } from "../lib/pack/ouverture.js";
 
 const RENTREE = "2027-09-01";
 const jours = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
@@ -151,5 +152,45 @@ test("aucune dépendance inversée, quelle que soit la durée retenue", () => {
       .filter((q) => q && q.dueDate > x.dueDate)
       .map((q) => `${duree} mois : ${q.tplKey} (${q.dueDate}) exigé avant ${x.tplKey} (${x.dueDate})`));
     assert.deepEqual(inversions, []);
+  }
+});
+
+test("chaque date imposée cite sa source, et aucune source n'est orpheline", () => {
+  // Une mention « c'est la loi » sans référence ne se vérifie pas, et une
+  // source qui ne commande aucune action est du remplissage réglementaire.
+  const { t } = plan(OPENING_DUREE_MIN);
+  const avecLoi = t.filter((x) => x.loi);
+  assert.ok(avecLoi.length >= 10, `${avecLoi.length} actions portent une base légale`);
+  for (const x of avecLoi) {
+    const src = OPENING_SOURCES[x.loi];
+    assert.ok(src, `${x.tplKey} cite une source inconnue : ${x.loi}`);
+    assert.ok(src.regle && src.texte, `${x.loi} : règle ou texte manquant`);
+    assert.match(src.url, /^https:\/\//, `${x.loi} : source sans lien vérifiable`);
+  }
+  const mobilisees = new Set(avecLoi.map((x) => x.loi));
+  const orphelines = Object.keys(OPENING_SOURCES).filter((k) => !mobilisees.has(k));
+  assert.deepEqual(orphelines, [], "des sources ne commandent aucune action du plan");
+});
+
+test("le pack expose les sources, et les rattache aux actions qu'elles commandent", () => {
+  // C'est ce que lisent les documents : sans ce rattachement, la mention
+  // n'arrive pas jusqu'au lecteur qui doit signer.
+  const { t } = plan(OPENING_DUREE_MIN);
+  const { projet, plan: p } = planOuverture(
+    { id: "x", name: "Essai", targetDate: RENTREE, dureeMois: OPENING_DUREE_MIN, budget: 1000000 },
+    t, { aujourdhui: "2026-10-05" });
+  assert.equal(projet.sources.length, Object.keys(OPENING_SOURCES).length);
+  for (const s of projet.sources) {
+    assert.ok(s.actions.length, `${s.cle} : aucune action rattachée`);
+    assert.ok(s.texte && s.regle && s.url);
+  }
+  // Les sources sont rangées par date de première échéance : un lecteur les
+  // rencontre dans l'ordre où elles le concernent.
+  const dates = projet.sources.map((s) => s.actions[0].fin);
+  assert.deepEqual(dates, [...dates].sort());
+  // Et chaque action datée par un texte porte la mention en clair.
+  for (const x of p.taches.filter((a) => a.loi)) {
+    assert.ok(x.baseLegale, `${x.titre} : base légale non résolue`);
+    assert.ok(x.regleLegale, `${x.titre} : règle non résolue`);
   }
 });
