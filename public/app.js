@@ -9200,7 +9200,7 @@ async function renderFicheProjet() {
 
   const surcharge = (d.charge?.ressources || []).reduce((s, x) => s + x.nbJoursSurcharge, 0);
   const onglets = [["planning", "Planning"], ["taches", `Tâches (${d.taches.filter((t) => !t.synthese).length})`],
-    ["charge", `Charge${surcharge ? " ⚠" : ""}`], ["copil", "COPIL"], ["journal", `Journal (${d.journal.length})`]];
+    ["charge", `Charge${surcharge ? " ⚠" : ""}`], ["copil", "COPIL"], ["documents", "Documents"], ["journal", `Journal (${d.journal.length})`]];
 
   $("#view").innerHTML = `${entete}
     <div class="kpis" style="margin-bottom:12px;">
@@ -9229,6 +9229,7 @@ async function renderFicheProjet() {
   if (PJ.onglet === "taches") pjBrancherTable(d);
   if (PJ.onglet === "charge") pjBrancherCharge(d);
   if (PJ.onglet === "copil") pjRendreCopil(d);
+  if (PJ.onglet === "documents") pjRendreDocuments(d);
 }
 
 function pjBandeaux(d) {
@@ -10041,4 +10042,57 @@ async function openCopilSeance(d, cid, seance) {
     bg.remove();
     pjRendreCopil(d);
   });
+}
+
+
+// ---------- Onglet Documents du projet ----------
+// Les mêmes pièces que pour une ouverture de campus : le générateur est commun
+// (lib/pack). Rien n'est saisi deux fois — tout descend du plan et des
+// registres de la fiche. Ce qui n'est pas renseigné sort marqué « à renseigner »
+// dans le document, et pas comblé par une généralité.
+async function pjRendreDocuments(d) {
+  const hote = $("#pj-contenu");
+  const r = await api.get(`/api/projets/${d.projet.id}/pack?inventaire=1`);
+  if (r?.error) {
+    hote.innerHTML = `<div class="card card-pad" style="border-left:4px solid var(--danger);">
+      <b>Aucun document ne peut être produit.</b><p class="sub muted">${esc(r.error)}</p></div>`;
+    return;
+  }
+  const lots = [...new Set(d.taches.filter((t) => !t.synthese).map((t) => t.lot).filter(Boolean))];
+  const dossiers = [...new Set(r.pieces.map((p) => p.dossier))];
+  const EXT = { docx: "Word", pptx: "PowerPoint", xlsx: "Excel" };
+
+  hote.innerHTML = `
+    <div class="row pj-actions" style="gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+      <button class="btn-primary btn-sm" id="pj-zip">Tout télécharger (.zip)</button>
+      <button class="btn-ghost btn-sm" id="pj-imprimer">Imprimer le plan</button>
+      ${lots.length ? `<select class="txt" id="pj-imprimer-lot" style="width:auto;padding:4px 8px;font-size:13px;">
+        <option value="">Imprimer un chantier…</option>${lots.map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("")}</select>` : ""}
+      <button class="btn-ghost btn-sm" id="pj-xlsx">Planning en Excel</button>
+    </div>
+    ${dossiers.map((dos) => `
+      <div class="section-title" style="margin-top:14px;">${esc(dos)}</div>
+      <div class="card" style="overflow:hidden;">
+        ${r.pieces.filter((p) => p.dossier === dos).map((p) => `
+          <div class="row" style="align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line-2);">
+            <div style="flex:1;min-width:220px;">
+              <b style="font-size:14px;">${esc(p.nom)}</b>
+              <span class="pill" style="margin-left:6px;background:var(--line-2);color:var(--muted);">${EXT[p.ext] || p.ext}</span>
+              <div class="muted" style="font-size:13px;margin-top:2px;">${esc(p.quoi)}</div>
+            </div>
+            <button class="btn-ghost btn-sm pj-piece" data-c="${p.cle}" style="flex:0 0 auto;">Télécharger</button>
+          </div>`).join("")}
+      </div>`).join("")}
+    <p class="hint muted">Le contenu descend du plan, du comité et des registres de la fiche du projet. Ce qui n'y est pas renseigné apparaît comme tel dans les documents : un document qui comble ses trous tout seul se fait signer sans être lu.</p>`;
+
+  const base = `/api/projets/${d.projet.id}`;
+  $("#pj-zip").onclick = () => { location.href = `${base}/pack`; };
+  $("#pj-xlsx").onclick = () => { location.href = `${base}/export`; };
+  $("#pj-imprimer").onclick = () => window.open(`${base}/export?format=print`, "_blank");
+  if ($("#pj-imprimer-lot")) $("#pj-imprimer-lot").onchange = (e) => {
+    if (!e.target.value) return;
+    window.open(`${base}/export?format=print&lot=${encodeURIComponent(e.target.value)}`, "_blank");
+    e.target.value = "";
+  };
+  $$(".pj-piece").forEach((b) => { b.onclick = () => { location.href = `${base}/pack/${b.dataset.c}`; }; });
 }

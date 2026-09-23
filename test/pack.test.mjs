@@ -29,6 +29,17 @@ const get = (p) => req(p, { cookie: A.cookie });
 // Un fichier Office est un zip dont la première entrée commence par « PK ».
 // Le vérifier interdit le faux positif le plus courant : une réponse d'erreur
 // JSON renvoyée avec le bon type MIME.
+// Texte d'un .docx, pour vérifier ce qu'il DIT et pas seulement qu'il existe.
+const lireDocx = async (buf) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const d = mkdtempSync(path.join(os.tmpdir(), "docx-"));
+  const f = path.join(d, "x.docx");
+  writeFileSync(f, buf);
+  const xml = execFileSync("unzip", ["-p", f, "word/document.xml"], { maxBuffer: 64 * 1024 * 1024 }).toString("utf8");
+  return xml.replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&apos;/g, "'").replace(/&#(\d+);/g, (m, c) => String.fromCharCode(c));
+};
+
 const estZip = (buf) => buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b;
 
 before(async () => {
@@ -271,4 +282,58 @@ test("un plan antérieur à tplKey se met à jour sans se dédoubler", async () 
   assert.equal(new Set(titres).size, titres.length, "la fusion a produit des doublons");
   // Et l'identifiant historique survit, pour que ce qui le référence tienne.
   assert.ok(taches.some((t) => t.id === `vieux-${modele[0].tplKey}`));
+});
+
+// ── Fiches action et Flash INFO ─────────────────────────────────────────────
+test("chaque jalon porte une condition de clôture, et la fiche la dit", async () => {
+  // « Sans cette définition, une action à 80 % reste à 80 % pendant six mois. »
+  // Un jalon sans critère de clôture n'est pas un jalon : c'est une date.
+  const { buildOpeningTasks, OPENING_JALONS, critereFinDe } = await import("../lib/calc.js");
+  const t = buildOpeningTasks("2027-09-01", {}, 11);
+  const jalonsSansCritere = t.filter((x) => OPENING_JALONS.has(x.tplKey) && !x.fin);
+  assert.deepEqual(jalonsSansCritere.map((x) => x.tplKey), []);
+  // Et le critère se retrouve après passage par le magasin, qui ne garde que tplKey.
+  assert.ok(critereFinDe({ tplKey: "arrete-maire" }).length > 20);
+});
+
+test("la fiche action ne se contredit pas sur le porteur", async () => {
+  const r = await get(`/api/openings/${ouvertureId}/pack/fiches-action`);
+  assert.equal(r.status, 200);
+  const buf = Buffer.from(await r.arrayBuffer());
+  assert.ok(estZip(buf), "la fiche action doit être un vrai .docx");
+  const texte = await lireDocx(buf);
+  // Le défaut corrigé : « Responsable : Direction académique » suivi trois
+  // lignes plus bas de « Aucun responsable nommé à ce jour ».
+  assert.ok(!/Aucun responsable nommé à ce jour/.test(texte),
+    "la fiche affiche un porteur puis affirme qu'il n'y en a pas");
+  assert.match(texte, /Terminé quand/);
+  assert.match(texte, /Point de vigilance/);
+  // Ce qui manque est DIT, pas comblé.
+  assert.match(texte, /condition de clôture à définir/);
+});
+
+test("le Flash INFO porte un bloc par direction, aucun supprimé", async () => {
+  const r = await get(`/api/openings/${ouvertureId}/pack/flash-info`);
+  assert.equal(r.status, 200);
+  const texte = await lireDocx(Buffer.from(await r.arrayBuffer()));
+  const dirs = (await (await get("/api/openings/meta")).json()).depts;
+  for (const d of dirs) assert.ok(texte.includes(d.l), `Flash INFO sans bloc « ${d.l} »`);
+  assert.match(texte, /RAS/, "la règle du bloc jamais supprimé doit être écrite");
+});
+
+test("les ordres du jour sortent aussi en un fichier par séance", async () => {
+  const { ordresSepares, vue } = await import("../lib/pack/index.js");
+  const { buildOpeningTasks } = await import("../lib/calc.js");
+  const { planOuverture } = await import("../lib/pack/ouverture.js");
+  const { charte } = await import("../lib/pack/charte.js");
+  const taches = buildOpeningTasks("2027-09-01", {}, 11);
+  const { projet, plan } = planOuverture({ id: "o", name: "Lille", targetDate: "2027-09-01", budget: 1 },
+    taches, { aujourdhui: "2026-10-05" });
+  const seances = ["2026-10-12", "2026-10-19", "2026-10-26"].map((date) => ({ date, instance: "COPIL" }));
+  const out = await ordresSepares(projet, vue(plan), charte({}), { seances });
+  assert.equal(out.length, 3);
+  assert.ok(out.every((x) => estZip(x.octets)), "chaque ordre du jour doit être un vrai .docx");
+  // Numérotés et datés : on ouvre celui du jour, pas un recueil de 47 séances.
+  assert.match(out[0].chemin, /Ordres du jour\/.*ODJ-01-2026-10-12\.docx$/);
+  assert.match(out[2].chemin, /ODJ-03-2026-10-26\.docx$/);
 });

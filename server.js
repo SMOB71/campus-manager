@@ -53,6 +53,7 @@ import * as cpf from "./lib/cpf.js";
 import * as demarrage from "./lib/demarrage.js";
 import * as proj from "./lib/projets.js";
 import * as copilproj from "./lib/copilprojet.js";
+import { planProjet, htmlPlanProjet } from "./lib/pack/projet.js";
 import { ENDPOINTS as API_ENDPOINTS, buildOpenApi, VERSION as API_VERSION } from "./lib/publicapi.js";
 import { buildCerfa, TYPE_EMPLOYEUR, EMPLOYEUR_SPECIFIQUE, NATIONALITE, REGIME_SOCIAL, SITUATION_AVANT_CONTRAT, DEROGATION, TYPE_CONTRAT } from "./lib/cerfa.js";
 import { FUNDING_MODES, buildSchedule, amountDue, prorataTemporis, computeTotals, balance, compareWithLegacy, daysBetween } from "./lib/billing.js";
@@ -1842,6 +1843,15 @@ app.get("/api/projets/:id/export", requireAuth, (req, res) => {
   if (p.campusId && !canCampus(req, p.campusId)) return res.status(403).send("Hors périmètre");
   const plan = planDe(p, store.listProjetTaches({ projetId: p.id }));
   if (!plan.ok) return res.status(409).send("Plan non calculable : rien à exporter");
+  // Plan imprimable : même geste que sur une ouverture de campus (le navigateur
+  // fait le PDF). La vue par lot sert à ne donner à chaque responsable que sa
+  // partie — un plan de deux cents lignes distribué entier n'est pas lu.
+  if (req.query.format === "print") {
+    const { projet, plan: planPack } = planProjet(p, store.listProjetTaches({ projetId: p.id }), { aujourdhui: aujourdhuiISO() });
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    logAudit(req, "export", "projet", `plan imprimable — ${p.nom}`);
+    return res.send(htmlPlanProjet(projet, planPack, { lot: String(req.query.lot || "") }));
+  }
   const noms = new Map(plan.taches.map((t) => [t.id, t.titre]));
   const lignes = plan.taches.map((t) => ({
     "N°": t.code, Tâche: `${"    ".repeat(t.niveau || 0)}${t.titre}`, Lot: t.lot || "",
@@ -1859,6 +1869,59 @@ app.get("/api/projets/:id/export", requireAuth, (req, res) => {
     "Budget prévu €": t.budgetPrevu || "", "Budget dépensé €": t.budgetDepense || "",
   }));
   sendXlsx(res, "Planning", lignes, `projet-${String(p.nom || "").replace(/[^\w-]+/g, "-").toLowerCase()}.xlsx`);
+});
+
+// --- Pack documentaire du projet --------------------------------------------
+// Les mêmes pièces que pour une ouverture de campus — note de cadrage, plan,
+// présentations, classeur de pilotage, trames, ordres du jour, kit
+// d'intégration. Le générateur (`lib/pack/`) est commun : un projet n'a pas
+// besoin d'un second jeu de documents, il a besoin d'être branché dessus.
+function packProjet(p) {
+  const taches = store.listProjetTaches({ projetId: p.id });
+  // La gouvernance réelle alimente les documents : le comité du projet et ses
+  // séances programmées. Sans comité, la pièce « ordres du jour » est
+  // simplement absente du pack plutôt que vide.
+  const committee = store.listCommittees({ scope: "projet", scopeId: p.id })[0] || null;
+  const seances = (committee?.sessions || [])
+    .filter((se) => se.date && se.status !== "held")
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .map((se) => ({ ...se, instance: committee.name }));
+  const r = planProjet(p, taches, { aujourdhui: aujourdhuiISO(), committee, seances });
+  return { ...r, settings: store.getSettings() };
+}
+
+app.get("/api/projets/:id/pack", requireAuth, async (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const { projet, plan, options, settings } = packProjet(p);
+  if (!plan.ok) return res.status(409).json({ error: "plan non calculable : aucun document ne sera produit tant qu'il ne l'est pas", erreurs: plan.erreurs });
+  if (req.query.inventaire) return res.json({ pieces: inventairePack(projet, plan, options) });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${nomZipPack(projet)}"`);
+  try {
+    const r = await zipperPack(projet, plan, settings, options, res);
+    logAudit(req, "export", "pack-projet", `${p.nom} — ${r.pieces.length} pièces${r.echecs.length ? `, ${r.echecs.length} en échec` : ""}`);
+  } catch (e) {
+    // Les entêtes sont parties : on coupe le flux plutôt que de livrer une
+    // archive tronquée qui s'ouvrirait à moitié.
+    logAudit(req, "export", "pack-projet", `ECHEC ${p.nom} : ${e.message}`);
+    res.destroy();
+  }
+});
+
+app.get("/api/projets/:id/pack/:cle", requireAuth, async (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const { projet, plan, options, settings } = packProjet(p);
+  if (!plan.ok) return res.status(409).json({ error: "plan non calculable : aucun document ne sera produit tant qu'il ne l'est pas" });
+  const r = await piecePack(req.params.cle, projet, plan, settings, options).catch((e) => ({ error: e.message }));
+  if (r.error) return res.status(r.error === "document inconnu" ? 404 : 500).json({ error: r.error });
+  res.setHeader("Content-Type", MIME_PACK[r.type] || "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${r.nom}"`);
+  logAudit(req, "export", "pack-projet", `${p.nom} — ${r.libelle}`);
+  res.send(r.octets);
 });
 
 // --- Comité de pilotage d'un projet ------------------------------------------

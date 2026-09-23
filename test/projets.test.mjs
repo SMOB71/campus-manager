@@ -127,7 +127,26 @@ test("REFUS DE CALCULER — lien orphelin, auto-dépendance, synthèse avec lien
   assert.match(v.erreurs.find((e) => e.tacheId === "phase" && /élémentaire/.test(e.message)).message, /tâche élémentaire/);
   // Sa durée saisie est un avertissement, pas un blocage : elle sera écrasée
   // par l'enveloppe de ses enfants.
-  assert.equal(v.erreurs.find((e) => /elle ne se saisit pas/.test(e.message)).corrigible, true);
+  const dureeSynthese = v.erreurs.find((e) => /durée saisie est ignorée/.test(e.message));
+  assert.equal(dureeSynthese.corrigible, true);
+  assert.equal(dureeSynthese.avertissement, true);
+});
+
+test("AJOUTER UNE SOUS-TÂCHE NE CASSE PAS LE PLAN", () => {
+  // Ajouter un enfant à une tâche existante en fait une tâche de synthèse : sa
+  // durée saisie (1 jour par défaut) devient caduque. La traiter comme une
+  // erreur rendait le plan ENTIER non calculable au premier regroupement, pour
+  // une donnée que le calcul n'utilise même pas.
+  const p = plan([
+    t("phase", { dureeJours: 1 }),
+    t("enfant", { parentId: "phase", dureeJours: 4 }),
+  ]);
+  assert.equal(p.ok, true);
+  assert.equal(p.resume.fin, "2026-01-08");
+  // La durée du regroupement vient de ses enfants, pas de la saisie.
+  assert.equal(p.taches.find((x) => x.id === "phase").dureeJours, 4);
+  // Et l'avertissement reste remonté à l'écran.
+  assert.ok(p.erreurs.some((e) => /durée saisie est ignorée/.test(e.message)));
 });
 
 // ---------------------------------------------------------------------------
