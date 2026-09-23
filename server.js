@@ -1665,7 +1665,12 @@ app.post("/api/projets", requireAuth, (req, res) => {
   const map = new Map();
   for (const t of taches) map.set(t.id, null);
   for (const t of taches) {
-    const rec = store.addProjetTache({ ...proj.normaliserTache({ ...t, id: undefined }), projetId: projet.id, id: undefined, parentId: null, liens: [] });
+    const rec = store.addProjetTache({
+      ...proj.normaliserTache({ ...t, id: undefined }), projetId: projet.id, id: undefined, parentId: null, liens: [],
+      // D'où vient cette tâche dans le modèle : c'est la clé qui permettra plus
+      // tard de rejouer un modèle corrigé sans détruire le travail saisi.
+      modeleRef: t.id, modeleId: corps.modeleId || null,
+    });
     map.set(t.id, rec.id);
   }
   for (const t of taches) {
@@ -1834,6 +1839,66 @@ app.delete("/api/projets-modeles/:mid", requireAuth, requireAdmin, (req, res) =>
   store.deleteProjetModele(m.id);
   logAudit(req, "delete", "modele-projet", m.nom);
   res.json({ ok: true });
+});
+
+// Rejouer un modèle corrigé sur un projet en cours. `apercu=1` ne touche à
+// rien : on montre d'abord ce qui bougerait, on applique ensuite.
+app.post("/api/projets/:id/modele/:mid/appliquer", requireAuth, requireAdmin, (req, res) => {
+  const p = store.getProjet(req.params.id);
+  if (!p) return res.status(404).json({ error: "projet introuvable" });
+  if (!peutProjet(req, res, p)) return;
+  const m = store.getProjetModele(req.params.mid);
+  if (!m) return res.status(404).json({ error: "modèle introuvable" });
+
+  const taches = store.listProjetTaches({ projetId: p.id });
+  const f = proj.fusionnerModele(taches, m.taches || [], { modeleId: m.id });
+
+  // Projection AVANT écriture : si le modèle rejoué rendait le plan
+  // incalculable, on ne l'applique pas du tout. Un plan à moitié fusionné
+  // serait le pire des deux états.
+  const projete = taches.map((t) => {
+    const maj = f.majs.find((x) => x.id === t.id);
+    return maj ? { ...t, ...maj.patch } : { ...t };
+  }).filter((t) => !f.supprimables.some((x) => x.id === t.id));
+  for (const a of f.ajouts) projete.push({ ...proj.normaliserTache({ ...(m.taches || []).find((x) => (x.ref || x.id) === a.ref), id: `NEUF-${a.ref}` }), id: `NEUF-${a.ref}`, projetId: p.id, liens: [], parentId: null });
+  const plan = planDe(p, projete);
+  if (!plan.ok) return res.status(409).json({ error: `le modèle rejoué rendrait le plan incalculable : ${plan.erreurs.map((e) => e.message).join(" ; ")}` });
+
+  const resume = {
+    misesAJour: f.majs.length, ajouts: f.ajouts.length,
+    supprimees: f.supprimables.length, conservees: f.conservees,
+    // Ce qui a disparu du modèle mais qu'on GARDE parce qu'on y a travaillé.
+    gardeesMalgreRetrait: f.gardees.map((t) => ({ id: t.id, titre: t.titre, motif: t.statut !== "a_faire" ? "déjà démarrée" : t.responsable ? "un responsable y est nommé" : "du travail y est consigné" })),
+    renommees: f.majs.filter((x) => x.ancienTitre !== x.titre).map((x) => ({ de: x.ancienTitre, vers: x.titre })),
+  };
+  if (req.query.apercu) return res.json({ apercu: true, ...resume });
+
+  const avant = planDe(p, taches);
+  const idPourRef = new Map(f.majs.map((x) => [x.ref, x.id]));
+  for (const maj of f.majs) store.updateProjetTache(maj.id, maj.patch);
+  for (const a of f.ajouts) {
+    const src = (m.taches || []).find((x) => (x.ref || x.id) === a.ref) || {};
+    const rec = store.addProjetTache({
+      ...proj.normaliserTache({ ...src, id: undefined, liens: [], parentId: null }),
+      projetId: p.id, id: undefined, modeleRef: a.ref, modeleId: m.id,
+    });
+    idPourRef.set(a.ref, rec.id);
+  }
+  // Liens et rattachements, une fois que tous les identifiants existent.
+  for (const mt of m.taches || []) {
+    const ref = mt.ref || mt.id;
+    const id = idPourRef.get(ref);
+    if (!id) continue;
+    const liens = (mt.liens || []).map((l) => ({ deId: idPourRef.get(l.ref || l.deId), type: l.type, decalage: l.decalage || 0 })).filter((l) => l.deId);
+    const parentId = mt.parentRef ? idPourRef.get(mt.parentRef) || null : null;
+    store.updateProjetTache(id, { liens, parentId });
+  }
+  for (const t of f.supprimables) store.deleteProjetTache(t.id);
+
+  const apres = planDe(p, store.listProjetTaches({ projetId: p.id }));
+  journaliserProjet(req, p, avant, apres, `modèle « ${m.nom} » rejoué sur le plan`, req.body?.motif);
+  logAudit(req, "update", "projet", `modèle rejoué — ${p.nom} (${resume.misesAJour} maj, ${resume.ajouts} ajout(s), ${resume.supprimees} retrait(s))`);
+  res.json({ applique: true, ...resume });
 });
 
 // --- Export ---
@@ -2048,7 +2113,8 @@ app.get("/api/projets/:id/pack/:cle", requireAuth, async (req, res) => {
   if (!peutProjet(req, res, p)) return;
   const { projet, plan, options, settings } = packProjet(p);
   if (!plan.ok) return res.status(409).json({ error: "plan non calculable : aucun document ne sera produit tant qu'il ne l'est pas" });
-  const r = await piecePack(req.params.cle, projet, plan, settings, options).catch((e) => ({ error: e.message }));
+  const r = await piecePack(req.params.cle, projet, plan, settings,
+    { ...options, format: req.query.format === "pdf" ? "pdf" : "docx" }).catch((e) => ({ error: e.message }));
   if (r.error) return res.status(r.error === "document inconnu" ? 404 : 500).json({ error: r.error });
   res.setHeader("Content-Type", MIME_PACK[r.type] || "application/octet-stream");
   res.setHeader("Content-Disposition", `attachment; filename="${r.nom}"`);
@@ -4882,6 +4948,7 @@ function buildOpeningHtml(o, dept = "") {
 // produit elle-même pour qu'ils ne divergent jamais du plan — un pack refait à
 // la main est faux le lendemain.
 const MIME_PACK = {
+  pdf: "application/pdf",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

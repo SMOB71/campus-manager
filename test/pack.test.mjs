@@ -153,8 +153,25 @@ test("le zip complet porte le sommaire et toutes les pièces annoncées", async 
     }
   }
   assert.ok(noms.includes("SOMMAIRE.txt"), "le zip doit dire ce qu'il contient");
-  assert.equal(noms.length, pieces.length + 1, `zip incomplet : ${noms.length - 1} pièces pour ${pieces.length} annoncées`);
+  // On vérifie la PRÉSENCE de chaque pièce annoncée, pas un total : le zip
+  // porte aussi le dossier PDF et les ordres du jour séparés. Compter tout
+  // ensemble faisait tomber le test à chaque enrichissement du pack, sans
+  // jamais dire si une pièce manquait vraiment.
+  for (const p of pieces) {
+    assert.ok(noms.some((n) => n.endsWith("/" + p.fichier) || n === p.fichier),
+      `pièce annoncée absente du zip : ${p.fichier}`);
+  }
   assert.ok(noms.some((n) => n.endsWith(".pptx")) && noms.some((n) => n.endsWith(".xlsx")));
+  // Et tout supplément est justifié : un PDF, un ordre du jour, ou le sommaire.
+  const attendus = new Set(pieces.map((p) => p.fichier));
+  const surplus = noms.filter((n) => n !== "SOMMAIRE.txt" && !attendus.has(n.split("/").pop()));
+  const injustifies = surplus.filter((n) => !n.startsWith("6 - PDF/") && !n.includes("/Ordres du jour/"));
+  assert.deepEqual(injustifies, [], "le zip porte des fichiers que rien n'annonce");
+  // Le dossier PDF doit exister et couvrir tous les documents Word annoncés.
+  const pdfs = noms.filter((n) => n.startsWith("6 - PDF/"));
+  const words = pieces.filter((p) => p.ext === "docx");
+  assert.equal(pdfs.length, words.length,
+    `${pdfs.length} PDF pour ${words.length} documents Word`);
 });
 
 test("le pack est réservé aux administrateurs", async () => {
@@ -378,4 +395,58 @@ test("aucun document ne laisse fuir une valeur non résolue", async () => {
       assert.equal(m, null, `${p.nom} laisse passer « ${m && m[0]} »`);
     }
   }
+});
+
+// ── Le même document en PDF ─────────────────────────────────────────────────
+test("le PDF est RENDU depuis la même source, pas converti depuis le Word", async () => {
+  // Une conversion perd toujours quelque chose : le passage par textutil
+  // effaçait les fonds de tableau et laissait du texte blanc sur blanc. Ici les
+  // deux formats sortent du même générateur, avec deux moteurs de rendu.
+  const { piece, vue } = await import("../lib/pack/index.js");
+  const { buildOpeningTasks } = await import("../lib/calc.js");
+  const { planOuverture } = await import("../lib/pack/ouverture.js");
+  const taches = buildOpeningTasks("2027-09-01", {}, 11);
+  const { projet, plan } = planOuverture({ id: "o", name: "Brest", targetDate: "2027-09-01", budget: 1e6 },
+    taches, { aujourdhui: "2026-10-05" });
+  const l = vue(plan);
+
+  const docx = await piece("plan-synthese", projet, l, {}, {});
+  const pdf = await piece("plan-synthese", projet, l, {}, { format: "pdf" });
+  assert.ok(estZip(docx.octets), "le .docx doit rester un vrai .docx");
+  assert.equal(pdf.octets.slice(0, 5).toString(), "%PDF-", "le PDF doit être un vrai PDF");
+  assert.match(pdf.nom, /\.pdf$/);
+  assert.ok(pdf.octets.length > 4000, "un PDF de quelques octets est un PDF vide");
+
+  // Les caractères hors WinAnsi sont convertis AVANT le dessin : la flèche de
+  // « début → fin » sortait « !' » avec les polices standard du PDF. On teste
+  // le convertisseur lui-même — le flux du PDF est compressé, l'y chercher
+  // donnerait un test qui passe toujours.
+  const { briquesPdf } = await import("../lib/pack/mise-en-page-pdf.js");
+  const { charte } = await import("../lib/pack/charte.js");
+  const b = briquesPdf(charte({}, { format: "pdf" }));
+  const rendu = await b.rendre("t", [b.P("2026 \u2192 2027 \u00b7 M\u22127")]);
+  assert.equal(rendu.slice(0, 5).toString(), "%PDF-");
+
+  // Un PowerPoint ne s'aplatit pas en PDF : il resterait un deck mort.
+  const refus = await piece("deck-comex", projet, l, {}, { format: "pdf" });
+  assert.match(refus.error || "", /format natif/);
+});
+
+test("le zip porte un dossier PDF couvrant tous les documents Word", async () => {
+  const { pieces } = await (await get(`/api/openings/${ouvertureId}/pack?inventaire=1`)).json();
+  const r = await get(`/api/openings/${ouvertureId}/pack`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  const noms = [];
+  for (let i = 0; i < buf.length - 4; i++) {
+    if (buf[i] === 0x50 && buf[i + 1] === 0x4b && buf[i + 2] === 0x01 && buf[i + 3] === 0x02) {
+      const n = buf.readUInt16LE(i + 28);
+      noms.push(buf.slice(i + 46, i + 46 + n).toString("utf8"));
+      i += 45 + n;
+    }
+  }
+  const pdfs = noms.filter((n) => n.startsWith("6 - PDF/") && n.endsWith(".pdf"));
+  const words = pieces.filter((p) => p.ext === "docx");
+  assert.equal(pdfs.length, words.length, `${pdfs.length} PDF pour ${words.length} documents Word`);
+  // Aucun PowerPoint ni classeur dans le dossier PDF : ils gardent leur format.
+  assert.ok(!noms.some((n) => n.startsWith("6 - PDF/") && /\.(pptx|xlsx)$/.test(n)));
 });

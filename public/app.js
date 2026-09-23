@@ -5889,6 +5889,7 @@ async function openPackForm(oid) {
             <div class="sub muted">${esc(p.quoi)}</div>
           </div>
           <button class="btn-ghost btn-sm" data-piece="${esc(p.cle)}">Télécharger</button>
+          ${p.ext === "docx" ? `<button class="btn-ghost btn-sm" data-pdf="${esc(p.cle)}" title="Le même document, rendu en PDF">PDF</button>` : ""}
         </div>`).join("")}
       </div>`).join("")}
     <div style="margin-top:14px;display:flex;gap:8px;align-items:center;">
@@ -5897,6 +5898,11 @@ async function openPackForm(oid) {
     </div>`);
   $$("[data-piece]").forEach((b) => b.addEventListener("click", () => {
     location.href = `/api/openings/${oid}/pack/${b.dataset.piece}`;
+  }));
+  // Le PDF n'est pas une conversion du Word : c'est le même document rendu par
+  // l'autre moteur. D'où un simple paramètre, et non un second document.
+  $$("[data-pdf]").forEach((b) => b.addEventListener("click", () => {
+    location.href = `/api/openings/${oid}/pack/${b.dataset.pdf}?format=pdf`;
   }));
   $("#pack-tout").onclick = () => {
     const b = $("#pack-tout");
@@ -9183,6 +9189,7 @@ async function renderFicheProjet() {
         <button class="btn-ghost btn-sm" id="pj-niveler">Niveler la charge</button>
         <button class="btn-ghost btn-sm" id="pj-ref">${p.reference ? "Nouvelle référence" : "Figer la référence"}</button>
         <button class="btn-ghost btn-sm" id="pj-nourrir">Nourrir depuis une note</button>
+        <button class="btn-ghost btn-sm" id="pj-rejouer">Rejouer un modèle</button>
         <button class="btn-ghost btn-sm" id="pj-modele">Enregistrer comme modèle</button>
         <button class="btn-ghost btn-sm" id="pj-export">Excel</button>
       </div>
@@ -9264,6 +9271,7 @@ function pjBrancherEntete(d) {
   if ($("#pj-niveler")) $("#pj-niveler").onclick = () => openNivellement(d);
   if ($("#pj-modele")) $("#pj-modele").onclick = () => openModeleProjet(d);
   if ($("#pj-nourrir")) $("#pj-nourrir").onclick = () => openCadrage(d.projet);
+  if ($("#pj-rejouer")) $("#pj-rejouer").onclick = () => openRejeuModele(d);
   if ($("#pj-ref")) $("#pj-ref").onclick = async (ev) => guard(ev.currentTarget, async () => {
     const motif = prompt("Figer la référence — motif (ex. « validée en comité du 12 mars ») :", "");
     if (motif === null) return;
@@ -10233,5 +10241,52 @@ function rendreRevueCadrage(bg, projet, r) {
     PJ.ouvert = out.projet.id;
     PJ.onglet = "planning";
     renderProjets();
+  });
+}
+
+
+// ---------- Rejouer un modèle corrigé sur un projet en cours ----------
+// Remplacer tout le plan coûterait les responsables, les statuts, les restes à
+// faire et les notes — donc personne ne corrigerait jamais le modèle, et il
+// pourrirait. On montre d'abord ce qui bougerait, on applique ensuite.
+async function openRejeuModele(d) {
+  const liste = await api.get("/api/projets-modeles");
+  const modeles = liste?.modeles || [];
+  if (!modeles.length) return alert("Aucun modèle capturé. Enregistre d'abord un projet comme modèle.");
+  const bg = openModal("Rejouer un modèle sur ce plan", `
+    <p class="muted" style="font-size:13.5px;margin-top:0;">
+      Le modèle apporte la forme du plan : intitulés, durées, enchaînements, regroupements.
+      Ce qu'un humain a mis sur une action — responsable, statut, reste à faire, notes — est conservé.</p>
+    <div class="row"><div><label class="field-label">Modèle</label><select id="rj-modele">
+      ${modeles.map((m) => `<option value="${m.id}">${esc(m.nom)} (${m.taches} tâches)</option>`).join("")}</select></div></div>
+    <div class="actions"><button class="btn-ghost" id="rj-apercu">Voir ce qui changerait</button></div>
+    <div id="rj-res"></div>`);
+
+  $("#rj-apercu").onclick = (ev) => guard(ev.currentTarget, async () => {
+    const mid = $("#rj-modele").value;
+    const r = await api.post(`/api/projets/${d.projet.id}/modele/${mid}/appliquer?apercu=1`, {});
+    if (r?.error) { $("#rj-res").innerHTML = `<div class="card card-pad" style="border-left:4px solid var(--danger);">${esc(r.error)}</div>`; return; }
+    $("#rj-res").innerHTML = `
+      <div class="kpis" style="margin:12px 0;">
+        ${fkpi(r.misesAJour, "actions mises à jour")}
+        ${fkpi(r.ajouts, "ajoutées par le modèle")}
+        ${fkpi(r.supprimees, "retirées", r.supprimees ? "bad" : "")}
+        ${fkpi(r.conservees, "hors modèle, conservées")}
+      </div>
+      ${r.renommees?.length ? `<div class="card card-pad" style="margin-bottom:10px;"><b>Renommées</b>
+        <div class="muted" style="font-size:13px;">${r.renommees.map((x) => `${esc(x.de)} → ${esc(x.vers)}`).join("<br>")}</div></div>` : ""}
+      ${r.gardeesMalgreRetrait?.length ? `<div class="card card-pad" style="border-left:4px solid var(--warn);margin-bottom:10px;">
+        <b>Retirées du modèle, mais gardées</b>
+        <div class="muted" style="font-size:13px;">${r.gardeesMalgreRetrait.map((x) => `${esc(x.titre)} — ${esc(x.motif)}`).join("<br>")}</div>
+        <p class="hint muted">Effacer un travail consigné serait pire qu'un plan un peu long.</p></div>` : ""}
+      <div class="actions"><button class="btn-primary" id="rj-go">Appliquer au plan</button></div>`;
+    $("#rj-go").onclick = (e2) => guard(e2.currentTarget, async () => {
+      const motif = prompt("Motif de la mise à jour (il ira au journal) :", "modèle corrigé");
+      if (motif === null) return;
+      const out = await api.post(`/api/projets/${d.projet.id}/modele/${mid}/appliquer`, { motif });
+      if (out?.error) return alert(out.error);
+      bg.remove();
+      renderFicheProjet();
+    });
   });
 }
